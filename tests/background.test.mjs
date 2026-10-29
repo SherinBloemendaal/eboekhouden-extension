@@ -42,7 +42,15 @@ test('logging in registers the administration and keeps its cookies in session s
 test('the login screen title does not create a slot', async () => {
   await fake.dispatch({ type: 'top:title', title: 'Inloggen | e-Boekhouden.nl' }, top);
   assert.deepEqual(await slots(), []);
-  assert.equal((await view()).loggedIn, false);
+});
+
+test('opening /bh/ in another tab while logged in does not end or expire the session', async () => {
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  await fake.dispatch({ type: 'top:title', title: 'Inloggen | e-Boekhouden.nl' }, top);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1login', kind: 'login' }, main);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'already' }, inner);
+  assert.equal((await slots())[0].expired, false);
+  assert.deepEqual(await view(), { activeSlotId: slot.id, loggedIn: true, ready: [slot.id] });
 });
 
 test('the header number is stored for the active administration only', async () => {
@@ -105,6 +113,8 @@ test('a session that drops to the login page while in use is marked expired', as
   const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
   await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/welkom', kind: 'app' }, main);
   await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1login', kind: 'login' }, main);
+  assert.equal((await slots())[0].expired, false, 'the shell alone proves nothing');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
   assert.equal((await slots())[0].expired, true);
   assert.deepEqual((await view()).ready, [], 'its dead cookies are dropped');
   assert.equal(fake.storage.session.dump()[`cookies:${slot.id}`], undefined);

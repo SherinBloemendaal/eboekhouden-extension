@@ -153,10 +153,13 @@ async function onTopTitle(title) {
   const { pendingCheck } = await getSessionState();
 
   if (LOGIN_TITLE.test(name)) {
-    // A switch restored a session and e-Boekhouden answered with its login screen.
-    if (pendingCheck) await markExpired(pendingCheck);
-    else await chrome.storage.session.set({ loggedIn: false });
-    await publishView();
+    // Plain /bh/ shows this title even while the session is valid, so on its
+    // own it proves nothing. Only right after a switch does it mean the
+    // restored session had expired.
+    if (pendingCheck) {
+      await markExpired(pendingCheck);
+      await publishView();
+    }
     return;
   }
 
@@ -193,8 +196,9 @@ async function onLogout(tabId, frameId) {
   await publishView();
 }
 
-// A login or "session expired" page while the active session was logged in
-// means the server dropped it.
+// The bare login form, or a "session expired" page, while the active session
+// was logged in means the server dropped it. The secure20 /v1login shell is
+// not proof on its own: it wraps the "U bent reeds ingelogd" page too.
 async function onLoginPage() {
   const { activeSlotId, loggedIn } = await getSessionState();
   if (!activeSlotId || !loggedIn) return;
@@ -302,10 +306,13 @@ async function onMainPage(tabId, frameId, { url, kind }) {
     return {};
   }
 
+  if (kind === 'already') return {};
+
   if (kind === 'login' || kind === 'expired') {
     if (tab.returnUrl) tab.relogin = true;
     await setTab(tabId, tab);
-    await onLoginPage();
+    const shell = new URL(url).hostname === 'secure20.e-boekhouden.nl' && kind === 'login';
+    if (!shell) await onLoginPage();
     return { relogin: Boolean(tab.relogin) };
   }
 
@@ -336,6 +343,8 @@ async function onInnerPage(tabId, { url, kind }) {
     await onLogout(tabId, tab.mainFrameId);
     return {};
   }
+
+  if (kind === 'already') return {};
 
   if (kind === 'login' || kind === 'expired') {
     // The login form of secure20/v1login lives in this inner frame.

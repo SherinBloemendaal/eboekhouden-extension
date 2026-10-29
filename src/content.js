@@ -105,15 +105,24 @@
     });
   }
 
+  // /bh/inloggen.asp is also what e-Boekhouden shows, with "U bent reeds
+  // ingelogd", when /bh/ is opened while the session is still valid. Only the
+  // plain form means the session is gone.
+  function loginFormKind(callback) {
+    onReady(() => callback(/reeds ingelogd/i.test(document.body?.innerText ?? '') ? 'already' : 'login'));
+  }
+
   function runInner() {
-    const kind = classify(location.href);
-    send({ type: 'inner:page', url: location.href, kind }).then((response) => {
+    const report = (kind) => send({ type: 'inner:page', url: location.href, kind }).then((response) => {
       if (response?.navigate) {
         location.replace(response.navigate);
         return;
       }
       if (kind === 'login' && response?.relogin) onReady(showReloginDialog);
     });
+    const kind = classify(location.href);
+    if (kind === 'login') loginFormKind(report);
+    else report(kind);
   }
 
   function runMain() {
@@ -131,13 +140,16 @@
         return;
       }
 
-      send({ type: 'main:page', url: location.href, kind }).then((response) => {
+      const report = (pageKind) => send({ type: 'main:page', url: location.href, kind: pageKind }).then((response) => {
         if (response?.navigate) {
           location.replace(response.navigate);
           return;
         }
-        if (kind === 'login' && response?.relogin) onReady(showReloginDialog);
+        if (pageKind === 'login' && response?.relogin) onReady(showReloginDialog);
       });
+      // The classic login form loaded straight into mainframe: check it like the inner one.
+      if (kind === 'login' && location.hostname !== SECURE20) loginFormKind(report);
+      else report(kind);
     };
 
     handle();
