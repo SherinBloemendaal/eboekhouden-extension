@@ -1434,6 +1434,7 @@
       update(selected) {
         if (!this.host) return;
         const show = selected.length > 0 && view.root?.dataset.state === 'rows';
+        if (view.root) view.root.dataset.bar = show ? 'on' : 'off';
         if (!show) {
           this.host.classList.remove('show');
           this.say('');
@@ -1608,6 +1609,8 @@
     .ebs-ar-file .ebs-ar-check[aria-checked="true"] { border-color: #232c4f; background: #232c4f; }
     .ebs-ar-check:disabled { opacity: .45; cursor: default; }
     .ebs-ar-scroll { flex: 1; min-height: 0; overflow: auto; }
+    /* Room after the last row while the action bar floats over the list. */
+    .ebs-ar[data-bar="on"] .ebs-ar-scroll::after { content: ''; display: block; height: 96px; }
     .ebs-ar-item { border-bottom: 1px solid #eef0f5; }
     .ebs-ar-file { min-height: 56px; cursor: pointer; background: #ffffff; transition: background-color 150ms ease; }
     .ebs-ar-file:hover { background: #f7f8fb; }
@@ -1687,10 +1690,10 @@
     .ebs-ar-pbutton:active:not(:disabled) { transform: scale(0.97); }
     .ebs-ar-preview-none { margin: auto; padding: 24px; text-align: center; font-size: 13px; color: #5d6584; }
 
-    .ebs-ar-bar { position: fixed; left: 50%; bottom: 24px; z-index: 2147481000; display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 20px; background: #232c4f; color: #ffffff; border-radius: 14px; box-shadow: 0 18px 44px rgba(20, 26, 48, .35); font-family: Ubuntu, system-ui, sans-serif; opacity: 0; transform: translate(-50%, 16px); visibility: hidden; pointer-events: none; transition: opacity 150ms ease-in, transform 150ms ease-in, visibility 0s linear 150ms; }
+    .ebs-ar-bar { position: fixed; left: 50%; bottom: 24px; z-index: 2147481000; width: max-content; max-width: calc(100vw - 32px); display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 20px; background: #232c4f; color: #ffffff; border-radius: 14px; box-shadow: 0 18px 44px rgba(20, 26, 48, .35); font-family: Ubuntu, system-ui, sans-serif; opacity: 0; transform: translate(-50%, 16px); visibility: hidden; pointer-events: none; transition: opacity 150ms ease-in, transform 150ms ease-in, visibility 0s linear 150ms; }
     .ebs-ar-bar.show { opacity: 1; transform: translate(-50%, 0); visibility: visible; pointer-events: auto; transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s; }
     .ebs-ar-bar-summary { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
-    .ebs-ar-bar-count { font-size: 14px; font-weight: 700; }
+    .ebs-ar-bar-count { font-size: 14px; font-weight: 700; white-space: nowrap; }
     .ebs-ar-bar-sub { font-size: 12px; color: #c4cae0; }
     .ebs-ar-bar-divider { width: 1px; height: 32px; background: rgba(255, 255, 255, .2); }
     .ebs-ar-bar-button { height: 40px; padding: 0 14px; border-radius: 9px; font-size: 14px; display: flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
