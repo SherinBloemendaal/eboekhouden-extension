@@ -5,6 +5,7 @@
 //   EBS.bridge.enable('ckeditor')            switch a hook on (all are off)
 //   EBS.bridge.disable('ckeditor')
 //   await EBS.bridge.call('ckeditor.getData', { name: 'editor1' })
+//   await EBS.bridge.call('ckeditor.setData', { name, html })   in a click handler only
 //   EBS.bridge.intercept('windowOpen', ({ url, target, features }) => ({ claim: true }))
 //   EBS.bridge.on('observed', ({ url, method, status, contentType, body }) => {})
 //
@@ -16,7 +17,9 @@
 // form, and anything else to leave the page alone. Until a feature registers
 // one, the answer is null and the page goes its own way. A handler is only
 // asked during a user gesture (navigator.userActivation.isActive): a page
-// script cannot make a feature open a dialog on its own.
+// script cannot make a feature open a dialog on its own. In the same way
+// ckeditor.insertHtml and ckeditor.setData are refused outside a click or
+// key of the user: the extension never fills in the page by itself.
 //
 // Everything from the page world is untrusted: it is the page's own realm,
 // and a same-origin parent frame can even read and forge this channel (see
@@ -40,6 +43,8 @@
   const EVENTS = new Set(['observed']);
   // Public methods; request.* only through claimRequest().
   const PUBLIC_METHODS = new Set(['ckeditor.list', 'ckeditor.getData', 'ckeditor.getSelectionText', 'ckeditor.insertHtml', 'ckeditor.setData']);
+  // Writing into the page is the user's choice: only during their click.
+  const WRITES = new Set(['ckeditor.insertHtml', 'ckeditor.setData']);
 
   function uuid() {
     if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -313,6 +318,7 @@
     },
     call(method, args = {}, options = {}) {
       if (!PUBLIC_METHODS.has(method)) return Promise.reject(new Error(`EBS.bridge: unknown method "${method}"`));
+      if (WRITES.has(method) && !userGesture()) return Promise.reject(new Error(`EBS.bridge: ${method} only during a click of the user`));
       return send(method, args, options);
     },
     intercept(hook, handler) {

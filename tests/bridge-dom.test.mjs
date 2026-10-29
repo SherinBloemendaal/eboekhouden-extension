@@ -212,6 +212,11 @@ test('CKEditor 4: read and write an editor once the hook is on', async () => {
   assert.deepEqual(plain(await p.bridge.call('ckeditor.list')), [{ name: 'txtBody', readOnly: false }]);
   assert.equal(await p.bridge.call('ckeditor.getData', { name: 'txtBody' }), '<p>Beste klant,</p>');
   assert.equal(await p.bridge.call('ckeditor.getSelectionText', { name: 'txtBody' }), 'klant');
+  // Writing waits for a click of the user: the extension never fills in by itself.
+  await assert.rejects(p.bridge.call('ckeditor.insertHtml', { name: 'txtBody', html: '<p>Groet</p>' }), /only during a click/);
+  await assert.rejects(p.bridge.call('ckeditor.setData', { name: 'txtBody', html: '<p>Nieuw</p>' }), /only during a click/);
+  assert.equal(p.window.CKEDITOR.instances.txtBody.data, '<p>Beste klant,</p>');
+  p.gesture.active = true;
   await p.bridge.call('ckeditor.insertHtml', { name: 'txtBody', html: '<p>Groet</p>' });
   assert.equal(p.window.CKEDITOR.instances.txtBody.data, '<p>Beste klant,</p><p>Groet</p>');
   await p.bridge.call('ckeditor.setData', { name: 'txtBody', html: '<p>Nieuw</p>' });
