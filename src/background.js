@@ -317,15 +317,23 @@ async function reloadEbTabs(originHint, loggedIn) {
   }));
 }
 
-// With other e-Boekhouden tabs open, a switch reloads them too: ask first.
-async function needsConfirm(confirmed) {
+// A switch reloads every e-Boekhouden tab. Ask first when that includes a
+// tab other than the one the user is looking at: the tab the click came
+// from, or for the popup the active tab of the focused window.
+async function needsConfirm(confirmed, senderTab) {
   if (confirmed) return null;
   const tabs = await ebTabs();
-  return tabs.length > 1 ? { needsConfirm: true, tabCount: tabs.length } : null;
+  let ownId = senderTab?.id ?? null;
+  if (!senderTab) {
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    ownId = active?.id ?? null;
+  }
+  const others = tabs.filter((tab) => tab.id !== ownId);
+  return others.length ? { needsConfirm: true, tabCount: tabs.length } : null;
 }
 
-async function switchTo(slotId, originHint, confirmed) {
-  const ask = await needsConfirm(confirmed);
+async function switchTo(slotId, originHint, confirmed, senderTab) {
+  const ask = await needsConfirm(confirmed, senderTab);
   if (ask) return ask;
 
   await snapshotActiveSlot();
@@ -349,8 +357,8 @@ async function switchTo(slotId, originHint, confirmed) {
   return {};
 }
 
-async function addSession(originHint, confirmed) {
-  const ask = await needsConfirm(confirmed);
+async function addSession(originHint, confirmed, senderTab) {
+  const ask = await needsConfirm(confirmed, senderTab);
   if (ask) return ask;
 
   await snapshotActiveSlot();
@@ -565,8 +573,8 @@ const handlers = {
   'login:done': (message, sender) => onLoginDone(sender.tab.id, sender.tab.url),
   'inner:page': (message, sender) => onInnerPage(sender.tab.id, message),
   'relogin:cancel': (message, sender) => cancelRelogin(sender.tab.id),
-  'switcher:switch': (message) => switchTo(message.slotId, message.origin ?? DEFAULT_ORIGIN, message.confirmed),
-  'switcher:add': (message) => addSession(message.origin ?? DEFAULT_ORIGIN, message.confirmed),
+  'switcher:switch': (message, sender) => switchTo(message.slotId, message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab),
+  'switcher:add': (message, sender) => addSession(message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab),
   'switcher:remove': (message) => removeSlot(message.slotId),
   'avatar:set': (message) => setAvatar(message.slotId, message.dataUrl),
   'avatar:remove': (message) => chrome.storage.local.remove(`avatar:${message.slotId}`),

@@ -108,3 +108,8 @@ test('renaming a group keeps its place and its lines, and refuses empty or taken
   }
   assert.equal(EBS.renameGroup(groups, groupOf, 'Onbekend', 'X').renamed, false);
 });
+
+test('the reload question reads right for one tab and for several', () => {
+  assert.equal(EBS.reloadWarning(1), 'Het e-Boekhouden-tabblad wordt herladen. Niet opgeslagen invoer gaat verloren.');
+  assert.equal(EBS.reloadWarning(3), 'Alle 3 e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.');
+});

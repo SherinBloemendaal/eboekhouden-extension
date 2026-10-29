@@ -291,3 +291,24 @@ test('the popup may only send its own actions', async () => {
   ]);
   assert.equal(answer, 'ignored');
 });
+
+test('from the popup a switch asks first when it reloads a tab the user is not looking at', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'x', name: 'Studio Noord', number: '1000002', expired: false }] });
+  fake.tabs = [{ id: 7, url: `${ORIGIN}/bh/`, active: false }, { id: 3, url: 'https://example.org/', active: true }];
+  const ask = await fake.dispatch({ type: 'switcher:switch', slotId: 'x' }, popup);
+  assert.deepEqual(ask, { needsConfirm: true, tabCount: 1 });
+  assert.deepEqual(fake.updates, [], 'nothing reloads before the answer');
+});
+
+test('from the popup over the only e-Boekhouden tab a switch goes straight through', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'x', name: 'Studio Noord', number: '1000002', expired: false }] });
+  fake.tabs = [{ ...TAB, active: true }];
+  assert.deepEqual(await fake.dispatch({ type: 'switcher:switch', slotId: 'x' }, popup), {});
+  assert.equal(fake.updates.length, 1);
+});
+
+test('in the page, the tab the click came from does not count as another tab', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'x', name: 'Studio Noord', number: '1000002', expired: false }] });
+  fake.tabs = [{ ...TAB, active: false }];
+  assert.deepEqual(await fake.dispatch({ type: 'switcher:add', origin: ORIGIN }, main), {});
+});

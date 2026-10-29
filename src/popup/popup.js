@@ -101,7 +101,7 @@ function renderConfirm() {
   box.replaceChildren();
   if (!confirm) return;
   const inner = el('div', 'confirm');
-  inner.append(el('span', '', `Alle ${confirm.tabCount} e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.`));
+  inner.append(el('span', '', EBS.reloadWarning(confirm.tabCount)));
   const buttons = el('div', 'confirm-buttons');
   const no = el('button', 'btn', 'Annuleren');
   no.type = 'button';

@@ -62,8 +62,11 @@ export function createFakeChrome() {
       },
     },
     tabsApi: {
-      async query() {
-        return structuredClone(fake.tabs);
+      async query(filter = {}) {
+        // Only the two filters the service worker uses: the e-Boekhouden URL pattern and active.
+        const matchesUrl = (tab) => !filter.url || /^https:\/\/([^/]+\.)?e-boekhouden\.nl\//.test(tab.url ?? '');
+        const matchesActive = (tab) => filter.active === undefined || Boolean(tab.active) === filter.active;
+        return structuredClone(fake.tabs.filter((tab) => matchesUrl(tab) && matchesActive(tab)));
       },
       async update(tabId, props) {
         fake.updates.push({ tabId, ...props });

@@ -155,7 +155,7 @@
 
   function confirmBox(tabCount, onYes, onNo) {
     const box = el('div', 'ebs-confirm');
-    box.append(el('span', '', `Alle ${tabCount} e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.`));
+    box.append(el('span', '', EBS.reloadWarning(tabCount)));
     const buttons = el('div', 'ebs-confirm-buttons');
     const no = el('button', 'ebs-confirm-no', 'Annuleren');
     no.type = 'button';

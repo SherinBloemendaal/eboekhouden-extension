@@ -26,6 +26,12 @@
     return 'login';
   }
 
+  // The question before a switch reloads the open e-Boekhouden tabs.
+  function reloadWarning(tabCount) {
+    const what = tabCount === 1 ? 'Het e-Boekhouden-tabblad wordt' : `Alle ${tabCount} e-Boekhouden-tabbladen worden`;
+    return `${what} herladen. Niet opgeslagen invoer gaat verloren.`;
+  }
+
   // Same initials as e-Boekhouden's own avatar (getAbbreviation in the shell).
   function initials(name) {
     try {
@@ -206,7 +212,7 @@
 
   root.EBS = Object.freeze({
     toAvatar, counterparty,
-    SETTINGS_DEFAULTS, settingsWithDefaults, statusOf, initials,
+    SETTINGS_DEFAULTS, settingsWithDefaults, statusOf, initials, reloadWarning,
     parseAmount, formatMoney, parseDate, monthLabel,
     rangeToggles, rowSignature, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,
   });
