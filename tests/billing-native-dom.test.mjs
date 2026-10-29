@@ -143,6 +143,26 @@ test('Meer velden in e-Boekhouden\'s simple mode: the rows it hides with custom-
   p.close();
 });
 
+test('Meer velden in simple mode: rows in a hidden wrapper or hidden themselves show, and every named field can be seen', async () => {
+  // Debiteurenrekening sits in the verwerken wrapper (custom-hidden="true" in
+  // simple mode), Peppol carries custom-hidden="true" on its own row.
+  const p = await editPage(invoiceEditHtml(undefined, { advanced: false, incassoModule: false, peppol: true, debiteurenRekeningen: true, klaargezet: '12-10-2026' }), INVOICE);
+  const { document } = p;
+  const view = document.querySelector('.ebs-b-edit');
+  const slot = view.querySelector('.ebs-b-more-slot');
+  for (const id of ['grootboekrekeningId-AutocompletePickerInput', 'versturenViaPeppol']) {
+    const field = slot.querySelector(`#${id}`);
+    assert.ok(field?.closest('[custom-hidden="true"]'), `${id}: hidden by e-Boekhouden`);
+    for (let node = field; node !== slot; node = node.parentElement) assert.notEqual(style(p, node).display, 'none', `${id}: shown in Meer velden`);
+  }
+  assert.equal(moreText(view), 'Meer velden van e-Boekhouden: uiterste betaaldatum, debiteurenrekening, factuur via Peppol versturen, deze factuur is op 12-10-2026 klaargezet voor incasso');
+  // Every row it names is one the user sees once it is open.
+  for (const row of slot.querySelectorAll('.form-body .form-row')) {
+    for (let node = row; node !== slot; node = node.parentElement) assert.notEqual(style(p, node).display, 'none', row.textContent.trim());
+  }
+  p.close();
+});
+
 test('Meer velden without factuur-incasso or Peppol: it says what is there, or that there is nothing', async () => {
   let p = await editPage(invoiceEditHtml(undefined, { incassoModule: false }), INVOICE);
   let view = p.document.querySelector('.ebs-b-edit');

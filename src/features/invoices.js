@@ -1433,15 +1433,27 @@
       const names = [];
       for (const row of body.querySelectorAll('.form-row')) {
         if (row.closest(`[${OWN}]`) !== view.moreSlot) continue;
+        // A field by its label; a message of e-Boekhouden (app-form-value,
+        // "Deze factuur is op ... klaargezet voor incasso.") by its own
+        // sentence, never cut off in the middle of a word.
         const name = text(row.querySelector('app-form-label label'))
           || text(row.querySelector('app-checkbox label'))
           || text(row.querySelector('a, button'))
-          || text(row).slice(0, 40);
+          || text(row.querySelector('app-form-value')).replace(/\.$/, '')
+          || shortName(text(row));
         if (!name) continue;
         const word = /^.[A-Z]/.test(name) ? name : name.charAt(0).toLowerCase() + name.slice(1);
         if (!names.includes(word)) names.push(word);
       }
       return names;
+    }
+
+    // At most 40 characters, on a word boundary.
+    function shortName(words) {
+      if (words.length <= 40) return words;
+      const cut = words.slice(0, 41);
+      const end = cut.lastIndexOf(' ');
+      return `${(end > 0 ? cut.slice(0, end) : words.slice(0, 40)).trim()}…`;
     }
 
     function drawMore() {

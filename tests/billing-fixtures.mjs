@@ -155,8 +155,11 @@ const footer = '<div class="form-footer"><div class="hr"></div><div class="form-
 // The invoice form (app-factuur-form) as its template renders it. advanced:
 // e-Boekhouden's "Meer opties"; off, the rows outside its simpleFields carry
 // custom-hidden="true". incassoModule: the factuur-incasso block (machtiging,
-// IBAN, t.n.v., plaats, omschrijving regels 1 tot 3). peppol: its checkbox.
-export function invoiceEditHtml(lines = LINES, { advanced = true, incassoModule = true, peppol = false } = {}) {
+// IBAN, t.n.v., plaats, omschrijving regels 1 tot 3). peppol: its checkbox,
+// shown only in advanced mode. debiteurenRekeningen: more than one, so
+// direct verwerken asks for one (in the verwerken wrapper). klaargezet: the
+// date of e-Boekhouden's "klaargezet voor incasso" message.
+export function invoiceEditHtml(lines = LINES, { advanced = true, incassoModule = true, peppol = false, debiteurenRekeningen = false, klaargezet = '' } = {}) {
   const a = { advanced };
   const off = { advanced, simple: false };
   const incasso = incassoModule ? `<div custom-hidden="false"><div class="hr"></div>
@@ -181,11 +184,12 @@ export function invoiceEditHtml(lines = LINES, { advanced = true, incassoModule 
     ${row(`${label('emailsjabloonId', 'E-mailsjabloon')}${select('emailsjabloonId', [['2', 'Factuur']], '2')}`, a)}
     ${row(`<app-form-label></app-form-label>${check('incasso', 'Factuurbedrag incasseren')}`, a)}
     ${incasso}
-    <div${hidden(!advanced)}>${row(`<app-form-label></app-form-label>${check('directVerwerken', 'Factuur direct verwerken in de boekhouding', true)}`)}${row(`${label('mutOmschrijving', 'Mutatie-omschrijving')}${text('mutOmschrijving')}`)}</div>
+    <div${hidden(!advanced)}>${row(`<app-form-label></app-form-label>${check('directVerwerken', 'Factuur direct verwerken in de boekhouding', true)}`)}${row(`${label('mutOmschrijving', 'Mutatie-omschrijving')}${text('mutOmschrijving')}`)}${debiteurenRekeningen ? row(`${label('grootboekrekeningId', 'Debiteurenrekening')}${autocomplete('grootboekrekeningId', '1300 Debiteuren')}`) : ''}</div>
     <h4 class="title-group"> Verzendwijze </h4>
     ${row(`<app-form-label></app-form-label>${check('printen', 'Factuur per reguliere post versturen')}`, off)}
     ${row(`<app-form-label></app-form-label>${check('emailen', 'Factuur per e-mail versturen', true)}`, off)}
-    ${peppol ? `<div>${row(`<app-form-label></app-form-label>${check('versturenViaPeppol', 'Factuur via Peppol versturen')}`)}</div>` : ''}
+    ${peppol ? `<div>${row(`<app-form-label></app-form-label>${check('versturenViaPeppol', 'Factuur via Peppol versturen')}`, off)}</div>` : ''}
+    ${klaargezet ? row(`<app-form-label></app-form-label><app-form-value class="form-value"> Deze factuur is op ${klaargezet} klaargezet voor incasso. </app-form-value>`) : ''}
     <h4 class="title-group"> Producten / Diensten </h4>${lineList(lines)}
   </div>${footer}</form></app-form><div id="infoDiv"></div></div></app-factuur-form></div></body></html>`;
 }
