@@ -201,7 +201,10 @@
     const helpers = op();
     const all = Array.isArray(options?.rows) ? options.rows : [];
     const rows = all.filter((row) => helpers.remindable(row));
-    const skipped = all.length - rows.length;
+    // The selected posts e-Boekhouden's form cannot take: named in the
+    // dialog, before anything is sent.
+    const left = all.filter((row) => !helpers.remindable(row));
+    const skipped = left.length;
     if (!rows.length) return null;
     if (rows.length > MAX) return null;
     const soort = options.soort === 'P' ? 'P' : 'E';
@@ -214,6 +217,7 @@
 
     const payload = {
       soort, proef, skipped,
+      skippedRows: left.slice(0, 50).map((row) => ({ factuur: String(row.factuur ?? ''), relation: String(row.relation ?? '') })),
       step: step ? { index: step.index, label: step.label } : null,
       template: step?.template ? { id: step.template.id, name: step.template.name } : null,
       rows: rows.map((row) => ({
@@ -224,6 +228,8 @@
     let templateMessage = null;
     let readyTimer = null;
     let dialog = null;
+    // What the frame last said of e-Boekhouden's work: main, sending, done or failed.
+    let stage = 'main';
 
     const post = (message) => {
       try {
@@ -241,11 +247,10 @@
       } else if (data.type === 'ready') {
         clearTimeout(readyTimer);
         dialog.setReady();
+      } else if (data.type === 'stage' && ['main', 'sending', 'done', 'failed'].includes(data.stage)) {
+        stage = data.stage;
       } else if (data.type === 'close') {
-        const sent = data.reason === 'sent';
-        dialog.close({ reason: sent ? 'sent' : 'cancel' });
-        // The list shows the new "Laatste aanmaning" after a fresh load.
-        if (sent) location.reload();
+        dialog.close({ reason: data.reason === 'sent' ? 'sent' : 'cancel' });
       }
     }
 
@@ -262,9 +267,15 @@
       ready: 'manual',
       loading: 'Bezig met laden…',
       motion: settings.betterDesign,
-      onClose() {
+      // A stray click beside the dialog does not throw the form away.
+      closeOnBackdrop: false,
+      onClose(reason) {
         clearTimeout(readyTimer);
         window.removeEventListener('message', onMessage);
+        // After a send (also one the user closed the dialog on while
+        // e-Boekhouden was still busy) the list shows the new "Laatste
+        // aanmaning" after a fresh load.
+        if (reason === 'sent' || stage === 'sending' || stage === 'done') location.reload();
       },
     });
     dialog.frame.addEventListener('load', () => {
@@ -319,6 +330,7 @@
       sendClickedAt: 0,
       error: '',
       ready: false,
+      postedStage: 'main',
     };
 
     const post = (message) => window.parent.postMessage({ ebs: CHANNEL, ...message }, location.origin);
@@ -360,6 +372,43 @@
       const node = document.querySelector('app-notification-bar .error, app-notification-bar .notification-message.error');
       return node?.textContent.replace(/\s+/g, ' ').trim() ?? '';
     }
+
+    // Verder sends at once, so the native form may only submit from a real
+    // click of the user on Verder itself: the mouse, or Enter or Space while
+    // Verder has focus (the browser makes that a trusted click on it). Every
+    // other way is stopped before e-Boekhouden's own submit handler on the
+    // <form> sees it: a script's click() or requestSubmit(), and Enter in a
+    // field (the browser's implicit submission, which also clicks Verder,
+    // but with the focus in that field). form.submit() fires no event and
+    // sends nothing through Angular. Nothing in this file submits.
+    let sendIntent = false;
+    const inNativeForm = (node) => Boolean(node?.closest?.('app-open-posten-aanmaning-form'));
+    document.addEventListener('click', (event) => {
+      const send = sendButton();
+      sendIntent = Boolean(event.isTrusted && send && !send.disabled && send.contains(event.target)
+        && (event.detail > 0 || document.activeElement === send));
+    }, true);
+    document.addEventListener('submit', (event) => {
+      if (!inNativeForm(event.target)) return;
+      const send = sendButton();
+      const allowed = sendIntent && Boolean(send) && (!event.submitter || event.submitter === send);
+      sendIntent = false;
+      if (allowed) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+    document.addEventListener('keydown', (event) => {
+      // While e-Boekhouden sends, Escape does not close the dialog on it.
+      if (event.key === 'Escape' && state.stage === 'sending') {
+        event.preventDefault();
+        return;
+      }
+      if (event.key !== 'Enter' || !inNativeForm(event.target)) return;
+      // The template field handles Enter itself (it picks the highlighted
+      // template and already blocks the submit); every other field may not
+      // submit with it.
+      if (event.target.matches?.('input:not([type="button"]):not([type="submit"]):not(.displayValue), select')) event.preventDefault();
+    }, true);
 
     // The user picked a template in the native list: its text loads on that
     // click. The same for a click on a relation or on "Tekst laden".
@@ -434,8 +483,13 @@
         const rows = [...(form()?.querySelectorAll('app-autocomplete [id^="sjabloon-AutocompletePickerRow-"], app-autocomplete .row') ?? [])];
         const row = rows.find((one) => one.textContent.replace(/\s+/g, ' ').trim() === wanted);
         if (row) {
+          // A row is a <tr>: its click only selects (onItemClick), it submits
+          // nothing. The autocomplete then parks the focus on a field in the
+          // form; that focus is given up, so no key of the user lands there.
           row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
           row.click();
+          const focused = document.activeElement;
+          if (focused && focused !== document.body && inNativeForm(focused)) focused.blur();
         } else {
           input.dispatchEvent(new FocusEvent('blur'));
           view.pickNote.textContent = `Het sjabloon "${wanted}" staat niet in de lijst. Kies zelf een sjabloon.`;
@@ -520,9 +574,7 @@
       view.listTitle.textContent = email
         ? `Facturen per relatie (${list.length - missing.length} van ${list.length} met e-mailadres)`
         : `Facturen per relatie (${list.length})`;
-      view.skipNote.textContent = state.payload.skipped
-        ? `${plural(state.payload.skipped, 'post zonder factuurnummer of relatie staat', 'posten zonder factuurnummer of relatie staan')} er niet bij.`
-        : '';
+      view.skipNote.textContent = skipText(state.payload);
       const focused = document.activeElement?.closest?.('.ebs-rm-relation')?.dataset.index ?? null;
       view.list.replaceChildren(...list.map((group, index) => {
         const card = button('', 'ebs-rm-relation');
@@ -556,6 +608,18 @@
       view.footError.classList.toggle('shown', Boolean(state.error));
       drawPreview();
       drawResult();
+    }
+
+    // "2 posten zonder factuurnummer of relatie staan er niet bij: 2026-0001
+    // (Studio Noord), zonder nummer (Atelier Zuid)."
+    function skipText(payload) {
+      const count = Number.isInteger(payload.skipped) ? payload.skipped : 0;
+      if (!count) return '';
+      const named = (Array.isArray(payload.skippedRows) ? payload.skippedRows : []).slice(0, 5)
+        .map((row) => `${row.factuur || 'zonder nummer'}${row.relation ? ` (${row.relation})` : ''}`);
+      const more = count - named.length;
+      const list = named.length ? `: ${named.join(', ')}${more > 0 ? ` en ${more} meer` : ''}` : '';
+      return `${plural(count, 'post zonder factuurnummer of relatie staat', 'posten zonder factuurnummer of relatie staan')} er niet bij${list}.`;
     }
 
     function drawPreview() {
@@ -785,6 +849,10 @@
         post({ type: 'ready' });
       }
       if (state.payload && templateInput()) pickTemplate();
+      if (state.stage !== state.postedStage) {
+        state.postedStage = state.stage;
+        post({ type: 'stage', stage: state.stage });
+      }
       draw();
     }
 

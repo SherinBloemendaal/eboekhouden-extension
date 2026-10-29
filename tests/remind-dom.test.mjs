@@ -19,10 +19,10 @@ const FORM = `<!doctype html><html><head></head><body>
 <app-open-posten-aanmaning-form><div class="middle-top-container"><app-goback></app-goback></div>
 <app-form><form><div class="form-header"><div class="form-header-left"><h1><span>Selecteer een sjabloon</span></h1></div></div>
 <div class="form-body">
-<div class="form-row"><div class="form-component"><app-form-label>Sjabloon</app-form-label><app-autocomplete><div class="form-control"><div id="sjabloon-Autocomplete"><input class="displayValue" id="sjabloon-AutocompletePickerInput"></div></div></app-autocomplete></div></div>
+<div class="form-row"><div class="form-component"><app-form-label>Sjabloon</app-form-label><app-autocomplete><div class="form-control"><div id="sjabloon-AutocompleteInput"><input class="displayValue skipinitfocus form-input" id="sjabloon-AutocompletePickerInput" autocomplete="off"></div></div><input type="text" readonly tabindex="-1" class="unfocus"></app-autocomplete></div></div>
 <div class="form-row"><div class="form-component"><app-form-label>Facturen als bijlage meesturen</app-form-label><app-checkbox><div class="form-control"><div><input type="checkbox" id="factuurAlsBijlage"><span></span></div></div></app-checkbox></div></div>
 <div class="form-row"><div class="form-component"><app-form-label>Kopie sturen naar</app-form-label><app-text-input><div><input id="kopieSturenNaar"></div></app-text-input></div></div>
-</div><div><div></div><div><div><button id="verder"><span>Verder</span><span></span></button></div></div></div></form></app-form>
+</div><div class="form-footer"><div class="hr"></div><div class="form-buttons"><div class="form-submit"><button type="submit" class="button form-submit" id="verder"><span apptranslate>Verder</span><span></span></button></div></div></div></form></app-form>
 </app-open-posten-aanmaning-form></app-root></body></html>`;
 
 const PAYLOAD = {
@@ -41,21 +41,28 @@ function actLikeAngular(window) {
   const { document } = window;
   const input = document.getElementById('sjabloon-AutocompletePickerInput');
   input.value = TEMPLATES[0];
-  const log = { verder: 0 };
+  const log = { verder: 0, submitted: 0 };
   input.addEventListener('mousedown', () => {
     const picker = document.createElement('div');
     picker.className = 'selector';
     picker.id = 'sjabloon-AutocompletePicker';
-    picker.innerHTML = `<div class="scroll-container"><div class="container">${TEMPLATES.map((name, i) => `<div class="row v1" id="sjabloon-AutocompletePickerRow-${i}"><div class="col">${name}</div></div>`).join('')}</div></div>`;
+    picker.innerHTML = `<div class="scroll-container"><table class="container"><tbody>${TEMPLATES.map((name, i) => `<tr class="row v1" id="sjabloon-AutocompletePickerRow-${i}"><td class="col"> ${name} </td></tr>`).join('')}</tbody></table></div>`;
     picker.addEventListener('click', (event) => {
       const row = event.target.closest('.row');
       if (!row) return;
+      // onItemClick: select, hide, and removeFocus() parks the focus on the
+      // readonly field inside the form.
       input.value = row.textContent.trim();
       picker.remove();
+      input.closest('app-autocomplete').querySelector('input.unfocus').focus();
     });
     input.closest('app-autocomplete').append(picker);
   });
-  document.querySelector('form').addEventListener('submit', (event) => event.preventDefault());
+  // Angular's (submit) on the <form>: submitForm() POSTs and sends the e-mails.
+  document.querySelector('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    log.submitted += 1;
+  });
   document.getElementById('verder').addEventListener('click', () => {
     log.verder += 1;
     document.getElementById('verder').disabled = true;
@@ -120,6 +127,61 @@ test('in our frame the page becomes the dialog: shell hidden, relations listed, 
   // One bulk request for e-Boekhouden's list of templates; no item without a click.
   assert.deepEqual(p.calls.map((url) => new URL(url).pathname), ['/v1/api/aanmaansjabloon/soort/E']);
   assert.equal(p.log.verder, 0, 'Verder is never clicked by the extension');
+  assert.equal(p.log.submitted, 0, 'and the form is never submitted');
+  assert.ok(!document.activeElement?.closest('form'), 'no focus left inside the form after the pick');
+  p.close();
+});
+
+test('only a real click of the user on Verder can submit: no script click, requestSubmit or Enter in a field', async () => {
+  const p = await framePage();
+  const { document, window } = p;
+  p.tell({ type: 'payload', payload: PAYLOAD });
+  await p.settle(4);
+  assert.equal(p.log.submitted, 0);
+  const form = document.querySelector('app-open-posten-aanmaning-form form');
+  const verder = document.getElementById('verder');
+
+  // A click() of a script (jsdom's clicks are never trusted) still clicks
+  // the button, but its submit does not reach e-Boekhouden.
+  verder.click();
+  assert.equal(p.log.verder, 1);
+  assert.equal(p.log.submitted, 0, 'a script click on Verder sends nothing');
+  verder.disabled = false;
+  form.requestSubmit();
+  form.requestSubmit(verder);
+  form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(p.log.submitted, 0, 'requestSubmit and a made-up submit send nothing');
+
+  // Enter in a field would submit the form (implicit submission): blocked.
+  for (const field of [document.getElementById('kopieSturenNaar'), document.getElementById('factuurAlsBijlage'), document.querySelector('input.unfocus')]) {
+    const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    field.dispatchEvent(enter);
+    assert.equal(enter.defaultPrevented, true, `Enter in ${field.id || field.className} does not submit`);
+  }
+  // The template field keeps its own Enter (it picks the highlighted template).
+  const pick = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  document.getElementById('sjabloon-AutocompletePickerInput').dispatchEvent(pick);
+  assert.equal(pick.defaultPrevented, false);
+  // Enter or Space on Verder itself is the user's click on it: not blocked here.
+  const onButton = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  verder.dispatchEvent(onButton);
+  assert.equal(onButton.defaultPrevented, false);
+  // Outside e-Boekhouden's form nothing is touched.
+  const ours = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  document.querySelector('.ebs-rm-cancel').dispatchEvent(ours);
+  assert.equal(ours.defaultPrevented, false);
+  p.close();
+});
+
+test('the posts the form cannot take are named before sending', async () => {
+  const p = await framePage();
+  const { document } = p;
+  p.tell({ type: 'payload', payload: { ...PAYLOAD, skipped: 7, skippedRows: [
+    { factuur: '', relation: 'Atelier Zuid' }, { factuur: '2026-0001', relation: '' }, { factuur: 'A', relation: 'B' },
+    { factuur: 'C', relation: 'D' }, { factuur: 'E', relation: 'F' }, { factuur: 'G', relation: 'H' },
+  ] } });
+  await p.settle(4);
+  assert.equal(text(document.querySelector('.ebs-rm-skip')), '7 posten zonder factuurnummer of relatie staan er niet bij: zonder nummer (Atelier Zuid), 2026-0001, A (B), C (D), E (F) en 2 meer.');
   p.close();
 });
 
@@ -167,7 +229,9 @@ test('sending is e-Boekhouden\'s Verder: busy until its answer, then its own wor
   const result = document.querySelector('.ebs-rm-result');
   assert.ok(!result.classList.contains('shown'));
 
-  // The user clicks Verder; e-Boekhouden disables it while it sends.
+  // The user clicks Verder; e-Boekhouden disables it while it sends. (A
+  // jsdom click is not trusted, so the guard keeps its submit from the form:
+  // the send itself is in the headless run; this is what the view does.)
   document.getElementById('verder').click();
   await p.settle(2);
   assert.ok(result.classList.contains('shown'));
@@ -191,6 +255,7 @@ test('sending is e-Boekhouden\'s Verder: busy until its answer, then its own wor
   back.click();
   assert.deepEqual(p.sent.at(-1).message, { ebs: 'ebs-remind', type: 'close', reason: 'sent' });
   assert.equal(p.log.verder, 1, 'only the user\'s own click');
+  assert.deepEqual(p.sent.filter((one) => one.message.type === 'stage').map((one) => one.message.stage), ['sending', 'done'], 'the parent hears of the send, to reload the list after it');
   p.close();
 });
 
