@@ -15,11 +15,14 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 // ---------------------------------------------------------------------------
 // Storage
 //
-// local:   slots          [{ id, name, number, expired }]   (no secrets)
-//          avatar:<id>    data URL, 128 px                  (no secrets)
+// local:   slots          [{ id, name, number, username, expired }]   (identifiers only)
+//          avatar:<id>    data URL, 128 px
 //          view           { activeSlotId, loggedIn, ready: [id] }, mirrored for pages
+//          settings       feature switches, see SETTINGS_DEFAULTS
+//          import:<number> { hidden, groups, groupOf } for the import screen
 // session: cookies:<id>   [chrome.cookies.Cookie]           (the session itself)
 //          activeSlotId, loggedIn, pendingCheck
+//          pendingUsername, pendingLoginFor  (the login in progress)
 //          tab:<tabId>    { mainFrameId, returnUrl, relogin, innerUrl, innerFor, restoreInner }
 // ---------------------------------------------------------------------------
 
@@ -82,8 +85,25 @@ async function publishView() {
   await chrome.storage.local.set({ view: { activeSlotId, loggedIn, ready } });
 }
 
+const SETTINGS_DEFAULTS = {
+  betterDesign: false,
+  onePassword: true,
+  switcher: true,
+  relogin: true,
+  shiftSelect: true,
+  actionBar: true,
+};
+
+async function ensureSettings() {
+  const { settings = {} } = await chrome.storage.local.get('settings');
+  await chrome.storage.local.set({ settings: { ...SETTINGS_DEFAULTS, ...settings } });
+}
+
 chrome.runtime.onStartup.addListener(() => { publishView(); });
-chrome.runtime.onInstalled.addListener(() => { publishView(); });
+chrome.runtime.onInstalled.addListener(() => {
+  ensureSettings();
+  publishView();
+});
 
 // ---------------------------------------------------------------------------
 // Cookies
@@ -167,26 +187,82 @@ async function onTopTitle(title) {
     return;
   }
 
+  // Matching, part one: the title only gives the name, plus the username typed
+  // at login. The administration number follows from the header (part two,
+  // onHeaderIdentity), which merges the entry with the same number if needed.
+  const { pendingUsername } = await chrome.storage.session.get('pendingUsername');
   const slots = await getSlots();
-  let slot = slots.find((candidate) => candidate.name === name);
+  const sameName = slots.filter((candidate) => candidate.name === name);
+  let slot = sameName.find((candidate) => pendingUsername && candidate.username === pendingUsername)
+    ?? sameName.find((candidate) => !pendingUsername || !candidate.username)
+    ?? null;
   if (!slot) {
-    slot = { id: crypto.randomUUID(), name, number: null, expired: false };
+    slot = { id: crypto.randomUUID(), name, number: null, username: null, expired: false };
     slots.push(slot);
   }
+  if (pendingUsername) slot.username = pendingUsername;
   slot.expired = false;
   await setSlots(slots);
-  await chrome.storage.session.set({ activeSlotId: slot.id, loggedIn: true, pendingCheck: null });
+  await chrome.storage.session.set({ activeSlotId: slot.id, loggedIn: true, pendingCheck: null, pendingLoginFor: null });
+  await chrome.storage.session.remove('pendingUsername');
   await snapshotActiveSlot();
   await publishView();
 }
 
-// The header shows the administration number; keep it for the dropdown.
+// The username typed at login, read from the username field when the form is
+// sent. Only a key for matching; the password field is never read.
+async function onLoginUsername(username) {
+  const clean = String(username ?? '').trim().slice(0, 100);
+  if (clean) await chrome.storage.session.set({ pendingUsername: clean });
+  else await chrome.storage.session.remove('pendingUsername');
+}
+
+// Move the active session onto an existing entry (same administration number):
+// that entry keeps its picture, the duplicate goes.
+async function mergeInto(targetId, sourceId) {
+  const slots = await getSlots();
+  const target = slots.find((candidate) => candidate.id === targetId);
+  const source = slots.find((candidate) => candidate.id === sourceId);
+  if (!target || !source) return;
+  target.name = source.name;
+  target.username = source.username ?? target.username ?? null;
+  target.number = source.number ?? target.number;
+  target.expired = false;
+  await setSlots(slots.filter((candidate) => candidate.id !== sourceId));
+
+  const keys = [`cookies:${sourceId}`];
+  const { [`cookies:${sourceId}`]: cookies } = await chrome.storage.session.get(keys);
+  if (cookies) await chrome.storage.session.set({ [`cookies:${targetId}`]: cookies });
+  await chrome.storage.session.remove(`cookies:${sourceId}`);
+
+  const avatars = await chrome.storage.local.get([`avatar:${targetId}`, `avatar:${sourceId}`]);
+  if (!avatars[`avatar:${targetId}`] && avatars[`avatar:${sourceId}`]) {
+    await chrome.storage.local.set({ [`avatar:${targetId}`]: avatars[`avatar:${sourceId}`] });
+  }
+  await chrome.storage.local.remove(`avatar:${sourceId}`);
+  await chrome.storage.session.set({ activeSlotId: targetId });
+}
+
+// The header shows the administration number. Keep it for the dropdown, and
+// use it for matching part two: username plus number, then number alone.
 async function onHeaderIdentity({ name, number }) {
   const { activeSlotId, loggedIn } = await getSessionState();
   if (!activeSlotId || !loggedIn || !/^\d{1,12}$/.test(String(number ?? ''))) return;
   const slots = await getSlots();
   const slot = slots.find((candidate) => candidate.id === activeSlotId);
-  if (!slot || (name && slot.name !== name.trim()) || slot.number === String(number)) return;
+  if (!slot || (name && slot.name !== name.trim())) return;
+
+  const others = slots.filter((candidate) => candidate.id !== slot.id && candidate.number === String(number));
+  const match = others.find((candidate) => slot.username && candidate.username === slot.username)
+    ?? others.find((candidate) => !slot.username || !candidate.username);
+  if (match) {
+    slot.number = String(number);
+    await setSlots(slots);
+    await mergeInto(match.id, slot.id);
+    await publishView();
+    return;
+  }
+  if (slot.number === String(number)) return;
   slot.number = String(number);
   await setSlots(slots);
 }
@@ -229,6 +305,11 @@ function ebUrl(origin, loggedIn) {
 
 async function reloadEbTabs(originHint, loggedIn) {
   const tabs = await ebTabs();
+  // From the popup with no e-Boekhouden tab open: open one.
+  if (!tabs.length) {
+    await chrome.tabs.create({ url: ebUrl(originHint, loggedIn) });
+    return;
+  }
   await Promise.all(tabs.map((tab) => {
     const origin = tab.url ? new URL(tab.url).origin : originHint;
     const aspOrigin = /^https:\/\/secure\d*\.e-boekhouden\.nl$/.test(origin) && !origin.includes('secure20') ? origin : originHint;
@@ -254,8 +335,14 @@ async function switchTo(slotId, originHint, confirmed) {
   if (cookies?.length) await restoreCookies(cookies);
 
   // loggedIn is confirmed again by the title of the reloaded page; until then
-  // a login screen means the restored session had expired.
-  await chrome.storage.session.set({ activeSlotId: slotId, loggedIn: false, pendingCheck: cookies?.length ? slotId : null });
+  // a login screen means the restored session had expired. Without a stored
+  // session the login page says which administration to log in for.
+  await chrome.storage.session.set({
+    activeSlotId: slotId,
+    loggedIn: false,
+    pendingCheck: cookies?.length ? slotId : null,
+    pendingLoginFor: cookies?.length ? null : slotId,
+  });
   await clearAllTabStates();
   await publishView();
   await reloadEbTabs(originHint, Boolean(cookies?.length));
@@ -268,7 +355,7 @@ async function addSession(originHint, confirmed) {
 
   await snapshotActiveSlot();
   await removeAllCookies();
-  await chrome.storage.session.set({ activeSlotId: null, loggedIn: false, pendingCheck: null });
+  await chrome.storage.session.set({ activeSlotId: null, loggedIn: false, pendingCheck: null, pendingLoginFor: null });
   await clearAllTabStates();
   await publishView();
   await reloadEbTabs(originHint, false);
@@ -454,16 +541,32 @@ async function onLoginDone(tabId, topUrl) {
 // Messages from content scripts
 // ---------------------------------------------------------------------------
 
+const DEFAULT_ORIGIN = 'https://secure.e-boekhouden.nl';
+
+// Messages that the extension popup may send too (it has no sender.tab).
+const POPUP_TYPES = new Set(['switcher:switch', 'switcher:add', 'switcher:remove', 'avatar:set', 'avatar:remove']);
+
 const handlers = {
   'top:title': (message) => onTopTitle(message.title),
+  'login:username': (message) => onLoginUsername(message.username),
+  'login:for': async (message) => {
+    const slots = await getSlots();
+    const slotId = slots.some((slot) => slot.id === message.slotId) ? message.slotId : null;
+    await chrome.storage.session.set({ pendingLoginFor: slotId });
+    return {};
+  },
+  'login:context': async () => {
+    const { pendingLoginFor = null } = await chrome.storage.session.get('pendingLoginFor');
+    return { pendingLoginFor };
+  },
   'header:identity': (message) => onHeaderIdentity(message),
   'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url),
   'login:host': (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}),
   'login:done': (message, sender) => onLoginDone(sender.tab.id, sender.tab.url),
   'inner:page': (message, sender) => onInnerPage(sender.tab.id, message),
   'relogin:cancel': (message, sender) => cancelRelogin(sender.tab.id),
-  'switcher:switch': (message) => switchTo(message.slotId, message.origin, message.confirmed),
-  'switcher:add': (message) => addSession(message.origin, message.confirmed),
+  'switcher:switch': (message) => switchTo(message.slotId, message.origin ?? DEFAULT_ORIGIN, message.confirmed),
+  'switcher:add': (message) => addSession(message.origin ?? DEFAULT_ORIGIN, message.confirmed),
   'switcher:remove': (message) => removeSlot(message.slotId),
   'avatar:set': (message) => setAvatar(message.slotId, message.dataUrl),
   'avatar:remove': (message) => chrome.storage.local.remove(`avatar:${message.slotId}`),
@@ -471,7 +574,8 @@ const handlers = {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = handlers[message?.type];
-  if (!handler || !sender.tab) return false;
+  const fromPopup = !sender.tab && sender.id === chrome.runtime.id && POPUP_TYPES.has(message?.type);
+  if (!handler || (!sender.tab && !fromPopup)) return false;
   Promise.resolve(handler(message, sender))
     .then((result) => sendResponse(result ?? {}))
     .catch((error) => {

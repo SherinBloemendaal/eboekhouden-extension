@@ -1,0 +1,52 @@
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { width: 380px; margin: 0; font: 13px/1.35 Ubuntu, system-ui, -apple-system, sans-serif; color: #232c4f; background: #fff; }
+button { font: inherit; cursor: pointer; }
+.top { display: flex; align-items: center; gap: 10px; padding: 14px 16px; background: #232c4f; color: #fff; }
+.brand { flex: 1; font-size: 15px; font-weight: 700; }
+.count { font-size: 11px; color: #c4cae0; }
+.section { margin: 0; padding: 12px 16px 6px; font-size: 11px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: #5d6584; }
+.settings-title { margin-top: 10px; border-top: 1px solid #e6e9f1; }
+.list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; }
+.row.active { background: #eef1f8; }
+.avatar { width: 34px; height: 34px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; object-fit: cover; }
+.avatar.ready { background: #dfe4f1; }
+.avatar.active { background: #232c4f; color: #fff; }
+.avatar.expired { background: #fbe9e9; color: #b42318; }
+.avatar.login { border: 1.5px dashed #9aa3bf; color: #5d6584; }
+.text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.name { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sub { font-size: 11px; color: #5d6584; }
+.sub.expired { color: #b42318; font-weight: 500; }
+.state-active { font-size: 12px; font-weight: 500; color: #3f7f22; }
+.btn { height: 30px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 7px; background: #fff; color: #232c4f; font-size: 12px; font-weight: 500; }
+.btn.primary { border: 0; background: #232c4f; color: #fff; }
+.btn:focus-visible, .icon-btn:focus-visible, .add:focus-visible, .switch:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
+.icon-btn { width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: #5d6584; display: flex; align-items: center; justify-content: center; }
+.icon-btn:hover { background: #e6e9f1; color: #232c4f; }
+.add { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 2px 8px 0; padding: 8px; border: 0; border-radius: 8px; background: #fff; text-align: left; font-size: 14px; font-weight: 500; color: #232c4f; }
+.add:hover { background: #f5f6fa; }
+.add-icon { width: 34px; height: 34px; border-radius: 50%; background: #f1f7ec; color: #3f7f22; display: flex; align-items: center; justify-content: center; }
+.empty { margin: 4px 8px 8px; color: #5d6584; }
+.confirm { margin: 6px 8px; padding: 10px 12px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
+.confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.settings { display: flex; flex-direction: column; padding: 0 16px; }
+.setting { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid #f0f2f7; }
+.setting-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.setting-title { font-size: 13px; font-weight: 500; }
+.setting-hint { font-size: 11px; color: #5d6584; }
+.switch { width: 40px; height: 24px; flex: none; border: 0; border-radius: 12px; padding: 2px; background: #cfd4e2; display: flex; }
+.switch[aria-checked="true"] { background: #5d9e35; }
+.knob { width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); }
+.switch[aria-checked="true"] .knob { transform: translateX(16px); }
+body.better .knob { transition: transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+@media (prefers-reduced-motion: reduce) { body.better .knob { transition: none; } }
+.note { margin-top: 10px; padding: 10px 16px; background: #f6f7fb; font-size: 11px; line-height: 16px; color: #5d6584; }
+#picker { padding: 16px; }
+.picker-title { margin: 0 0 8px; font-size: 16px; }
+.picker-text { margin: 0 0 14px; color: #5d6584; }
+.picker-button { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 8px; background: #232c4f; color: #fff; font-weight: 500; cursor: pointer; }
+.picker-button:focus-within { outline: 2px solid #5d9e35; outline-offset: 2px; }
+.picker-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.picker-status { min-height: 18px; color: #5d6584; }

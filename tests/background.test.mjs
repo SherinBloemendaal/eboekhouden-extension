@@ -234,3 +234,60 @@ test('entries saved by the first version (name kept as title) still match', asyn
   assert.equal(list[0].id, 'old');
   assert.equal(list[0].name, 'Voorbeeld B.V.');
 });
+
+const popup = { id: 'ebs-test' };
+
+test('the username typed at login is kept with the entry, never anything else', async () => {
+  await fake.dispatch({ type: 'login:username', username: '  sherin@example.test ' }, inner);
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  assert.equal(slot.username, 'sherin@example.test');
+  assert.equal(fake.storage.session.dump().pendingUsername, undefined, 'used once');
+});
+
+test('re-match: same username and administration number lands on the old entry, picture and all', async () => {
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, inner);
+  const old = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, main);
+  await fake.dispatch({ type: 'avatar:set', slotId: old.id, dataUrl: 'data:image/webp;base64,UklGRhIAAABXRUJQ' }, main);
+
+  // The administration was renamed in e-Boekhouden; same user, same number.
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, inner);
+  await loginAs('Voorbeeld Holding B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a2')]);
+  assert.equal((await slots()).length, 2, 'a new name first makes a new entry');
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld Holding B.V.', number: '1000001' }, main);
+
+  const list = await slots();
+  assert.equal(list.length, 1, 'merged on the number');
+  assert.equal(list[0].id, old.id);
+  assert.equal(list[0].name, 'Voorbeeld Holding B.V.');
+  assert.equal((await view()).activeSlotId, old.id);
+  assert.ok((await chrome.storage.local.get(`avatar:${old.id}`))[`avatar:${old.id}`], 'picture kept');
+  assert.equal(fake.storage.session.dump()[`cookies:${old.id}`][0].value, 'demo-a2', 'the new session moved over');
+});
+
+test('re-match: one username with two administrations keeps them apart by number', async () => {
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, inner);
+  await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, main);
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, inner);
+  await loginAs('Studio Noord', [cookie('ASPSESSIONIDBBB', 'demo-b')]);
+  await fake.dispatch({ type: 'header:identity', name: 'Studio Noord', number: '1000002' }, main);
+  assert.deepEqual((await slots()).map((slot) => [slot.name, slot.number]), [['Voorbeeld B.V.', '1000001'], ['Studio Noord', '1000002']]);
+});
+
+test('logging in for a logged-out entry from the popup opens the login page with that name', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'x', name: 'Studio Noord', number: '1000002', expired: false }] });
+  fake.tabs = [];
+  await fake.dispatch({ type: 'switcher:switch', slotId: 'x' }, popup);
+  assert.equal(fake.created.at(-1).url, `${ORIGIN}/bh/`, 'no e-Boekhouden tab open: one is opened');
+  assert.equal(fake.storage.session.dump().pendingLoginFor, 'x');
+  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: 'x' });
+});
+
+test('the popup may only send its own actions', async () => {
+  const answer = await Promise.race([
+    fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/x', kind: 'app' }, popup),
+    new Promise((resolve) => setTimeout(() => resolve('ignored'), 50)),
+  ]);
+  assert.equal(answer, 'ignored');
+});

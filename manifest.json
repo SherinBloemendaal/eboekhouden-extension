@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "EB Sessions",
   "short_name": "EB Sessions",
-  "version": "0.1.0",
-  "description": "Unofficial helper for e-Boekhouden.nl: working 1Password autofill, a session switcher and an in-page re-login dialog.",
+  "version": "0.2.0",
+  "description": "Unofficial helper for e-Boekhouden.nl: 1Password on the login page, a session switcher, an in-page re-login dialog, faster importing and an optional redesign.",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon-16.png",
@@ -31,12 +31,23 @@
         "https://secure*.e-boekhouden.nl/*"
       ],
       "js": [
+        "src/shared.js",
         "src/login-breakout.js",
         "src/password-fields.js",
-        "src/content.js"
+        "src/content.js",
+        "src/login-page.js",
+        "src/import.js"
       ],
       "run_at": "document_start",
       "all_frames": true
     }
-  ]
+  ],
+  "action": {
+    "default_title": "EB Sessions",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  }
 }

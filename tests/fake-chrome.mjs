@@ -30,6 +30,7 @@ export function createFakeChrome() {
     jar: [],
     tabs: [],
     updates: [],
+    created: [],
     sent: [],
     storage: { local: area(), session: area() },
     cookies: {
@@ -67,12 +68,17 @@ export function createFakeChrome() {
       async update(tabId, props) {
         fake.updates.push({ tabId, ...props });
       },
+      async create(props) {
+        fake.created.push(props);
+        return { id: 99, ...props };
+      },
       async sendMessage(tabId, message, options) {
         fake.sent.push({ tabId, message, options });
       },
       onRemoved: { addListener: (listener) => listeners.tabRemoved.push(listener) },
     },
     runtime: {
+      id: 'ebs-test',
       onMessage: { addListener: (listener) => listeners.message.push(listener) },
       onStartup: { addListener: () => {} },
       onInstalled: { addListener: () => {} },
@@ -86,6 +92,7 @@ export function createFakeChrome() {
       fake.jar = [];
       fake.tabs = [];
       fake.updates = [];
+      fake.created = [];
       fake.sent = [];
       fake.storage.local.reset();
       fake.storage.session.reset();
