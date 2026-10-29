@@ -425,8 +425,10 @@
 
       const panel = el('div', 'ebs-panel');
       this.tabs = el('div', 'ebs-tabs');
-      this.tabs.setAttribute('role', 'tablist');
-      this.tabs.setAttribute('aria-label', 'Groepen');
+      this.tabList = el('span', 'ebs-tab-list');
+      this.tabList.setAttribute('role', 'tablist');
+      this.tabList.setAttribute('aria-label', 'Groepen');
+      this.tabs.append(this.tabList, this.buildGroupEditor());
 
       const filters = el('div', 'ebs-filters');
       const search = el('label', 'ebs-search');
@@ -499,40 +501,38 @@
         this.card('Oudste regel', summary.oldest ? `${summary.oldest.day} ${EBS.monthLabel(summary.oldest.key)}` : 'Geen', summary.oldest ? `${Math.max(0, Math.floor((Date.now() - summary.oldest.time) / 86400000))} dagen niet verwerkt` : ''),
       );
 
-      // Group tabs.
+      // Group tabs. Rebuilt only when they change: draw() also runs on every
+      // native grid update, and a rebuild would take focus from the tabs.
       const counts = EBS.groupCounts(this.prefs.groupOf, this.prefs.groups);
-      this.tabs.replaceChildren();
-      const tab = (label, name) => {
-        const button = el('button', `ebs-tab${this.ui.group === name ? ' on' : ''}`, label);
-        button.type = 'button';
-        button.setAttribute('role', 'tab');
-        button.setAttribute('aria-selected', String(this.ui.group === name));
-        button.addEventListener('click', () => {
-          this.ui.group = name;
-          this.draw();
-        });
-        this.tabs.append(button);
-      };
-      tab('Alle regels', null);
-      for (const name of this.prefs.groups) tab(`${name} · ${counts[name] ?? 0}`, name);
-      if (this.ui.group) {
-        const remove = el('button', 'ebs-tab-remove', `Groep "${this.ui.group}" verwijderen`);
-        remove.type = 'button';
-        remove.addEventListener('click', () => this.removeGroup(this.ui.group));
-        this.tabs.append(remove);
+      const tabsKey = JSON.stringify([this.prefs.groups, counts, this.ui.group, this.editor.mode]);
+      if (this.tabList.dataset.key !== tabsKey) {
+        this.tabList.dataset.key = tabsKey;
+        this.tabList.replaceChildren();
+        const tab = (label, name) => {
+          const button = el('button', `ebs-tab${this.ui.group === name ? ' on' : ''}`, label);
+          button.type = 'button';
+          button.setAttribute('role', 'tab');
+          button.setAttribute('aria-selected', String(this.ui.group === name));
+          button.addEventListener('click', () => {
+            this.ui.group = name;
+            this.draw();
+          });
+          this.tabList.append(button);
+        };
+        tab('Alle regels', null);
+        for (const name of this.prefs.groups) tab(`${name} · ${counts[name] ?? 0}`, name);
+        if (this.ui.group && !this.editor.mode) {
+          const rename = el('button', 'ebs-tab-action', 'Naam wijzigen');
+          rename.type = 'button';
+          rename.addEventListener('click', () => this.openEditor('rename'));
+          const remove = el('button', 'ebs-tab-action', `Groep "${this.ui.group}" verwijderen`);
+          remove.type = 'button';
+          remove.addEventListener('click', () => this.removeGroup(this.ui.group));
+          this.tabList.append(rename, remove);
+        }
       }
-      const add = el('form', 'ebs-tab-new');
-      const input = el('input');
-      input.placeholder = '+ Nieuwe groep';
-      input.setAttribute('aria-label', 'Nieuwe groep');
-      input.maxLength = 40;
-      add.append(input);
-      add.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const name = input.value.trim();
-        if (name) this.addGroup(name);
-      });
-      this.tabs.append(add);
+      this.editor.start.hidden = Boolean(this.editor.mode);
+      this.editor.form.hidden = !this.editor.mode;
 
       // Filters.
       this.directionChips.replaceChildren();
@@ -698,6 +698,95 @@
       this.prefs.hidden = this.prefs.hidden.filter((item) => item !== signature);
       this.savePrefs();
       this.draw();
+    },
+
+    // "+ Nieuwe groep" and "Naam wijzigen": one field that stays in the page
+    // while it is open, so typing in it survives every redraw.
+    buildGroupEditor() {
+      const wrap = el('span', 'ebs-tab-new');
+      const start = el('button', 'ebs-tab-add', '+ Nieuwe groep');
+      start.type = 'button';
+      start.addEventListener('click', () => this.openEditor('new'));
+      const form = el('form', 'ebs-tab-form');
+      const input = el('input');
+      input.maxLength = 40;
+      const save = el('button', 'ebs-tab-save', 'Opslaan');
+      save.type = 'submit';
+      const cancel = el('button', 'ebs-tab-cancel', 'Annuleren');
+      cancel.type = 'button';
+      const error = el('span', 'ebs-tab-error');
+      error.setAttribute('role', 'alert');
+      form.append(input, save, cancel, error);
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        this.submitEditor();
+      });
+      cancel.addEventListener('click', () => this.closeEditor());
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          this.closeEditor();
+        }
+      });
+      input.addEventListener('input', () => { error.textContent = ''; });
+      wrap.append(start, form);
+      this.editor = { mode: null, start, form, input, error };
+      return wrap;
+    },
+
+    openEditor(mode) {
+      const { input, error } = this.editor;
+      this.editor.mode = mode;
+      error.textContent = '';
+      input.value = mode === 'rename' ? this.ui.group ?? '' : '';
+      input.placeholder = mode === 'rename' ? 'Nieuwe naam' : 'Naam van de groep';
+      input.setAttribute('aria-label', mode === 'rename' ? `Nieuwe naam voor groep ${this.ui.group}` : 'Naam van de nieuwe groep');
+      this.draw();
+      input.focus();
+      input.select();
+    },
+
+    closeEditor() {
+      const wasOpen = Boolean(this.editor.mode);
+      this.editor.mode = null;
+      this.draw();
+      if (wasOpen) this.editor.start.focus();
+    },
+
+    submitEditor() {
+      const { input, error } = this.editor;
+      const name = input.value.trim();
+      if (!name) {
+        error.textContent = 'Vul een naam in.';
+        input.focus();
+        return;
+      }
+      if (this.editor.mode === 'rename') {
+        if (name === this.ui.group) {
+          this.closeEditor();
+          return;
+        }
+        const next = EBS.renameGroup(this.prefs.groups, this.prefs.groupOf, this.ui.group, name);
+        if (!next.renamed) {
+          error.textContent = 'Die naam bestaat al.';
+          input.focus();
+          return;
+        }
+        this.prefs.groups = next.groups;
+        this.prefs.groupOf = next.groupOf;
+        this.ui.group = name;
+        this.savePrefs();
+      } else {
+        if (this.prefs.groups.includes(name)) {
+          error.textContent = 'Die naam bestaat al.';
+          input.focus();
+          return;
+        }
+        this.prefs.groups = [...this.prefs.groups, name];
+        this.ui.group = name;
+        this.savePrefs();
+      }
+      this.closeEditor();
     },
 
     addGroup(name) {
@@ -957,8 +1046,20 @@
     .ebs-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid #e6e9f1; }
     .ebs-tab { height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
     .ebs-tab.on { border-bottom-color: #232c4f; color: #232c4f; font-weight: 700; }
-    .ebs-tab-remove { height: 30px; margin-left: 4px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #8c93ab; font-size: 12px; cursor: pointer; }
-    .ebs-tab-new input { height: 30px; width: 150px; padding: 0 10px; border: 1px dashed #c5cbdc; border-radius: 6px; font: 13px Ubuntu, system-ui, sans-serif; }
+    .ebs-tab-list { display: contents; }
+    .ebs-tab-action { height: 30px; margin-left: 4px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #8c93ab; font-size: 12px; cursor: pointer; }
+    .ebs-tab-action:hover, .ebs-tab-action:focus-visible { color: #232c4f; background: #f3f5fa; }
+    .ebs-tab-new { display: inline-flex; align-items: center; }
+    .ebs-tab-add { height: 36px; padding: 0 12px; border: 0; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
+    .ebs-tab-add:hover, .ebs-tab-add:focus-visible { color: #232c4f; }
+    .ebs-tab-form { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 4px 4px; }
+    .ebs-tab-form[hidden], .ebs-tab-add[hidden] { display: none; }
+    .ebs-tab-form input { height: 30px; width: 170px; padding: 0 10px; border: 1px solid #c5cbdc; border-radius: 6px; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
+    .ebs-tab-form input:focus { outline: 2px solid #596aaf; outline-offset: 0; border-color: #596aaf; }
+    .ebs-tab-save { height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: #232c4f; color: #fff; font-size: 13px; font-weight: 500; cursor: pointer; }
+    .ebs-tab-cancel { height: 30px; padding: 0 8px; border: 0; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
+    .ebs-tab-error { font-size: 12px; color: #b42318; }
+    .ebs-tab-error:empty { display: none; }
     .ebs-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #e6e9f1; }
     .ebs-search { flex: 1 1 260px; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 9px; color: #5d6584; }
     .ebs-search input { flex: 1; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }

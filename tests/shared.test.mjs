@@ -92,3 +92,19 @@ test('settings default to Better design off and every feature on', () => {
   assert.deepEqual(EBS.settingsWithDefaults(), { betterDesign: false, onePassword: true, switcher: true, relogin: true, shiftSelect: true, actionBar: true });
   assert.equal(EBS.settingsWithDefaults({ betterDesign: true }).betterDesign, true);
 });
+
+test('renaming a group keeps its place and its lines, and refuses empty or taken names', () => {
+  const groups = ['Klanten', 'Bankkosten'];
+  const groupOf = { a: 'Bankkosten', b: 'Klanten', c: 'Bankkosten' };
+  const next = EBS.renameGroup(groups, groupOf, 'Bankkosten', '  Kosten bank ');
+  assert.equal(next.renamed, true);
+  assert.deepEqual(next.groups, ['Klanten', 'Kosten bank']);
+  assert.deepEqual(next.groupOf, { a: 'Kosten bank', b: 'Klanten', c: 'Kosten bank' });
+  for (const to of ['', '   ', 'Klanten', 'Bankkosten']) {
+    const same = EBS.renameGroup(groups, groupOf, 'Bankkosten', to);
+    assert.equal(same.renamed, false);
+    assert.equal(same.groups, groups);
+    assert.equal(same.groupOf, groupOf);
+  }
+  assert.equal(EBS.renameGroup(groups, groupOf, 'Onbekend', 'X').renamed, false);
+});

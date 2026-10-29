@@ -145,6 +145,18 @@
     return next;
   }
 
+  // Rename a group in place: same position in the tabs, same lines. A name
+  // that is empty or already taken leaves everything as it is.
+  function renameGroup(groups, groupOf, from, to) {
+    const name = String(to ?? '').trim();
+    if (!name || name === from || !groups.includes(from) || groups.includes(name)) return { groups, groupOf, renamed: false };
+    return {
+      groups: groups.map((group) => (group === from ? name : group)),
+      groupOf: Object.fromEntries(Object.entries(groupOf).map(([signature, group]) => [signature, group === from ? name : group])),
+      renamed: true,
+    };
+  }
+
   function groupCounts(groupOf, groups) {
     const counts = Object.fromEntries(groups.map((name) => [name, 0]));
     for (const name of Object.values(groupOf)) {
@@ -196,6 +208,6 @@
     toAvatar, counterparty,
     SETTINGS_DEFAULTS, settingsWithDefaults, statusOf, initials,
     parseAmount, formatMoney, parseDate, monthLabel,
-    rangeToggles, rowSignature, filterRows, summarize, periodsOf, assignGroup, groupCounts,
+    rangeToggles, rowSignature, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,
   });
 })();
