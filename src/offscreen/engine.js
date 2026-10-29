@@ -74,7 +74,7 @@ export function createEngine({ sdk, fetch = (...args) => globalThis.fetch(...arg
 
   function clean(request, answer) {
     if (request.format !== 'html') return answer;
-    const sanitize = (content) => sanitizeHtml(content, { DOMParser, original: request.content });
+    const sanitize = (content) => sanitizeHtml(content, { DOMParser, original: request.content, instruction: request.instruction });
     if (answer.content !== undefined) return { ...answer, content: sanitize(answer.content) };
     if (answer.steps) return { ...answer, steps: answer.steps.map((step) => ({ ...step, content: sanitize(step.content) })) };
     return answer;
