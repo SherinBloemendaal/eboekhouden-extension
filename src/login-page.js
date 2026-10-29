@@ -117,6 +117,19 @@
       send({ type: 'login:username', username: user.value });
     };
     form.addEventListener('submit', sendUsername, true);
+    // The Inloggen button waits visibly once the form is really on its way,
+    // so it cannot be pressed twice. e-Boekhouden's own script only blocks it
+    // for 2 seconds. Set after this tick: a disabled submit button would drop
+    // its own name and value from the form that is being sent.
+    form.addEventListener('submit', (event) => {
+      if (event.defaultPrevented) return;
+      const button = form.querySelector('input[type="submit"], button[type="submit"]');
+      if (!button) return;
+      setTimeout(() => setLoginBusy(button, true), 0);
+      // A page that stays (an error shown by script, a lost connection) gets
+      // the button back.
+      setTimeout(() => setLoginBusy(button, false), 20000);
+    });
     form.querySelector('input[type="submit"], button[type="submit"]')?.addEventListener('click', sendUsername, true);
     window.addEventListener('pagehide', () => {
       if (user.value) sendUsername();
@@ -161,6 +174,16 @@
       else other.push({ slot, status });
     }
     return { active, other };
+  }
+
+  function setLoginBusy(button, busy) {
+    if (busy && !button.dataset.ebsLabel) button.dataset.ebsLabel = button.value || button.textContent;
+    const label = busy ? 'Bezig met inloggen…' : button.dataset.ebsLabel;
+    if (button.tagName === 'INPUT') button.value = label;
+    else button.textContent = label;
+    button.disabled = busy;
+    button.setAttribute('aria-busy', String(busy));
+    button.classList.toggle('ebs-busy', busy);
   }
 
   // One switch at a time: further clicks wait for the answer.
@@ -547,6 +570,7 @@
     /* The real form, restyled. */
     #ebs-better #frm, #ebs-better #frm table, #ebs-better #frm tbody, #ebs-better #frm tr, #ebs-better #frm td, #ebs-better #frm center { display: block; width: auto !important; height: auto !important; margin: 0; padding: 0 !important; border: 0 !important; background: none !important; text-align: left; }
     #ebs-better #frm hr { display: none; }
+    #frm .ebs-busy { cursor: wait !important; opacity: .75; }
     #ebs-better #formWrapper > tbody > tr:first-child { display: none; }
     #ebs-better #frm tr.TRNORM { margin-bottom: 16px !important; }
     #ebs-better #frm tr.TRNORM > td:first-child, #ebs-better #frm tr.TRNORM > td:first-child font { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #232c4f !important; }
@@ -554,6 +578,7 @@
     #ebs-better #frm input.INPUTBOX:focus { border-color: #232c4f; outline: 3px solid rgba(35, 44, 79, .12); }
     #ebs-better #frm input.act-btn { box-sizing: border-box; width: 100%; height: 48px; margin-top: 4px; border: 0; border-radius: 10px; background: #232c4f; color: #fff; font: 700 15px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
     #ebs-better #frm input.act-btn:active { transform: scale(0.98); }
+    #ebs-better #frm input.act-btn.ebs-busy { background: #4a5272; cursor: wait; transform: none; }
     #ebs-better #frm input.act-btn:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
     #ebs-better .ebs-forgot { align-self: center; display: block !important; font-size: 13px; color: #232c4f; }
     #ebs-better .ebs-lock { display: flex; align-items: center; gap: 8px; padding-top: 16px; border-top: 1px solid #eef0f5; font-size: 12px; color: #5d6584; }

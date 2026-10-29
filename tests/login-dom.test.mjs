@@ -162,3 +162,35 @@ test('the login swap waits for the whole frameset and keeps e-Boekhouden\'s othe
     jwtrefreshframe: 'https://secure.e-boekhouden.nl/bh/refreshjwt.asp?ACTION=INIT&t=1',
   });
 });
+
+test('the Inloggen button waits visibly after a submit, and only after the form has been built', async () => {
+  const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+    url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/', store: { settings: {} },
+  });
+  p.load('shared.js', 'login-page.js');
+  await p.settle();
+  const form = p.document.getElementById('frm');
+  const button = p.document.getElementById('submit1');
+  p.document.getElementById('txtEmail').value = 'demo';
+  const submit = new p.window.Event('submit', { cancelable: true });
+  form.dispatchEvent(submit);
+  assert.equal(button.disabled, false, 'still enabled while the browser builds the form data');
+  assert.equal(button.value, 'Inloggen');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(button.disabled, true);
+  assert.equal(button.value, 'Bezig met inloggen…');
+  assert.equal(button.getAttribute('aria-busy'), 'true');
+});
+
+test('a submit that e-Boekhouden cancels (empty field) leaves the button as it is', async () => {
+  const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+    url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/', store: { settings: {} },
+  });
+  p.load('shared.js', 'login-page.js');
+  await p.settle();
+  const form = p.document.getElementById('frm');
+  form.addEventListener('submit', (event) => event.preventDefault(), { capture: true });
+  form.dispatchEvent(new p.window.Event('submit', { cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(p.document.getElementById('submit1').disabled, false);
+});

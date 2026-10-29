@@ -593,12 +593,15 @@
     async act(type, extra) {
       if (this.busy) return;
       this.busy = true;
+      this.pendingId = extra?.slotId ?? null;
       this.error = null;
+      this.render();
       let response;
       try {
         response = await send({ type, origin: this.origin(), confirmed: Boolean(this.confirm?.accepted), ...extra });
       } finally {
         this.busy = false;
+        this.pendingId = null;
       }
       if (response?.needsConfirm) {
         this.confirm = { type, extra, tabCount: response.tabCount, accepted: false };
@@ -712,8 +715,14 @@
       const label = el('span', `status ${status}`);
       if (variant === 'new' && status === 'active') label.append(icon(CHECK_ICON));
       if (variant === 'new' && status === 'expired') label.append(icon(CLOCK_ICON));
-      label.append(document.createTextNode(STATUS_LABEL[variant][status]));
+      const pending = this.busy && this.pendingId === slot.id;
+      label.append(document.createTextNode(pending ? 'Bezig…' : STATUS_LABEL[variant][status]));
       pick.append(label);
+      // While a switch is on its way the menu waits: no second click.
+      if (this.busy) {
+        pick.disabled = true;
+        pick.setAttribute('aria-busy', String(pending));
+      }
       row.append(pick);
 
       const actions = el('span', 'actions');
@@ -841,6 +850,8 @@
     .empty { margin: 4px 16px 12px; font-size: 12px; color: #5d6584; }
     .error { margin: 6px 16px; font-size: 12px; line-height: 17px; color: #b42318; }
     .pick:focus-visible, .add:focus-visible, .action:focus-visible, .confirm button:focus-visible { outline: 2px solid #232c4f; outline-offset: -2px; }
+    .pick:disabled { cursor: wait; opacity: .6; }
+    .pick[aria-busy="true"] { opacity: 1; }
 
     /* New design */
     .new.card { width: 340px; border-radius: 10px; box-shadow: 0 16px 40px rgba(20, 26, 48, 0.22), 0 0 0 1px rgba(20, 26, 48, 0.06); color: #232c4f; }
