@@ -297,13 +297,25 @@ async function setAvatar(slotId, dataUrl) {
 // is sent back to that page.
 // ---------------------------------------------------------------------------
 
-async function onMainPage(tabId, frameId, { url, kind }) {
+async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   const tab = await getTab(tabId);
   tab.mainFrameId = frameId;
 
   if (kind === 'logout') {
     await onLogout(tabId, frameId);
     return {};
+  }
+
+  // Login breakout (login-breakout.js). In breakout mode the first app page
+  // in the login iframe is the answer to a login: open the real app instead
+  // of showing it inside the bare iframe. Outside breakout mode a secure20
+  // login screen in mainframe (after logout or an expired session) asks the
+  // top frame to swap the frameset for the breakout layout.
+  if (tab.loginHost && kind === 'app' && !PUBLIC_V2.test(url)) {
+    return openAppAfterLogin(tabId, tab, topUrl);
+  }
+  if (!tab.loginHost && kind === 'login' && SECURE20_LOGIN.test(url)) {
+    chrome.tabs.sendMessage(tabId, { type: 'login:swap' }, { frameId: 0 }).catch(() => {});
   }
 
   if (kind === 'already') return {};
@@ -373,13 +385,77 @@ async function cancelRelogin(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Login breakout
+//
+// login-breakout.js swaps the login <frameset> for <body><iframe> so that
+// 1Password's inline menu works. The top frame reports whether a tab is in
+// that layout (login:host). Once the login iframe leaves the login form, the
+// tab enters the app the way e-Boekhouden itself does: /bh?v2Url=<secure20
+// page>. The re-login return (tab.returnUrl / tab.relogin) is left untouched,
+// so the first app page in the restored frameset still goes back to the page
+// the user was on, including classic pages, through onMainPage.
+// ---------------------------------------------------------------------------
+
+const SECURE20_LOGIN = /^https:\/\/secure20\.e-boekhouden\.nl\/v1login(?:[?#]|$)/i;
+// secure20 pages reachable from the login form without a session.
+const PUBLIC_V2 = /^https:\/\/secure20\.e-boekhouden\.nl\/(?:v1login|overig\/vergeten|sessie-verlopen)(?:[?#/]|$)/i;
+const SECURE20_ORIGIN = 'https://secure20.e-boekhouden.nl';
+const LOGIN_DONE_WINDOW_MS = 30_000;
+const LOGIN_DONE_MAX = 2;
+
+function topOriginOf(topUrl) {
+  try {
+    const origin = new URL(topUrl).origin;
+    if (/^https:\/\/secure\d*\.e-boekhouden\.nl$/.test(origin) && !origin.includes('secure20')) return origin;
+  } catch { /* fall through */ }
+  return 'https://secure.e-boekhouden.nl';
+}
+
+async function setLoginHost(tabId, active) {
+  const tab = await getTab(tabId);
+  tab.loginHost = Boolean(active);
+  if (!tab.loginHost) tab.loginDone = [];
+  await setTab(tabId, tab);
+  return {};
+}
+
+// Open the app after a login in breakout mode. A classic (secure.*) return
+// page cannot be a v2Url, so those enter through the app start page; the
+// re-login state then sends mainframe on to the classic page.
+async function openAppAfterLogin(tabId, tab, topUrl) {
+  if (!tab.loginHost) return {};
+  const now = Date.now();
+  tab.loginDone = (tab.loginDone ?? []).filter((time) => now - time < LOGIN_DONE_WINDOW_MS);
+  tab.loginHost = false;
+  if (tab.loginDone.length >= LOGIN_DONE_MAX) {
+    // Bouncing between the login iframe and the app entry: stop and leave
+    // the tab to e-Boekhouden's own flow.
+    await setTab(tabId, tab);
+    return {};
+  }
+  tab.loginDone.push(now);
+  await setTab(tabId, tab);
+
+  const wanted = tab.relogin && tab.returnUrl ? tab.returnUrl : APP_START;
+  const v2 = wanted.startsWith(`${SECURE20_ORIGIN}/`) ? wanted : APP_START;
+  await chrome.tabs.update(tabId, { url: `${topOriginOf(topUrl)}/bh?v2Url=${encodeURIComponent(v2)}` });
+  return { navigating: true };
+}
+
+async function onLoginDone(tabId, topUrl) {
+  return openAppAfterLogin(tabId, await getTab(tabId), topUrl);
+}
+
+// ---------------------------------------------------------------------------
 // Messages from content scripts
 // ---------------------------------------------------------------------------
 
 const handlers = {
   'top:title': (message) => onTopTitle(message.title),
   'header:identity': (message) => onHeaderIdentity(message),
-  'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message),
+  'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url),
+  'login:host': (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}),
+  'login:done': (message, sender) => onLoginDone(sender.tab.id, sender.tab.url),
   'inner:page': (message, sender) => onInnerPage(sender.tab.id, message),
   'relogin:cancel': (message, sender) => cancelRelogin(sender.tab.id),
   'switcher:switch': (message) => switchTo(message.slotId, message.origin, message.confirmed),

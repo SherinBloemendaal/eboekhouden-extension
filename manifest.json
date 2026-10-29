@@ -21,7 +21,7 @@
     {
       "matches": ["https://*.e-boekhouden.nl/*"],
       "include_globs": ["https://secure*.e-boekhouden.nl/*"],
-      "js": ["src/content.js"],
+      "js": ["src/login-breakout.js", "src/content.js"],
       "run_at": "document_start",
       "all_frames": true
     }
