@@ -401,12 +401,15 @@
     const content = el('div', 'ebs-left-content');
     left.append(top, search, content);
     let current = null;
+    // The listener is a plain function, not a method: it reaches the view
+    // through this variable.
+    let view = null;
     search.addEventListener('input', () => {
       query = search.value;
-      if (current) this.render(current);
+      if (current) view.render(current);
     });
 
-    return {
+    view = {
       render(state) {
         current = state;
         const { active, other } = split(state);
@@ -515,6 +518,7 @@
         openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); }, fail: () => { opening = null; failed = true; this.render(state); } });
       },
     };
+    return view;
   }
 
   const BETTER_CSS = `

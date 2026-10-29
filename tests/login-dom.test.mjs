@@ -97,3 +97,23 @@ test('login fields are labelled on the login page only, and never moved', async 
   await fresh.settle();
   assert.equal(fresh.document.getElementById('n').getAttribute('autocomplete'), null, 'a new password is not a login password');
 });
+
+test('with many sessions the search filters the list and keeps its field', async () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ id: `s${i}`, name: `Studio ${i}`, number: String(i + 1) }));
+  const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+    url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/',
+    store: { settings: { betterDesign: true }, slots: many, view: { ready: many.map((slot) => slot.id) } },
+    answer: (message) => (message.type === 'login:context' ? { pendingLoginFor: null, relogin: false } : {}),
+  });
+  p.load('shared.js', 'login-page.js');
+  await p.settle();
+  const search = p.document.querySelector('.ebs-search');
+  assert.equal(p.document.querySelectorAll('.ebs-list-row').length, 7);
+  search.focus();
+  search.value = 'Studio 3';
+  search.dispatchEvent(new p.window.Event('input'));
+  await p.settle();
+  assert.equal(p.document.querySelectorAll('.ebs-list-row').length, 1, 'only the match is listed');
+  assert.equal(p.document.querySelector('.ebs-search'), search, 'the same field, so the caret stays');
+  assert.equal(p.document.activeElement, search);
+});
