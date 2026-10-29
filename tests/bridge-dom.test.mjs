@@ -249,6 +249,38 @@ test('fetch observation: the page gets its own response, a feature a copy of all
   p.close();
 });
 
+test('XMLHttpRequest observation: the page\'s request still goes out, a feature gets a copy', async () => {
+  const p = pageWithNatives();
+  const { window } = p;
+  const sent = [];
+  // A page XHR without network: open and send record, load ends at once.
+  window.XMLHttpRequest.prototype.open = function open(method, url) {
+    this.ebsTestUrl = url;
+  };
+  window.XMLHttpRequest.prototype.send = function send() {
+    sent.push(this.ebsTestUrl);
+    const answer = { status: 200, responseURL: new URL(this.ebsTestUrl, window.location.href).href, responseType: '', responseText: JSON.stringify({ rows: [{ id: 2 }] }) };
+    for (const [name, value] of Object.entries(answer)) Object.defineProperty(this, name, { value, configurable: true });
+    this.getResponseHeader = () => 'application/json';
+    setTimeout(() => this.dispatchEvent(new window.Event('loadend')));
+  };
+  await p.bridge.ready();
+  const observed = [];
+  p.bridge.on('observed', (response) => observed.push(response));
+  p.bridge.enable('observe', { urls: ['/api/factuur/grid'] });
+  const xhr = new window.XMLHttpRequest();
+  xhr.open('GET', '/api/factuur/grid?page=2');
+  xhr.send();
+  await tick();
+  await tick();
+  assert.deepEqual(sent, ['/api/factuur/grid?page=2'], 'the page\'s own open and send ran');
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].url, 'https://secure20.e-boekhouden.nl/api/factuur/grid?page=2');
+  assert.deepEqual(plain(JSON.parse(observed[0].body)), { rows: [{ id: 2 }] });
+  p.bridge.disable('observe');
+  p.close();
+});
+
 test('request.js in main mode runs a GET with the page\'s own fetch', async () => {
   const p = pageWithNatives();
   await p.bridge.ready();

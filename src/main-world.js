@@ -438,20 +438,22 @@
       }
       if (!this.openWrapper) {
         const proto = XMLHttpRequest.prototype;
-        const open = proto.open;
-        const send = proto.send;
-        this.xhrOpen = open;
-        this.xhrSend = send;
+        // Not named open and send: a named function expression would
+        // shadow these, and the wrappers would call themselves.
+        const originalOpen = proto.open;
+        const originalSend = proto.send;
+        this.xhrOpen = originalOpen;
+        this.xhrSend = originalSend;
         this.openWrapper = function open(method, url) {
           try {
             hook.meta.set(this, { method: text(String(method).toUpperCase(), 10), url: sameOriginUrl(url) });
           } catch { /* never in the page's way */ }
-          return apply(open, this, arguments);
+          return apply(originalOpen, this, arguments);
         };
         this.sendWrapper = function send() {
           const meta = hook.meta.get(this);
           if (hook.on && meta?.url && hook.matches(meta.url)) apply(addListener, this, ['loadend', onXhrEnd, { once: true }]);
-          return apply(send, this, arguments);
+          return apply(originalSend, this, arguments);
         };
         proto.open = this.openWrapper;
         proto.send = this.sendWrapper;
