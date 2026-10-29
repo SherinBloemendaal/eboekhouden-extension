@@ -12,6 +12,7 @@ const APP = `${ORIGIN}/bh?v2Url=${encodeURIComponent(`${V2}/`)}`;
 const TAB = { id: 7, url: `${ORIGIN}/bh/` };
 const top = { tab: TAB, frameId: 0 };
 const main = { tab: TAB, frameId: 3 };
+const inner = { tab: TAB, frameId: 4 };
 
 const page = (url, kind, sender = main) => fake.dispatch({ type: 'main:page', url, kind }, sender);
 const host = (active) => fake.dispatch({ type: 'login:host', active }, top);
@@ -28,10 +29,27 @@ beforeEach(() => {
   fake.tabs = [TAB];
 });
 
-test('a secure20 login screen in mainframe asks the top frame to swap the frameset', async () => {
+test('the plain login form inside the secure20 login shell asks the top frame to swap the frameset', async () => {
   await host(false);
   await page(`${V2}/v1login?EBM=&v2rnd=1`, 'login');
+  assert.deepEqual(fake.sent, [], 'the shell URL alone is not a login screen: every app entry starts with it');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp?EBM=&v2rnd=1`, kind: 'login' }, inner);
   assert.deepEqual(fake.sent, [{ tabId: 7, message: { type: 'login:swap' }, options: { frameId: 0 } }]);
+});
+
+test('an app entry with a valid session ("U bent reeds ingelogd" in the shell) keeps its frameset', async () => {
+  await host(false); // the top load of /bh?v2Url=
+  await page(`${V2}/v1login?EBM=&v2rnd=1`, 'login');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp?EBM=&v2rnd=1`, kind: 'already' }, inner);
+  assert.deepEqual(fake.sent, [], 'e-Boekhouden finishes its own entry into the app');
+  assert.deepEqual(fake.updates, []);
+});
+
+test('a plain login form outside the login shell does not ask for a swap', async () => {
+  await host(false);
+  await page(`${V2}/v1page?url=%2Fbh%2Foverzicht.asp`, 'app');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  assert.deepEqual(fake.sent, []);
 });
 
 test('in breakout mode the login iframe is not asked to swap again', async () => {
@@ -68,6 +86,7 @@ test('the re-login return survives the breakout and is honoured in the restored 
   await page(inAppPage, 'app');
   const login = await page(`${V2}/v1login`, 'login');
   assert.equal(login.relogin, true);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
   assert.equal(fake.sent.at(-1).message.type, 'login:swap');
 
   await host(true);

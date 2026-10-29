@@ -129,14 +129,30 @@
       iframe.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;background:#f5f5f5;';
       body.append(iframe);
 
-      // The /bh/ page's own message handlers address top.hiddenframe and
-      // top.jwtframe and fall back to navigating the top window when a frame
-      // is missing (fGoto). Give them empty, invisible targets so a post-login
-      // "tokensaved" message cannot send the top window to jwtredirect.asp.
+      // Keep every other frame of e-Boekhouden's frameset alive, hidden, under
+      // its own name and URL: top.asp, menu.asp (sets the TESTC cookie the
+      // login checks), updatesessie.asp, refreshjwt.asp?ACTION=INIT (the token
+      // machinery), leeg.html as hiddenframe and jwtframe. The login then runs
+      // in the same session state as in the native frameset, and the page's own
+      // handlers (fGoto(top.hiddenframe, 'jwtredirect.asp')) find real frames.
+      // Only mainframe is replaced, by the login iframe above.
       const sinks = {};
+      for (const frame of frameset.querySelectorAll('frame')) {
+        if (frame === mainframe || !frame.name) continue;
+        const copy = document.createElement('iframe');
+        const src = frame.getAttribute('src');
+        copy.id = frame.id || frame.name;
+        copy.name = frame.name;
+        copy.src = src ? new URL(src, location.href).href : 'about:blank';
+        copy.tabIndex = -1;
+        copy.setAttribute('aria-hidden', 'true');
+        copy.style.cssText = 'position:fixed;width:0;height:0;border:0;visibility:hidden;';
+        body.append(copy);
+        sinks[frame.name] = copy;
+      }
       for (const name of ['hiddenframe', 'jwtframe']) {
+        if (sinks[name]) continue;
         const sink = document.createElement('iframe');
-        sinks[name] = sink;
         sink.id = name;
         sink.name = name;
         sink.src = 'about:blank';
@@ -144,6 +160,7 @@
         sink.setAttribute('aria-hidden', 'true');
         sink.style.cssText = 'position:fixed;width:0;height:0;border:0;visibility:hidden;';
         body.append(sink);
+        sinks[name] = sink;
       }
 
       // The outermost <frameset> is document.body here. Replacing it stops
@@ -170,6 +187,16 @@
         try {
           inner = iframe.contentWindow?.location.href ?? '';
         } catch {
+          // Cross-origin: e-Boekhouden's app (secure20) now runs in the login
+          // iframe. content.js in that frame normally reports it; should that
+          // not lead to the app opening (the loop guard, a lost message), the
+          // top frame asks once more after the settle time. Either way the
+          // login page's own chrome must not stay on top of the app.
+          lastInnerUrl = 'cross-origin';
+          showingApp(true);
+          settleTimer = window.setTimeout(() => {
+            if (lastInnerUrl === 'cross-origin') send({ type: 'login:done', url: location.href });
+          }, LOGIN_ANSWER_SETTLE_MS * 2);
           return;
         }
         if (!inner || inner === lastInnerUrl) return;
@@ -179,11 +206,20 @@
           location.replace('/bh/');
           return;
         }
-        if (/inloggen\.asp|v1login|vergeten/i.test(inner)) return;
+        const loginPage = /inloggen\.asp|v1login|vergeten/i.test(inner);
+        showingApp(!loginPage);
+        if (loginPage) return;
         settleTimer = window.setTimeout(() => {
           if (lastInnerUrl === inner) send({ type: 'login:done', url: inner });
         }, LOGIN_ANSWER_SETTLE_MS);
       });
+
+      // While the iframe shows anything but a login page, the login page's
+      // header and layout (login-page.js) step aside, so a landing that has
+      // not been moved to the real app yet never shows two navbars.
+      function showingApp(app) {
+        document.documentElement.classList.toggle('ebs-login-app', app);
+      }
 
       // The clearest sign of a finished login: the new session's token was
       // stored (e-Boekhouden posts "tokensaved" to the top window) and the
@@ -211,7 +247,8 @@
     // URL we can read counts: on /bh?v2Url= the frame's src attribute also
     // says v1login while the app is loading, so the attribute proves nothing.
     // A secure20 login screen (cross-origin) is reported through the service
-    // worker instead (login:swap).
+    // worker instead (login:swap). "U bent reeds ingelogd" is no login screen:
+    // e-Boekhouden moves on into the app from there.
     const watch = window.setInterval(() => {
       if (swapped || document.getElementById(HOST_ID) || !chrome.runtime?.id) {
         window.clearInterval(watch);
@@ -219,24 +256,22 @@
       }
       const frame = document.querySelector('frame#mainframe, frame[name="mainframe"]');
       let url = '';
+      let text = '';
       try {
         url = frame?.contentWindow?.location.href ?? '';
+        text = frame?.contentDocument?.body?.innerText ?? '';
       } catch {
         return;
       }
-      if (/\/bh\/inloggen\.asp/i.test(url)) swap('request');
+      if (/\/bh\/inloggen\.asp/i.test(url) && frame.contentDocument?.getElementById('frm') && !/reeds ingelogd/i.test(text)) swap('request');
     }, 1000);
 
-    if (!entersApp) {
-      const observer = new MutationObserver(() => {
-        if (swap('parse')) observer.disconnect();
-      });
-      observer.observe(document, { childList: true, subtree: true });
-      onReady(() => {
-        observer.disconnect();
-        swap('parse');
-      });
-    }
+    // Only once the whole frameset is parsed: every frame is known then and
+    // carried over in swap(). Swapping while the parser was still emitting
+    // frames cancelled e-Boekhouden's own frame loads before the login, so the
+    // first login ran without them and had to be done twice. DacTecTools swaps
+    // at document_idle for the same reason.
+    if (!entersApp) onReady(() => swap('parse'));
 
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.type === 'login:swap') onReady(() => swap('request'));

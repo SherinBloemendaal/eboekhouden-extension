@@ -89,6 +89,8 @@
         #ebs-login-nav { display: flex; align-items: stretch; }
         #ebs-login-host > iframe#mainframe { top: 60px !important; height: calc(100% - 60px) !important; }
         #ebs-login-header.better ~ iframe#mainframe { top: 64px !important; height: calc(100% - 64px) !important; }
+        html.ebs-login-app #ebs-login-header { display: none !important; }
+        html.ebs-login-app #ebs-login-host > iframe#mainframe { top: 0 !important; height: 100% !important; }
       `;
       host.prepend(style, header);
     };

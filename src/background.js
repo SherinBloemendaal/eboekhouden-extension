@@ -491,11 +491,16 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
     await setTab(tabId, tab);
     return { settleLogin: true };
   }
-  if (!tab.loginHost && kind === 'login' && SECURE20_LOGIN.test(url)) {
-    chrome.tabs.sendMessage(tabId, { type: 'login:swap' }, { frameId: 0 }).catch(() => {});
-  }
+  // The secure20 /v1login shell is what every app entry (/bh?v2Url=) starts
+  // with, also with a valid session: the shell URL alone does not say whether
+  // a login form is about to show. Remember that the shell is up; the swap is
+  // asked for once its inner frame reports the plain login form (onInnerPage).
+  tab.shellLogin = kind === 'login' && SECURE20_LOGIN.test(url);
 
-  if (kind === 'already') return {};
+  if (kind === 'already') {
+    await setTab(tabId, tab);
+    return {};
+  }
 
   if (kind === 'login' || kind === 'expired') {
     if (tab.returnUrl) tab.relogin = true;
@@ -548,6 +553,14 @@ async function onInnerPage(tabId, { url, kind }) {
     if (tab.returnUrl) tab.relogin = true;
     await setTab(tabId, tab);
     await onLoginPage();
+    // The plain login form inside the /v1login shell (after a logout, an
+    // expired session, or an app entry whose session is gone): ask the top
+    // frame to swap the frameset for the breakout layout. "U bent reeds
+    // ingelogd" (kind already) never gets here: that entry is e-Boekhouden's
+    // own way into the app and must keep its frameset.
+    if (kind === 'login' && tab.shellLogin && !tab.loginHost) {
+      chrome.tabs.sendMessage(tabId, { type: 'login:swap' }, { frameId: 0 }).catch(() => {});
+    }
     return { relogin: Boolean(tab.relogin) };
   }
 
