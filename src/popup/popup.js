@@ -15,6 +15,8 @@ const SETTINGS = [
 
 let state = { slots: [], view: {}, avatars: {}, settings: EBS.settingsWithDefaults() };
 let confirm = null;
+let busy = false;
+let failure = null;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -34,14 +36,24 @@ async function load() {
   render();
 }
 
+// One switch at a time: further clicks wait for the answer.
 async function act(type, extra = {}) {
-  const response = await chrome.runtime.sendMessage({ type, confirmed: Boolean(confirm?.accepted), ...extra }).catch(() => ({}));
+  if (busy) return;
+  busy = true;
+  failure = null;
+  const response = await chrome.runtime.sendMessage({ type, confirmed: Boolean(confirm?.accepted), ...extra }).catch((error) => ({ error: String(error) }));
+  busy = false;
   if (response?.needsConfirm) {
     confirm = { type, extra, tabCount: response.tabCount, accepted: false };
     render();
     return;
   }
   confirm = null;
+  if (response?.error) {
+    failure = 'Dat lukte niet. Probeer het opnieuw.';
+    render();
+    return;
+  }
   window.close();
 }
 
@@ -99,6 +111,11 @@ function row(slot) {
 function renderConfirm() {
   const box = document.getElementById('confirm');
   box.replaceChildren();
+  if (failure) {
+    const error = el('p', 'error', failure);
+    error.setAttribute('role', 'alert');
+    box.append(error);
+  }
   if (!confirm) return;
   const inner = el('div', 'confirm');
   inner.append(el('span', '', EBS.reloadWarning(confirm.tabCount)));

@@ -50,8 +50,14 @@
   const isTop = window === window.top;
   const parentIsTop = !isTop && window.parent === window.top;
 
+  // After the extension is reloaded, a script left in an open tab has no
+  // context any more: sendMessage then throws instead of rejecting.
   function send(message) {
-    return chrome.runtime.sendMessage(message).catch(() => ({}));
+    try {
+      return chrome.runtime.sendMessage(message).catch((error) => ({ error: String(error) }));
+    } catch (error) {
+      return Promise.resolve({ error: String(error) });
+    }
   }
 
   function onReady(callback) {

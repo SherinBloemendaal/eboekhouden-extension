@@ -312,3 +312,33 @@ test('in the page, the tab the click came from does not count as another tab', a
   fake.tabs = [{ ...TAB, active: false }];
   assert.deepEqual(await fake.dispatch({ type: 'switcher:add', origin: ORIGIN }, main), {});
 });
+
+test('two quick switches run one after the other: one jar, nothing mixed', async () => {
+  const domainCookie = (name, value) => cookie(name, value, '.e-boekhouden.nl', { hostOnly: false });
+  await chrome.storage.local.set({ slots: [{ id: 'C', name: 'Current', number: '3' }, { id: 'A', name: 'Alpha', number: '1' }, { id: 'B', name: 'Beta', number: '2' }] });
+  await chrome.storage.session.set({
+    activeSlotId: 'C', loggedIn: true,
+    'cookies:A': [cookie('ASPSESSIONIDA', 'a'), domainCookie('JWT', 'jwt-a')],
+    'cookies:B': [cookie('ASPSESSIONIDB', 'b'), domainCookie('JWT', 'jwt-b')],
+  });
+  fake.jar = [cookie('ASPSESSIONIDC', 'c'), domainCookie('JWT', 'jwt-c')];
+  await Promise.all([
+    fake.dispatch({ type: 'switcher:switch', slotId: 'A', origin: ORIGIN }, main),
+    fake.dispatch({ type: 'switcher:switch', slotId: 'B', origin: ORIGIN }, main),
+  ]);
+  assert.deepEqual(jarValues(), { ASPSESSIONIDB: 'b', JWT: 'jwt-b' });
+  const stored = fake.storage.session.dump();
+  assert.deepEqual(stored['cookies:C'].map((entry) => `${entry.name}=${entry.value}`), ['ASPSESSIONIDC=c', 'JWT=jwt-c']);
+  assert.equal(stored.activeSlotId, 'B');
+});
+
+test('a login report next to a page report loses neither', async () => {
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/boekhouden/x', kind: 'app' }, main);
+  await Promise.all([
+    fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main),
+    fake.dispatch({ type: 'login:host', active: true }, top),
+  ]);
+  const tab = fake.storage.session.dump()['tab:7'];
+  assert.equal(tab.loginHost, true);
+  assert.equal(tab.relogin, true);
+});

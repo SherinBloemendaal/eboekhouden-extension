@@ -29,6 +29,7 @@ button { font: inherit; cursor: pointer; }
 .add:hover { background: #f5f6fa; }
 .add-icon { width: 34px; height: 34px; border-radius: 50%; background: #f1f7ec; color: #3f7f22; display: flex; align-items: center; justify-content: center; }
 .empty { margin: 4px 8px 8px; color: #5d6584; }
+.error { margin: 6px 16px; font-size: 12px; color: #b42318; }
 .confirm { margin: 6px 8px; padding: 10px 12px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
 .confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .settings { display: flex; flex-direction: column; padding: 0 16px; }

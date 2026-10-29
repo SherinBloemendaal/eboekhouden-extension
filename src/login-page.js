@@ -22,8 +22,14 @@
   const path = location.pathname.toLowerCase();
   let refresh = () => {};
 
+  // After the extension is reloaded, a script left in an open tab has no
+  // context any more: sendMessage then throws instead of rejecting.
   function send(message) {
-    return chrome.runtime.sendMessage(message).catch(() => ({}));
+    try {
+      return chrome.runtime.sendMessage(message).catch((error) => ({ error: String(error) }));
+    } catch (error) {
+      return Promise.resolve({ error: String(error) });
+    }
   }
 
   function onReady(callback) {
@@ -126,10 +132,16 @@
     return { active, other };
   }
 
+  // One switch at a time: further clicks wait for the answer.
+  let switching = false;
   async function openSession(slot, onConfirm) {
+    if (switching) return;
+    switching = true;
     const origin = location.ancestorOrigins.length ? location.ancestorOrigins[location.ancestorOrigins.length - 1] : location.origin;
     const response = await send({ type: 'switcher:switch', slotId: slot.id, origin, confirmed: onConfirm?.confirmed });
+    switching = false;
     if (response?.needsConfirm) onConfirm?.ask(response.tabCount);
+    else if (response?.error) onConfirm?.fail?.();
   }
 
   // The choice lives in session storage, which pages cannot watch: redraw here.
@@ -217,6 +229,7 @@
     notice.setAttribute('role', 'status');
     let opening = null;
     let confirmFor = null;
+    let failed = false;
 
     return {
       render(state) {
@@ -232,7 +245,7 @@
 
         const head = el('div', 'head');
         head.append(el('span', 'title', 'Actieve sessies'));
-        head.append(el('span', 'hint', opening ? `${opening.name} wordt geopend…` : 'Klik om direct verder te gaan'));
+        head.append(el('span', 'hint', opening ? `${opening.name} wordt geopend…` : failed ? 'Openen lukte niet. Probeer het opnieuw.' : 'Klik om direct verder te gaan'));
         block.append(head);
         if (!active.length) block.append(el('div', 'none', 'Geen actieve sessies. Log hieronder in.'));
         for (const slot of active) {
@@ -245,8 +258,9 @@
           row.append(text, el('span', 'open', 'Openen →'));
           row.addEventListener('click', () => {
             opening = slot;
+            failed = false;
             this.render(state);
-            openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); } });
+            openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); }, fail: () => { opening = null; failed = true; this.render(state); } });
           });
           block.append(row);
           if (confirmFor?.slot.id === slot.id) {
@@ -337,6 +351,7 @@
 
     let opening = null;
     let confirmFor = null;
+    let failed = false;
     let query = '';
     let showAll = false;
     let lastFor = null;
@@ -354,6 +369,7 @@
         const sub = el('span', 'ebs-sub');
         sub.textContent = opening
           ? `${opening.name} wordt geopend…`
+          : failed ? 'Openen lukte niet. Probeer het opnieuw.'
           : active.length === 0 ? 'Er staat nog niets open.'
           : active.length > LIST_AFTER ? `${active.length} administraties zijn nog ingelogd.`
           : 'Deze administraties zijn nog ingelogd. Klik om direct verder te gaan.';
@@ -461,8 +477,9 @@
 
       open(slot, state) {
         opening = slot;
+        failed = false;
         this.render(state);
-        openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); } });
+        openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); }, fail: () => { opening = null; failed = true; this.render(state); } });
       },
     };
   }

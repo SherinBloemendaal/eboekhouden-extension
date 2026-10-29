@@ -72,8 +72,18 @@ async function clearAllTabStates() {
   await chrome.storage.session.set(updates);
 }
 
+// Every change to slots, cookies or tab state reads, then writes. Two of
+// those interleaved (two quick switches, a login report next to a page
+// report) mixed cookie jars and lost updates, so they all run one at a time.
+let queue = Promise.resolve();
+function serialized(task) {
+  const run = queue.then(task, task);
+  queue = run.catch(() => {});
+  return run;
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.remove(`tab:${tabId}`);
+  serialized(() => chrome.storage.session.remove(`tab:${tabId}`));
 });
 
 // The mirror pages render from. Rebuilt after every change and on startup,
@@ -99,10 +109,12 @@ async function ensureSettings() {
   await chrome.storage.local.set({ settings: { ...SETTINGS_DEFAULTS, ...settings } });
 }
 
-chrome.runtime.onStartup.addListener(() => { publishView(); });
+chrome.runtime.onStartup.addListener(() => { serialized(publishView); });
 chrome.runtime.onInstalled.addListener(() => {
-  ensureSettings();
-  publishView();
+  serialized(async () => {
+    await ensureSettings();
+    await publishView();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -584,7 +596,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = handlers[message?.type];
   const fromPopup = !sender.tab && sender.id === chrome.runtime.id && POPUP_TYPES.has(message?.type);
   if (!handler || (!sender.tab && !fromPopup)) return false;
-  Promise.resolve(handler(message, sender))
+  serialized(() => handler(message, sender))
     .then((result) => sendResponse(result ?? {}))
     .catch((error) => {
       console.error('EB Sessions:', message.type, error);

@@ -30,8 +30,14 @@
   const EDIT_HASH = '#ebs-edit=';
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
+  // After the extension is reloaded, a script left in an open tab has no
+  // context any more: sendMessage then throws instead of rejecting.
   function send(message) {
-    return chrome.runtime.sendMessage(message).catch(() => ({}));
+    try {
+      return chrome.runtime.sendMessage(message).catch((error) => ({ error: String(error) }));
+    } catch (error) {
+      return Promise.resolve({ error: String(error) });
+    }
   }
 
   function el(tag, className, text) {

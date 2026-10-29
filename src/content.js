@@ -21,8 +21,14 @@
   const isTop = window === window.top;
   const parentIsTop = !isTop && window.parent === window.top;
 
+  // After the extension is reloaded, a script left in an open tab has no
+  // context any more: sendMessage then throws instead of rejecting.
   function send(message) {
-    return chrome.runtime.sendMessage(message).catch(() => ({}));
+    try {
+      return chrome.runtime.sendMessage(message).catch((error) => ({ error: String(error) }));
+    } catch (error) {
+      return Promise.resolve({ error: String(error) });
+    }
   }
 
   function onReady(callback) {
@@ -496,6 +502,8 @@
       this.root = null;
       this.open = false;
       this.confirm = null;
+      this.error = null;
+      this.removing = null;
       nav.render();
     },
 
@@ -514,10 +522,25 @@
       return aspOrigin();
     },
 
+    // One switch at a time: further clicks wait for the answer.
     async act(type, extra) {
-      const response = await send({ type, origin: this.origin(), confirmed: Boolean(this.confirm?.accepted), ...extra });
+      if (this.busy) return;
+      this.busy = true;
+      this.error = null;
+      let response;
+      try {
+        response = await send({ type, origin: this.origin(), confirmed: Boolean(this.confirm?.accepted), ...extra });
+      } finally {
+        this.busy = false;
+      }
       if (response?.needsConfirm) {
         this.confirm = { type, extra, tabCount: response.tabCount, accepted: false };
+        this.render();
+        return;
+      }
+      if (response?.error || !response) {
+        this.confirm = null;
+        this.error = 'Dat lukte niet. Probeer het opnieuw of herlaad de pagina.';
         this.render();
         return;
       }
@@ -560,6 +583,11 @@
       card.append(list);
 
       if (this.confirm) card.append(this.confirmBox());
+      if (this.error) {
+        const error = el('p', 'error', this.error);
+        error.setAttribute('role', 'alert');
+        card.append(error);
+      }
 
       const foot = el('div', 'foot');
       const add = el('button', 'add');
@@ -714,6 +742,7 @@
     .confirm .no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
     .confirm .ok { border: 0; color: #fff; }
     .empty { margin: 4px 16px 12px; font-size: 12px; color: #5d6584; }
+    .error { margin: 6px 16px; font-size: 12px; line-height: 17px; color: #b42318; }
     .pick:focus-visible, .add:focus-visible, .action:focus-visible, .confirm button:focus-visible { outline: 2px solid #232c4f; outline-offset: -2px; }
 
     /* New design */
