@@ -239,6 +239,7 @@ test('the app frame being ready fades the loader out (240 ms) and removes it', a
   message(p, 'app');
   assert.ok(p.box().classList.contains('ebs-out-app'));
   assert.ok(p.box().classList.contains('leaving'));
+  assert.equal(p.host().style.getPropertyValue('pointer-events'), 'none', 'clicks reach the page while it fades');
   await sleep(320);
   assert.equal(p.host(), null);
   p.close();
@@ -324,6 +325,37 @@ test('a navigation while the loader shows hands over: the next /bh/ continues at
   assert.equal(next.shadow().querySelector('mask'), null);
   assert.equal(next.fetched.length, 1);
   next.close();
+});
+
+test('a continued loader that a frame ends before the settings are read stays gone, also when the design changed', async () => {
+  const p = bh();
+  p.window.chrome.storage.local.get = ((get) => async (keys) => {
+    await sleep(40);
+    return get(keys);
+  })(p.window.chrome.storage.local.get);
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 500, mode: 'classic' }));
+  p.load(...SCRIPTS);
+  assert.ok(p.host(), 'the classic cover continues at once');
+  message(p, 'app');
+  await sleep(400);
+  await p.settle();
+  assert.equal(p.host(), null, 'no second cover that nothing takes away');
+  assert.deepEqual(p.fetched, [], 'and no logo request for it');
+  p.close();
+});
+
+test('back from the back/forward cache: the loader goes and its hand-over with it', async () => {
+  const p = bh();
+  p.load(...SCRIPTS);
+  await p.settle();
+  p.window.dispatchEvent(new p.window.Event('pagehide'));
+  assert.ok(p.window.sessionStorage.getItem('ebs-loader'));
+  p.window.dispatchEvent(Object.assign(new p.window.Event('pageshow'), { persisted: true }));
+  assert.equal(p.window.sessionStorage.getItem('ebs-loader'), null);
+  assert.ok(p.box().classList.contains('leaving'));
+  await sleep(320);
+  assert.equal(p.host(), null);
+  p.close();
 });
 
 test('a stale or broken hand-over is not used', async () => {
@@ -500,14 +532,19 @@ test('the top frame\'s answer raises the card of the Better login page', async (
   assert.ok(p.document.documentElement.classList.contains('ebs-loader-rise'));
   assert.match(p.document.head.lastElementChild.textContent, /translateY\(8px\)[\s\S]*240ms/);
   assert.match(p.document.head.lastElementChild.textContent, /prefers-reduced-motion[\s\S]*150ms/);
+  await sleep(340);
+  assert.ok(!p.document.documentElement.classList.contains('ebs-loader-rise'), 'no animation stays on the form');
+  assert.equal([...p.document.querySelectorAll('style')].some((style) => style.textContent.includes('ebsLoaderCardIn')), false);
   p.close();
 });
 
-test('a "rise" from anywhere but the top frame is ignored', async () => {
+test('a "rise" from anywhere but the top frame on our origin is ignored', async () => {
   const { p } = await loginFrame(FORM, { better: true });
   await sleep(100);
   p.window.dispatchEvent(new p.window.MessageEvent('message', { data: { ebsLoader: 1, kind: 'rise' }, origin: 'https://secure.e-boekhouden.nl', source: p.window }));
   assert.ok(!p.document.documentElement.classList.contains('ebs-loader-rise'));
+  p.window.dispatchEvent(new p.window.MessageEvent('message', { data: { ebsLoader: 1, kind: 'rise' }, origin: 'https://evil.example', source: p.window.parent }));
+  assert.ok(!p.document.documentElement.classList.contains('ebs-loader-rise'), 'nor from another origin');
   p.close();
 });
 

@@ -688,6 +688,8 @@
     .ebs-badge { transform: scale(0); animation: ebsBadgeIn 520ms linear 340ms forwards; }
     .ebs-cres { transform-box: fill-box; transform-origin: center; animation: ebsCresOut 560ms linear 640ms both; }
     .ebs-who { animation: ebsRise 480ms cubic-bezier(0.23,1,0.32,1) 300ms both; }
+    /* The brand line comes with the mark, a moment after the cover itself. */
+    .ebs-brand { animation: ebsFadeIn 150ms ease-out both; }
     /* Idle loop from 1250 ms: breathing, glow and a gleam over the disc, one 2.8 s rhythm. */
     .ebs-mark-wrap { animation: ebsBreathe 2800ms ease-in-out 1250ms infinite; }
     .ebs-halo { animation: ebsHaloBreathe 2800ms ease-in-out 1250ms infinite; }
@@ -696,7 +698,7 @@
     /* A loader that continues from the previous document: the mark is complete and breathes on. */
     .is-settled .ebs-bar, .is-settled .ebs-bowl { animation: none; stroke-dashoffset: 0; }
     .is-settled .ebs-badge { animation: none; transform: none; }
-    .is-settled .ebs-cres, .is-settled .ebs-who { animation: none; }
+    .is-settled .ebs-cres, .is-settled .ebs-who, .is-settled .ebs-brand { animation: none; }
     .is-settled .ebs-mark-wrap, .is-settled .ebs-halo { animation-delay: 0ms; }
     .is-settled .ebs-sheen { animation-delay: 400ms; }
 
@@ -948,6 +950,7 @@
       state.timers.push(window.setTimeout(() => leave('app'), Math.max(0, cap - elapsed())));
       if (mode === 'better') state.timers.push(window.setTimeout(slow, Math.max(0, SLOW_MS - elapsed())));
       window.addEventListener('pagehide', onPageHide);
+      window.addEventListener('pageshow', onPageShow);
     }
 
     // The content of the Better design loader: once the mark is known (or
@@ -1022,6 +1025,9 @@
       const box = state.box;
       box.classList.add('leaving');
       box.setAttribute('aria-busy', 'false');
+      // The host covers the viewport too: clicks go through it to the page
+      // while the loader fades.
+      state.host.style.setProperty('pointer-events', 'none', 'important');
       const reduced = reducedMotion();
       let exitClass = 'ebs-out-plain';
       let duration = EXIT_MS.plain;
@@ -1047,12 +1053,21 @@
       state.host?.remove();
       window.removeEventListener('message', onFrameMessage);
       window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
     }
 
     function onPageHide() {
       // Still covering the page while the tab moves on (the app entry after
       // "U bent reeds ingelogd"): the next /bh/ document carries on.
       if (state.host && !state.leaving && !state.gone) giveHandoff(startedAt, state.mode);
+    }
+
+    // Back from the back/forward cache: this document never handed over (its
+    // hand-over goes, unused) and whatever it waited for is long past.
+    function onPageShow(event) {
+      if (!event.persisted) return;
+      takeHandoff();
+      leave('app');
     }
 
     // ---- deciding -------------------------------------------------------------
@@ -1083,6 +1098,8 @@
       else if (view?.loggedIn || handoff?.mode === 'classic') mode = 'classic';
 
       for (const report of early.splice(0)) handle(report);
+      // A report ended a continued loader already: let its exit run.
+      if (state.leaving || state.gone) return;
 
       if (state.host && state.mode !== mode) {
         // The setting changed between two documents.
@@ -1128,6 +1145,8 @@
   // Frames: report what they show to the top frame.
   // ===========================================================================
 
+  // The login card's rise under the fading loader (as on the board).
+  const RISE_MS = 240;
   const RISE_CSS = `
     @keyframes ebsLoaderCardIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
     @keyframes ebsLoaderFadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1155,12 +1174,19 @@
     };
 
     window.addEventListener('message', (event) => {
-      if (event.source !== window.top || event.data?.ebsLoader !== 1 || event.data.kind !== 'rise') return;
-      if (!document.getElementById('ebs-better')) return;
+      if (event.source !== window.top || event.origin !== location.origin || event.data?.ebsLoader !== 1 || event.data.kind !== 'rise') return;
+      if (!document.getElementById('ebs-better') || document.documentElement.classList.contains('ebs-loader-rise')) return;
       const style = document.createElement('style');
       style.textContent = RISE_CSS;
       (document.head ?? document.documentElement).append(style);
       document.documentElement.classList.add('ebs-loader-rise');
+      // Once risen, the card is left as it was: no animation stays in effect
+      // on the form (a filled transform would keep a containing block around
+      // the fields and whatever is fixed inside them).
+      window.setTimeout(() => {
+        document.documentElement.classList.remove('ebs-loader-rise');
+        style.remove();
+      }, RISE_MS + 60);
     });
 
     onReady(() => {
