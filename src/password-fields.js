@@ -1,23 +1,30 @@
 // EB Sessions: make e-Boekhouden's login fields easy for password managers.
 //
 // Ported from the e-Boekhouden 1Password module in DacTecTools by Dion, as
-// closely as this extension allows. In every e-Boekhouden frame it:
+// closely as this extension allows. On e-Boekhouden's login pages only
+// (inloggen.asp and secure20's v1login), and only with "Inloggen met
+// 1Password" on, it:
 //   1. watches the DOM for password inputs, including type="text" to
 //      type="password" toggles;
 //   2. labels them and the username field next to them (autocomplete, name,
-//      id), without overwriting a name or id the page already set;
-//   3. wraps them in a real <form> when they are not in one;
-//   4. re-fires input and change events when a password manager writes a
+//      id), without overwriting a name or id the page already set, and
+//      leaves new-password, PIN and key fields alone;
+//   3. re-fires input and change events when a password manager writes a
 //      value, so framework-bound forms (the Angular ones on secure20) see it.
-// It never fills or submits anything itself.
+// It never fills or submits anything itself, and never moves the page's
+// elements. (DacTecTools also wrapped loose fields in a new <form>; moving
+// Angular's inputs out of their wrappers broke their layout and bindings.)
 
 (() => {
   if (window.__ebsPasswordFieldsLoaded) return;
   window.__ebsPasswordFieldsLoaded = true;
 
   const PROCESSED_FLAG = '__ebsPwProcessed';
-  const FORM_ID = 'ebs-eboekhouden-form';
   const perInput = new WeakMap();
+  const LOGIN_PAGE = /^https:\/\/secure\d*\.e-boekhouden\.nl\/(bh\/inloggen\.asp|v1login)(?:[?#]|$)/i;
+  if (!LOGIN_PAGE.test(location.href)) return;
+  // Not a login password: a new one, a repeat, a PIN or a key.
+  const NOT_LOGIN = /new|nieuw|repeat|herhaal|bevestig|confirm|pin|api|key|sleutel|token|secret/i;
 
   function annotateUsername(el) {
     el.setAttribute('autocomplete', 'username');
@@ -117,50 +124,13 @@
     return ranked[0]?.input ?? null;
   }
 
-  // Some password managers only pair fields inside a real <form>. The
-  // classic inloggen.asp already has one; the Angular forms may not.
-  function ensureForm(username, password) {
-    if (password.closest('form')) return;
-    const parent = password.parentElement;
-    if (!parent || parent.querySelector(`form#${FORM_ID}`)) return;
-
-    try {
-      const form = document.createElement('form');
-      form.id = FORM_ID;
-      form.setAttribute('action', '#');
-      form.setAttribute('method', 'post');
-      form.setAttribute('autocomplete', 'on');
-      form.setAttribute('data-ebs-form', '1');
-      // Invisible to layout; the framework bindings keep working.
-      form.style.display = 'contents';
-      parent.insertBefore(form, password);
-      if (username?.parentElement) form.appendChild(username);
-      form.appendChild(password);
-
-      // A hidden submit button makes it look like a real login form. Submitting
-      // this wrapper only re-fires the field events; it never sends anything.
-      const submit = document.createElement('button');
-      submit.type = 'submit';
-      submit.tabIndex = -1;
-      submit.setAttribute('aria-hidden', 'true');
-      submit.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
-      form.appendChild(submit);
-      form.addEventListener('submit', (event) => {
-        event.preventDefault();
-        if (username) fireNativeEvents(username);
-        fireNativeEvents(password);
-      });
-    } catch (error) {
-      console.warn('EB Sessions: could not wrap the login fields in a form', error);
-    }
-  }
-
   function processPasswordInput(passwordEl) {
     if (passwordEl.dataset.ebsRole === 'password') return;
+    const hint = [passwordEl.getAttribute('autocomplete'), passwordEl.name, passwordEl.id, passwordEl.getAttribute('formcontrolname'), passwordEl.getAttribute('placeholder')].join(' ');
+    if (NOT_LOGIN.test(hint)) return;
     annotatePassword(passwordEl);
     const username = findUsernameNear(passwordEl);
     if (username) annotateUsername(username);
-    ensureForm(username, passwordEl);
     patchValueSetter(passwordEl);
     if (username) patchValueSetter(username);
   }
@@ -188,10 +158,14 @@
   }
 
   // DacTecTools runs at document_idle; this script loads at document_start
-  // with the others, so it starts once the DOM is parsed.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
+  // with the others, so it starts once the DOM is parsed and the setting is read.
+  const settingRead = chrome.storage.local.get('settings')
+    .then(({ settings }) => EBS.settingsWithDefaults(settings).onePassword)
+    .catch(() => false);
+  const domReady = document.readyState === 'loading'
+    ? new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }))
+    : Promise.resolve();
+  Promise.all([settingRead, domReady]).then(([enabled]) => {
+    if (enabled) start();
+  });
 })();
