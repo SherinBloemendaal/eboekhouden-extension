@@ -156,6 +156,11 @@ test('Meer velden in simple mode: rows in a hidden wrapper or hidden themselves 
     for (let node = field; node !== slot; node = node.parentElement) assert.notEqual(style(p, node).display, 'none', `${id}: shown in Meer velden`);
   }
   assert.equal(moreText(view), 'Meer velden van e-Boekhouden: uiterste betaaldatum, debiteurenrekening, factuur via Peppol versturen, deze factuur is op 12-10-2026 klaargezet voor incasso');
+  // The Peppol checkbox with its words beside it, a plain box like the aside's.
+  const peppol = slot.querySelector('#versturenViaPeppol');
+  assert.equal(style(p, peppol.closest('app-checkbox > .form-check')).display, 'flex');
+  assert.equal(style(p, peppol).position, 'static');
+  assert.equal(style(p, peppol.nextElementSibling).display, 'none', 'its own checkmark span steps aside');
   // Every row it names is one the user sees once it is open.
   for (const row of slot.querySelectorAll('.form-body .form-row')) {
     for (let node = row; node !== slot; node = node.parentElement) assert.notEqual(style(p, node).display, 'none', row.textContent.trim());

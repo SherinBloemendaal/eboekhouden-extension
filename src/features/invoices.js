@@ -1732,6 +1732,13 @@
     ${ER} app-date-picker .selection-group button:focus-visible { box-shadow: inset 0 0 0 2px rgba(89, 106, 175, .45); }
     ${ER} app-date-picker .selection-group button > :not(.ebs-b-native-icon) { display: none !important; }
     .ebs-b-native-icon { display: flex; pointer-events: none; }
+
+    /* A checkbox under Meer velden (Factuur via Peppol versturen): the box
+       with its words beside it, as in the line window. */
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox .form-check { display: flex !important; align-items: center; gap: 8px; width: auto !important; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox .form-check > .form-check > span { display: none !important; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox input[type="checkbox"] { position: static !important; width: 16px; height: 16px; margin: 0; opacity: 1 !important; appearance: auto !important; accent-color: #232c4f; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox label { margin: 0; font-size: 13px; font-weight: 400; color: #232c4f; cursor: pointer; }
   `;
 
   const LINE_WINDOW_CSS = `
