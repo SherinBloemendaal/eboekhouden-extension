@@ -173,6 +173,7 @@ The service worker tests use an in-memory fake of the chrome.* APIs; the page sc
 | `src/import.js`           | Shift-select, the action bar and the Better design import screen.            |
 | `src/store.js`            | `EBS.store`: what features keep, per administration (local now, sync later). |
 | `src/icons.js`            | `EBS.icon`: inline Lucide icons, built without markup.                       |
+| `src/mark.js`             | `EBS.mark`: the loader's animated e-Boekhouden mark, also in dialog covers.  |
 | `src/dialog.js`           | `EBS.dialog`: the shared in-page dialog (focus trap, Escape, inert page).    |
 | `src/bridge.js`           | `EBS.bridge`: the extension's side of the bridge to the page's world.        |
 | `src/main-world.js`       | The page's side of that bridge: hooks that stay off until a feature asks.    |
