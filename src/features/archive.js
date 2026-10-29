@@ -64,6 +64,15 @@
   const RECOGNIZABLE = /\.(pdf|jpe?g|png)$/i;
   const PREVIEW_IMAGE = /\.(jpe?g|png|gif)$/i;
   const PREVIEW_PDF = /\.pdf$/i;
+  // What the preview shows, by the type e-Boekhouden answers: a PDF (Chrome's
+  // own viewer) or a bitmap image. Anything else, an SVG or HTML for example,
+  // could run script and is not shown.
+  const PREVIEW_TYPES = {
+    'application/pdf': 'pdf',
+    'image/png': 'image',
+    'image/jpeg': 'image',
+    'image/gif': 'image',
+  };
   // A folder this size or larger gets the "in één keer geladen" wording.
   const MANY = 100;
   // Downloads go one by one through e-Boekhouden's own double-click.
@@ -705,13 +714,15 @@
       }
       request.then((blob) => {
         if (this.key !== key) return;
-        const type = String(blob?.type ?? '');
-        const kind = /^image\//.test(type) ? 'image' : /pdf/.test(type) ? 'pdf' : null;
+        const type = String(blob?.type ?? '').split(';')[0].trim().toLowerCase();
+        const kind = Object.hasOwn(PREVIEW_TYPES, type) ? PREVIEW_TYPES[type] : null;
         if (!kind || typeof URL.createObjectURL !== 'function') {
           this.state = 'error';
           this.message = 'e-Boekhouden gaf geen voorbeeld van dit bestand terug.';
         } else {
-          this.url = URL.createObjectURL(blob);
+          // The URL carries exactly the checked type, so the frame shows a PDF
+          // (or the img an image) and never a page with script.
+          this.url = URL.createObjectURL(blob.type === type ? blob : new Blob([blob], { type }));
           this.kind = kind;
           this.state = 'ready';
         }
@@ -1342,6 +1353,8 @@
           image.src = preview.url;
           this.previewStage.append(image);
         } else if (preview.state === 'ready') {
+          // No sandbox: Chrome does not show a PDF in a sandboxed frame. The
+          // blob only ever has the type application/pdf (PREVIEW_TYPES).
           const frame = el('iframe', 'ebs-ar-frame ebs-ar-in');
           frame.title = `Voorbeeld van ${row.name}`;
           frame.src = preview.url;
