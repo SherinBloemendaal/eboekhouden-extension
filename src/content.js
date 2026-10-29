@@ -722,9 +722,39 @@
         actions.append(actionButton(CAMERA_ICON, hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot), `photo:${slot.id}`));
         if (hasPicture) actions.append(actionButton(IMAGE_OFF_ICON, 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id }), `photo-off:${slot.id}`));
       }
-      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => send({ type: 'switcher:remove', slotId: slot.id }), `remove:${slot.id}`));
+      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => {
+        this.removing = slot.id;
+        this.render();
+        this.root.querySelector('[data-key="remove-no"]')?.focus();
+      }, `remove:${slot.id}`));
       row.append(actions);
-      return row;
+      if (this.removing !== slot.id) return row;
+      // The bin removes the entry for good (name, number, picture and the
+      // stored session): ask once.
+      const wrap = el('div', 'removing');
+      const box = el('div', 'confirm');
+      box.setAttribute('role', 'alert');
+      box.append(el('span', '', `${slot.name} verwijderen? De naam, het nummer, de profielfoto en de bewaarde sessie gaan weg.`));
+      const buttons = el('div', 'confirm-buttons');
+      const no = el('button', 'no', 'Annuleren');
+      no.type = 'button';
+      no.dataset.key = 'remove-no';
+      no.addEventListener('click', () => {
+        this.removing = null;
+        this.render();
+        this.root.querySelector(`[data-key="remove:${CSS.escape(slot.id)}"]`)?.focus();
+      });
+      const ok = el('button', 'ok', 'Verwijderen');
+      ok.type = 'button';
+      ok.dataset.key = 'remove-ok';
+      ok.addEventListener('click', () => {
+        this.removing = null;
+        send({ type: 'switcher:remove', slotId: slot.id });
+      });
+      buttons.append(no, ok);
+      box.append(buttons);
+      wrap.append(row, box);
+      return wrap;
     },
 
     confirmBox() {
