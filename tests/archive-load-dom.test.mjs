@@ -170,6 +170,41 @@ describe('a folder change always ends', { concurrency: true }, () => {
     assert.equal(state(p), 'empty', 'e-Boekhouden reloaded the chosen folder');
   });
 
+  test('a folder change e-Boekhouden makes itself, to a folder seen before: loading, never "andere map"', async () => {
+    // Naam wijzigen on a folder, a new folder, a deleted folder or the upload
+    // item of its menu on a folder: e-Boekhouden opens that folder itself,
+    // and the rows of the folder before stay until its answer is in.
+    const p = await archivePage({ slow: 300 });
+    click(p, folderButton(p, 'Inbox'));
+    await wait(400);
+    await settleAll(p, 6);
+    click(p, folderButton(p, 'Inkoopfacturen 2026'));
+    await wait(400);
+    await settleAll(p, 6);
+    assert.equal(state(p), 'rows');
+    p.window.__archive.loadDirectory(11);
+    const seen = new Set();
+    for (let i = 0; i < 20; i += 1) {
+      await frame(p);
+      await wait(25);
+      seen.add(state(p));
+    }
+    assert.deepEqual([...seen], ['loading', 'rows'], 'the skeleton while its answer comes, then the rows');
+    assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inbox (Mail & Herken)4');
+    assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Scan 0043.pdf']);
+  });
+
+  test('a folder change e-Boekhouden makes itself whose answer never comes ends in the error', async () => {
+    const never = new Promise(() => {});
+    const p = await archivePage({ gate: gates([[/\/folder\/14\/filelist$/, 1, never]]) });
+    p.window.__archive.loadDirectory(14);
+    await settleAll(p);
+    assert.equal(state(p), 'loading');
+    await wait(LOAD_TIMEOUT + 200);
+    await settleAll(p);
+    assert.equal(state(p), 'failed', 'no endless skeleton');
+  });
+
   test('an answer that never comes: "Kon de map niet laden", and Opnieuw proberen clicks e-Boekhouden\'s refresh', async () => {
     const never = new Promise(() => {});
     const p = await archivePage({ gate: gates([[/\/folder\/14\/filelist$/, 1, never]]) });

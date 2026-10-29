@@ -740,6 +740,8 @@
     failure: null,
     // Since when the view waits for e-Boekhouden's first list on this visit.
     bootSince: 0,
+    // The id of the folder the tree showed at the last draw (null: unknown).
+    selectedId: null,
     emptySince: 0,
     rowsWaitSince: 0,
     shownState: '',
@@ -831,6 +833,17 @@
     const signature = rowsSignature(native.rows);
     const selected = native.folders.find((folder) => folder.selected) ?? null;
     const selectedId = folderIdOf(selected);
+    // The folder the tree shows changed. A load of ours that could not tell
+    // its folder at the click now waits for this one's answer, not for any
+    // answer. A change e-Boekhouden made itself (a new folder, Naam wijzigen
+    // on a folder, a deleted folder, its upload item on a folder) is a load
+    // too: its answer is on its way, so the rows still on screen are no error.
+    if (selectedId !== null && selectedId !== ui.selectedId) {
+      const before = ui.selectedId;
+      ui.selectedId = selectedId;
+      if (ui.pending?.folderId === null) ui.pending.folderId = selectedId;
+      else if (!ui.pending && before !== null && observing() && observed.folderId !== selectedId) startLoad({ folderId: selectedId, name: folderLabel(selected) });
+    }
     const pending = ui.pending;
     if (pending) {
       const changed = signature !== pending.signature;
@@ -875,6 +888,7 @@
       ui.failure = { at: now, signature };
       return { state: 'failed', hold: false };
     }
+    ui.bootSince = 0;
     const hold = (until) => {
       wakeAt(until);
       return ui.shownState ? { state: ui.shownState, hold: true } : { state: 'loading', hold: false };
@@ -1068,6 +1082,7 @@
       ui.pending = null;
       ui.failure = null;
       ui.bootSince = 0;
+      ui.selectedId = null;
       ui.shownState = '';
       nativeMenu.close();
     },
@@ -1292,7 +1307,13 @@
       if (!transfer) return;
       this.headMessage.textContent = '';
       this.activate(row);
-      const state = await waitFor(() => (ui.pending ? null : this.root?.dataset.state), LOAD_TIMEOUT + 1000);
+      // Until the folder is in: its answer can come before e-Boekhouden has
+      // drawn its rows, and the view still says loading then.
+      const settled = () => {
+        const state = ui.pending ? null : this.root?.dataset.state;
+        return state && state !== 'loading' ? state : null;
+      };
+      const state = await waitFor(settled, LOAD_TIMEOUT + ROWS_GRACE + 1000);
       const open = this.native?.folders.find((folder) => folder.selected);
       if (!['rows', 'empty', 'nomatch'].includes(state) || open?.name !== row.name) {
         this.headMessage.textContent = `De map "${row.name}" ging niet open, dus er is niets geüpload. Probeer het opnieuw.`;

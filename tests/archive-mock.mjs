@@ -330,6 +330,10 @@ export const nativeScript = String.raw`
     container.insertBefore(node, container.querySelector('app-digitaal-archief-folder-form'));
   }
 
+  // For the tests: a folder change e-Boekhouden starts itself (a new
+  // folder, Naam wijzigen on a folder, a deleted folder, its upload menu).
+  window.__archive.loadDirectory = loadDirectory;
+
   render();
   loadDirectory(data.start);
 })`;

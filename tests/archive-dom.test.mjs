@@ -715,3 +715,35 @@ test('files dropped on a folder row open that folder and go to its upload window
   assert.ok(p.$('app-digitaal-archief-upload'), 'e-Boekhouden\'s own upload window, for that folder');
   assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 2'], 'once, and not started');
 });
+
+test('files dropped on a folder row with files wait for its rows, then go to its upload window', async () => {
+  const p = await archivePage();
+  const { window } = p;
+  window.DataTransfer = class DataTransfer {
+    constructor() {
+      this.files = [];
+      this.types = ['Files'];
+      this.items = { add: (file) => this.files.push(file) };
+    }
+  };
+  window.DragEvent = class DragEvent extends window.Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+  };
+  click(p, folderButton(p, 'Basismap'));
+  await settleAll(p, 6);
+  await wait(100);
+  await settleAll(p);
+  const files = [new window.File(['a'], 'a.pdf')];
+  const dataTransfer = { types: ['Files'], files, items: files.map(() => ({ kind: 'file' })) };
+  // Inbox has files: e-Boekhouden's answer is in before its rows are drawn.
+  trusted(p, rowNode(p, 'Inbox').querySelector('.ebs-ar-file'), 'drop', { dataTransfer }, window.DragEvent);
+  await wait(300);
+  await settleAll(p, 8);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inbox (Mail & Herken)4', 'the folder opened');
+  assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Scan 0043.pdf']);
+  assert.equal(p.$('.ebs-ar-head-message').textContent, '', 'no "ging niet open"');
+  assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 1'], 'once, and not started');
+});
