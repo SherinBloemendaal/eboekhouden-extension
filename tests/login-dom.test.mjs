@@ -24,6 +24,22 @@ test('the login host gets one header, also when the swap and DOMContentLoaded ra
   assert.equal(p.document.querySelectorAll('#ebs-login-header').length, 1);
 });
 
+test('the login header steps aside while the login iframe shows the app, so there are never two navbars', async () => {
+  const p = page('<html><head><title>Inloggen | e-Boekhouden.nl</title></head><body id="ebs-login-host"><iframe id="mainframe" name="mainframe"></iframe></body></html>', {
+    url: 'https://secure.e-boekhouden.nl/bh/',
+  });
+  p.load('shared.js', 'login-page.js');
+  p.document.dispatchEvent(new p.window.CustomEvent('ebs-login-host'));
+  await p.settle();
+  const header = p.document.getElementById('ebs-login-header');
+  assert.notEqual(p.window.getComputedStyle(header).display, 'none');
+  // login-breakout.js sets this class when anything but a login page loads in the iframe.
+  p.document.documentElement.classList.add('ebs-login-app');
+  assert.equal(p.window.getComputedStyle(header).display, 'none');
+  p.document.documentElement.classList.remove('ebs-login-app');
+  assert.notEqual(p.window.getComputedStyle(header).display, 'none');
+});
+
 test('with the re-login dialog on, the login page leaves the form to it', async () => {
   for (const betterDesign of [false, true]) {
     const p = await framedPage(`<html><body>${loginForm}</body></html>`, {

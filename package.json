@@ -1,6 +1,6 @@
 {
   "name": "eboekhouden-extension",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Unofficial Chrome extension for e-Boekhouden.nl: working 1Password autofill, a session switcher and an in-page re-login dialog.",
   "license": "MIT",

@@ -170,6 +170,16 @@
         try {
           inner = iframe.contentWindow?.location.href ?? '';
         } catch {
+          // Cross-origin: e-Boekhouden's app (secure20) now runs in the login
+          // iframe. content.js in that frame normally reports it; should that
+          // not lead to the app opening (the loop guard, a lost message), the
+          // top frame asks once more after the settle time. Either way the
+          // login page's own chrome must not stay on top of the app.
+          lastInnerUrl = 'cross-origin';
+          showingApp(true);
+          settleTimer = window.setTimeout(() => {
+            if (lastInnerUrl === 'cross-origin') send({ type: 'login:done', url: location.href });
+          }, LOGIN_ANSWER_SETTLE_MS * 2);
           return;
         }
         if (!inner || inner === lastInnerUrl) return;
@@ -179,11 +189,20 @@
           location.replace('/bh/');
           return;
         }
-        if (/inloggen\.asp|v1login|vergeten/i.test(inner)) return;
+        const loginPage = /inloggen\.asp|v1login|vergeten/i.test(inner);
+        showingApp(!loginPage);
+        if (loginPage) return;
         settleTimer = window.setTimeout(() => {
           if (lastInnerUrl === inner) send({ type: 'login:done', url: inner });
         }, LOGIN_ANSWER_SETTLE_MS);
       });
+
+      // While the iframe shows anything but a login page, the login page's
+      // header and layout (login-page.js) step aside, so a landing that has
+      // not been moved to the real app yet never shows two navbars.
+      function showingApp(app) {
+        document.documentElement.classList.toggle('ebs-login-app', app);
+      }
 
       // The clearest sign of a finished login: the new session's token was
       // stored (e-Boekhouden posts "tokensaved" to the top window) and the
