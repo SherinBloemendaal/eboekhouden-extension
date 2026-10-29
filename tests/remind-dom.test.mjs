@@ -9,7 +9,7 @@ after(closeAll);
 
 const ORIGIN = 'https://secure20.e-boekhouden.nl';
 const FORM_URL = `${ORIGIN}/boekhouden/openposten/aanmaning?credDeb=D&datumTot=&soort=E&proefAanmaning=false&returnUrl=%2Fboekhouden%2Fopenposten&selected=2026-0371%7C11%2C2026-0398%7C11%2C2026-0390%7C12`;
-const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'request.js', 'features/openposts.js', 'features/remind.js'];
+const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'request.js', 'features/openposts.js', 'features/remind.js'];
 const TEMPLATES = ['Herinnering', 'Herinnering 2', 'Aanmaning'];
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
