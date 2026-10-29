@@ -41,15 +41,28 @@
     return node;
   }
 
+  // "+ 3.500,00", "− 0,05": the sign apart, as the design shows amounts.
+  function signedAmount(row) {
+    if (!Number.isFinite(row.amount)) return row.amountText;
+    return `${row.amount > 0 ? '+' : '−'} ${EBS.formatMoney(Math.abs(row.amount))}`;
+  }
+
   // -------------------------------------------------------------------------
   // Inside the mutation dialog: the import page loaded again in an iframe. It
   // opens the row's own "Handmatig invoeren" page, and tells the dialog when
   // e-Boekhouden comes back to the import list (after saving or cancelling).
+  // "Openen in nieuw tabblad" loads the same link in a tab of its own.
   // -------------------------------------------------------------------------
 
-  if (window !== window.top && location.hash.startsWith(EDIT_HASH)) {
-    runEditFrame(decodeURIComponent(location.hash.slice(EDIT_HASH.length)));
-    return;
+  if (location.hash.startsWith(EDIT_HASH)) {
+    const framed = window !== window.top;
+    let signature = '';
+    try {
+      signature = decodeURIComponent(location.hash.slice(EDIT_HASH.length));
+    } catch { /* a broken link: nothing to open */ }
+    if (signature) runEditFrame(signature, framed);
+    // In its own tab the page is an ordinary import page apart from that.
+    if (framed) return;
   }
 
   let settings = EBS.settingsWithDefaults();
@@ -136,14 +149,25 @@
   // Shift-select on the native checkboxes (and on ours, which mirror them)
   // -------------------------------------------------------------------------
 
+  // The anchor is the checkbox clicked last, with the line it belonged to:
+  // after a page change or a reload of the grid it no longer counts.
   let anchor = null;
   let clickingRange = false;
+
+  function anchorIndex(rows) {
+    if (!anchor) return -1;
+    return rows.findIndex((row) => row.checkbox === anchor.checkbox && EBS.rowSignature(row) === anchor.signature);
+  }
+
+  function setAnchor(row) {
+    anchor = row ? { checkbox: row.checkbox, signature: EBS.rowSignature(row) } : null;
+  }
 
   // After the native click on `target` has toggled it, give the whole range the
   // anchor's state by clicking the checkboxes that differ. Angular registers
   // each click as a selection, exactly as if they were clicked one by one.
-  function applyRange(rows, target) {
-    const toggles = EBS.rangeToggles(rows.map((row) => row.checkbox.checked), anchor, target);
+  function applyRange(rows, from, target) {
+    const toggles = EBS.rangeToggles(rows.map((row) => row.checkbox.checked), from, target);
     clickingRange = true;
     try {
       for (const index of toggles) rows[index].checkbox.click();
@@ -161,29 +185,37 @@
     const rows = readRows(grid);
     const index = rows.findIndex((row) => row.checkbox === input);
     if (index < 0) return;
-    if (event.shiftKey && settings.shiftSelect && anchor !== null && anchor < rows.length) {
+    const from = anchorIndex(rows);
+    if (event.shiftKey && settings.shiftSelect && from >= 0) {
       // Let the native handler toggle the clicked box first.
       setTimeout(() => {
-        applyRange(readRows(grid), index);
-        anchor = index;
+        const fresh = readRows(grid);
+        applyRange(fresh, from, index);
+        setAnchor(fresh[index]);
         schedule();
       });
       return;
     }
-    anchor = index;
+    setAnchor(rows[index]);
   }, true);
 
-  // Shift held over a row: show which range a shift-click would touch.
+  // Shift held over a row: show which range a shift-click would touch. Mouse
+  // moves without shift only clear an earlier preview, so they cost nothing.
+  let rangeShown = false;
   document.addEventListener('mousemove', (event) => {
+    if (!event.shiftKey && !rangeShown) return;
     if (!settings.shiftSelect || !onImportPage() || useBetter()) return;
     const grid = findGrid();
     if (!grid) return;
     const tr = event.target instanceof Element ? event.target.closest('app-grid-body table.grid tbody tr') : null;
     const rows = readRows(grid);
     const over = tr ? rows.findIndex((row) => row.tr === tr) : -1;
+    const from = anchorIndex(rows);
+    rangeShown = false;
     for (const row of rows) {
-      const inRange = event.shiftKey && anchor !== null && over >= 0 && row.index >= Math.min(anchor, over) && row.index <= Math.max(anchor, over);
-      row.tr.classList.toggle('ebs-range', inRange && !row.checkbox.checked);
+      const inRange = event.shiftKey && from >= 0 && over >= 0 && row.index >= Math.min(from, over) && row.index <= Math.max(from, over) && !row.checkbox.checked;
+      row.tr.classList.toggle('ebs-range', inRange);
+      rangeShown ||= inRange;
     }
   }, { passive: true });
 
@@ -232,6 +264,7 @@
     count: null,
     total: null,
     groupMenu: null,
+    native: {},
 
     ensure() {
       if (this.host?.isConnected) return;
@@ -246,11 +279,20 @@
       this.buttons = el('span', 'ebs-bar-buttons');
       this.host.append(this.buttons);
       document.body.append(this.host);
+      window.addEventListener('resize', () => this.place(), { passive: true });
     },
 
     hide() {
       this.host?.classList.remove('show');
-      this.closeGroupMenu();
+      this.closeGroupMenu(true);
+    },
+
+    // Centred under the list, not under the whole window with its sidebar.
+    place() {
+      if (!this.host) return;
+      const target = better.root?.isConnected ? better.root : findGrid();
+      const rect = target?.getBoundingClientRect();
+      this.host.style.left = rect?.width ? `${Math.round(rect.left + rect.width / 2)}px` : '';
     },
 
     update(grid, rows) {
@@ -272,22 +314,27 @@
       // Rebuild the buttons only when the mode changes, so focus survives.
       const mode = useBetter() ? 'better' : 'native';
       if (this.buttons.dataset.mode !== mode) {
+        this.closeGroupMenu(true);
         this.buttons.dataset.mode = mode;
         this.buttons.replaceChildren();
-        const button = (label, className, onClick) => {
+        const button = (label, className, onClick, parent = this.buttons) => {
           const node = el('button', `ebs-bar-button ${className}`, label);
           node.type = 'button';
           node.addEventListener('click', onClick);
-          this.buttons.append(node);
+          parent.append(node);
           return node;
         };
-        button('Wegboeken', 'primary', () => bulkAction(findGrid(), 'wegboeken')?.click());
+        this.native.wegboeken = button('Wegboeken', 'primary', () => bulkAction(findGrid(), 'wegboeken')?.click());
         if (mode === 'better') {
-          const groupButton = button('Aan groep toevoegen ▾', 'ghost', () => this.toggleGroupMenu(groupButton));
+          // The menu opens from the button itself, as in the design.
+          const wrap = el('span', 'ebs-group-wrap');
+          this.buttons.append(wrap);
+          const groupButton = button('Aan groep toevoegen ▾', 'ghost', (event) => this.toggleGroupMenu(groupButton, event.detail === 0), wrap);
           groupButton.setAttribute('aria-haspopup', 'menu');
+          groupButton.setAttribute('aria-expanded', 'false');
           button('Verbergen', 'ghost', () => better.hideRows(readRows(findGrid()).filter((row) => row.checkbox.checked)));
         }
-        button('Verwijderen', 'ghost', () => bulkAction(findGrid(), 'verwijderen')?.click());
+        this.native.verwijderen = button('Verwijderen', 'ghost', () => bulkAction(findGrid(), 'verwijderen')?.click());
         button('Selectie wissen', 'quiet', () => {
           clickingRange = true;
           try {
@@ -296,14 +343,20 @@
             clickingRange = false;
           }
           anchor = null;
+          better.anchor = null;
           schedule();
         });
       }
+      // e-Boekhouden blocks its bulk actions while it is busy: so do these.
+      for (const word of ['wegboeken', 'verwijderen']) {
+        this.native[word].disabled = Boolean(bulkAction(grid, word)?.classList.contains('disabled'));
+      }
+      this.place();
       // A class change, so a quick select and clear reverses mid-way.
       requestAnimationFrame(() => this.host.classList.add('show'));
     },
 
-    toggleGroupMenu(anchorButton) {
+    toggleGroupMenu(anchorButton, fromKeyboard) {
       if (this.groupMenu) {
         this.closeGroupMenu();
         return;
@@ -311,27 +364,20 @@
       anchorButton.setAttribute('aria-expanded', 'true');
       const menu = el('div', 'ebs-group-menu');
       menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', 'Aan groep toevoegen');
       const selected = () => readRows(findGrid()).filter((row) => row.checkbox.checked);
-      for (const name of better.prefs.groups) {
-        const item = el('button', 'ebs-group-item', name);
-        item.type = 'button';
-        item.setAttribute('role', 'menuitem');
-        item.addEventListener('click', () => {
-          better.assign(selected(), name);
+      const item = (label, onClick) => {
+        const node = el('button', 'ebs-group-item', label);
+        node.type = 'button';
+        node.setAttribute('role', 'menuitem');
+        node.addEventListener('click', () => {
+          onClick();
           this.closeGroupMenu();
         });
-        menu.append(item);
-      }
-      if (selected().some((row) => better.prefs.groupOf[EBS.rowSignature(row)])) {
-        const out = el('button', 'ebs-group-item', 'Uit groep halen');
-        out.type = 'button';
-        out.setAttribute('role', 'menuitem');
-        out.addEventListener('click', () => {
-          better.assign(selected(), null);
-          this.closeGroupMenu();
-        });
-        menu.append(out);
-      }
+        menu.append(node);
+      };
+      for (const name of better.prefs.groups) item(name, () => better.assign(selected(), name));
+      if (selected().some((row) => better.prefs.groupOf[EBS.rowSignature(row)])) item('Uit groep halen', () => better.assign(selected(), null));
       const create = el('form', 'ebs-group-new');
       const input = el('input');
       input.placeholder = 'Nieuwe groep met deze regels';
@@ -352,15 +398,37 @@
       this.onOutside = (event) => {
         if (!menu.contains(event.target) && event.target !== anchorButton) this.closeGroupMenu();
       };
+      this.onMenuKey = (event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          this.closeGroupMenu();
+          anchorButton.focus();
+          return;
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        const items = [...menu.querySelectorAll('.ebs-group-item, input')];
+        const at = items.indexOf(document.activeElement);
+        event.preventDefault();
+        items[(at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+      };
       document.addEventListener('mousedown', this.onOutside, true);
+      menu.addEventListener('keydown', this.onMenuKey);
+      if (fromKeyboard) menu.querySelector('.ebs-group-item, input')?.focus();
     },
 
-    closeGroupMenu() {
+    // Closing fades out (100 ms) in Better design; a hide or a mode switch closes at once.
+    closeGroupMenu(immediate = false) {
       if (!this.groupMenu) return;
-      this.groupMenu.anchorButton.setAttribute('aria-expanded', 'false');
-      this.groupMenu.menu.remove();
+      const { menu, anchorButton } = this.groupMenu;
       this.groupMenu = null;
+      anchorButton.setAttribute('aria-expanded', 'false');
       document.removeEventListener('mousedown', this.onOutside, true);
+      if (immediate || !menu.isConnected || !this.host?.classList.contains('better')) {
+        menu.remove();
+        return;
+      }
+      menu.classList.add('closing');
+      setTimeout(() => menu.remove(), 100);
     },
   };
 
@@ -376,6 +444,8 @@
     prefsKey: null,
     ui: { query: '', direction: 'all', period: 'all', size: 'all', showHidden: false, group: null },
     leaving: new Set(),
+    // Signature of the line whose box was clicked last (the shift-select anchor).
+    anchor: null,
 
     async loadPrefs() {
       const number = document.querySelector('app-header-identity-b .administratieId, app-header-identity #administratieId')?.textContent.trim();
@@ -428,14 +498,16 @@
       this.tabList = el('span', 'ebs-tab-list');
       this.tabList.setAttribute('role', 'tablist');
       this.tabList.setAttribute('aria-label', 'Groepen');
-      this.tabs.append(this.tabList, this.buildGroupEditor());
+      // Rename and delete are not tabs, so they sit next to the tablist.
+      this.tabActions = el('span', 'ebs-tab-actions');
+      this.tabs.append(this.tabList, this.tabActions, this.buildGroupEditor());
 
       const filters = el('div', 'ebs-filters');
       const search = el('label', 'ebs-search');
       search.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>';
       this.searchInput = el('input');
       this.searchInput.type = 'search';
-      this.searchInput.placeholder = 'Zoek in alle kolommen: omschrijving, rekening, datum, bedrag';
+      this.searchInput.placeholder = 'Zoek in alle kolommen: tegenpartij, rekening, omschrijving, datum, bedrag';
       this.searchInput.setAttribute('aria-label', 'Zoeken in alle kolommen');
       this.searchInput.addEventListener('input', () => {
         this.ui.query = this.searchInput.value;
@@ -456,6 +528,8 @@
       const headRow = el('div', 'ebs-row ebs-row-head');
       for (const text of ['', 'Boekdatum', 'Tegenpartij', 'Omschrijving', 'Bedrag', '']) headRow.append(el('span', '', text));
       this.body = el('div', 'ebs-body');
+      this.body.addEventListener('mousemove', (event) => this.previewRange(event), { passive: true });
+      this.body.addEventListener('mouseleave', () => this.previewRange(null));
       this.footer = el('div', 'ebs-footer');
 
       panel.append(this.tabs, filters, headRow, this.body, this.footer);
@@ -485,7 +559,7 @@
       });
     },
 
-    draw() {
+    draw({ flip = false } = {}) {
       if (!this.root) return;
       const all = this.rows;
       const visible = this.visibleRows();
@@ -497,7 +571,7 @@
 
       this.cards.replaceChildren(
         this.card('Binnengekomen (in beeld)', `€ ${EBS.formatMoney(summary.inTotal)}`, `${summary.inCount} ${summary.inCount === 1 ? 'regel' : 'regels'}`, 'in'),
-        this.card('Uitgegaan (in beeld)', `€ ${EBS.formatMoney(summary.outTotal)}`, `${summary.outCount} ${summary.outCount === 1 ? 'regel' : 'regels'}`),
+        this.card('Uitgegaan (in beeld)', `€ ${summary.outTotal < 0 ? '−' : ''}${EBS.formatMoney(Math.abs(summary.outTotal))}`, `${summary.outCount} ${summary.outCount === 1 ? 'regel' : 'regels'}`),
         this.card('Oudste regel', summary.oldest ? `${summary.oldest.day} ${EBS.monthLabel(summary.oldest.key)}` : 'Geen', summary.oldest ? `${Math.max(0, Math.floor((Date.now() - summary.oldest.time) / 86400000))} dagen niet verwerkt` : ''),
       );
 
@@ -521,6 +595,7 @@
         };
         tab('Alle regels', null);
         for (const name of this.prefs.groups) tab(`${name} · ${counts[name] ?? 0}`, name);
+        this.tabActions.replaceChildren();
         if (this.ui.group && !this.editor.mode) {
           const rename = el('button', 'ebs-tab-action', 'Naam wijzigen');
           rename.type = 'button';
@@ -528,7 +603,7 @@
           const remove = el('button', 'ebs-tab-action', `Groep "${this.ui.group}" verwijderen`);
           remove.type = 'button';
           remove.addEventListener('click', () => this.removeGroup(this.ui.group));
-          this.tabList.append(rename, remove);
+          this.tabActions.append(rename, remove);
         }
       }
       this.editor.start.hidden = Boolean(this.editor.mode);
@@ -558,7 +633,7 @@
       this.hiddenToggle.setAttribute('aria-pressed', String(this.ui.showHidden));
       this.hiddenToggle.classList.toggle('on', this.ui.showHidden);
 
-      this.drawRows(visible);
+      this.drawRows(visible, all.length, { flip });
       this.footer.textContent = `${visible.length} ${visible.length === 1 ? 'regel' : 'regels'} in beeld · ${hiddenCount} verborgen · ${total ?? all.length} in totaal`;
     },
 
@@ -568,15 +643,23 @@
       return card;
     },
 
-    drawRows(visible) {
-      // FLIP: remember where rows were, so rows that move after a hide slide
-      // into place instead of jumping.
-      const before = new Map([...this.body.children].map((node) => [node.dataset.signature, node.getBoundingClientRect().top]));
+    // A redraw rebuilds the rows. Keyboard focus moves to the same control
+    // of the same line. Rows only slide (FLIP) after a hide: search and
+    // filters redraw at once, by design.
+    drawRows(visible, totalRows, { flip = false } = {}) {
+      const before = flip ? new Map([...this.body.children].map((node) => [node.dataset.signature, node.getBoundingClientRect().top])) : null;
+      const active = this.body.contains(document.activeElement) ? document.activeElement : null;
+      const focus = active && { signature: active.closest('.ebs-row')?.dataset.signature, control: active.dataset.control };
       this.body.replaceChildren();
-      const visibleRows = visible;
-      for (const row of visibleRows) this.body.append(this.rowElement(row, visibleRows));
-      if (!visibleRows.length) this.body.append(el('div', 'ebs-empty', 'Geen regels die passen bij je zoekopdracht of filters.'));
-      if (reducedMotion.matches) return;
+      for (const row of visible) this.body.append(this.rowElement(row, visible));
+      if (!visible.length) {
+        this.body.append(el('div', 'ebs-empty', totalRows ? 'Geen regels die passen bij je zoekopdracht of filters.' : 'Er staan geen afschriftregels klaar om te verwerken.'));
+      }
+      if (focus?.signature && focus.control) {
+        const node = [...this.body.children].find((child) => child.dataset.signature === focus.signature);
+        node?.querySelector(`[data-control="${focus.control}"]`)?.focus({ preventScroll: true });
+      }
+      if (!before || reducedMotion.matches) return;
       for (const node of this.body.children) {
         const old = before.get(node.dataset.signature);
         if (old === undefined) continue;
@@ -591,15 +674,28 @@
       }
     },
 
+    // Shift held over a line: show which lines a shift-click would set.
+    previewRange(event) {
+      const rows = [...this.body.children].filter((node) => node.classList.contains('ebs-row'));
+      const over = event?.shiftKey && settings.shiftSelect && event.target instanceof Element ? event.target.closest('.ebs-row') : null;
+      const from = over ? rows.findIndex((node) => node.dataset.signature === this.anchor) : -1;
+      const to = over ? rows.indexOf(over) : -1;
+      rows.forEach((node, i) => {
+        const inRange = from >= 0 && to >= 0 && i >= Math.min(from, to) && i <= Math.max(from, to) && !node.classList.contains('checked');
+        node.classList.toggle('ebs-range', inRange);
+      });
+    },
+
     rowElement(row, visibleRows) {
       const signature = EBS.rowSignature(row);
       const isHidden = this.prefs.hidden.includes(signature);
       const group = this.prefs.groupOf[signature];
-      const node = el('div', `ebs-row${row.checkbox.checked ? ' checked' : ''}${isHidden ? ' is-hidden' : ''}${this.leaving.has(signature) ? ' leaving' : ''}`);
+      const node = el('div', `ebs-row${row.checkbox.checked ? ' checked' : ''}${isHidden ? ' is-hidden' : ''}${this.leaving.has(signature) ? ' leaving' : ''}${this.anchor === signature ? ' anchor' : ''}`);
       node.dataset.signature = signature;
 
       const box = el('button', 'ebs-check');
       box.type = 'button';
+      box.dataset.control = 'check';
       box.setAttribute('role', 'checkbox');
       box.setAttribute('aria-checked', String(row.checkbox.checked));
       box.setAttribute('aria-label', 'Regel selecteren');
@@ -607,10 +703,12 @@
       box.addEventListener('click', (event) => {
         event.stopPropagation();
         const position = visibleRows.indexOf(row);
-        const shiftRange = event.shiftKey && settings.shiftSelect && this.anchor !== undefined && this.anchor !== null && visibleRows[this.anchor];
+        // Only an anchor that is in view counts, as in Gmail.
+        const from = visibleRows.findIndex((item) => EBS.rowSignature(item) === this.anchor);
+        const shiftRange = event.shiftKey && settings.shiftSelect && from >= 0;
         row.checkbox.click();
         if (shiftRange) {
-          const toggles = EBS.rangeToggles(visibleRows.map((item) => item.checkbox.checked), this.anchor, position);
+          const toggles = EBS.rangeToggles(visibleRows.map((item) => item.checkbox.checked), from, position);
           clickingRange = true;
           try {
             for (const index of toggles) visibleRows[index].checkbox.click();
@@ -618,7 +716,7 @@
             clickingRange = false;
           }
         }
-        this.anchor = position;
+        this.anchor = signature;
         schedule();
       });
 
@@ -636,13 +734,14 @@
       const description = el('span', 'ebs-description', row.party ? row.rest : (row.failure || row.note || ''));
       description.title = row.description;
 
-      const amount = el('span', `ebs-amount${row.amount > 0 ? ' in' : ''}`, Number.isFinite(row.amount) ? `${row.amount > 0 ? '+' : '−'} ${EBS.formatMoney(Math.abs(row.amount))}` : row.amountText);
+      const amount = el('span', `ebs-amount${row.amount > 0 ? ' in' : ''}`, signedAmount(row));
 
       const actions = el('span', 'ebs-actions');
       const action = (glyph, label, tip, className, onClick, enabled = true) => {
         const wrap = el('span', 'ebs-action-wrap');
         const button = el('button', `ebs-action ${className}`, glyph);
         button.type = 'button';
+        button.dataset.control = className;
         button.setAttribute('aria-label', label);
         button.disabled = !enabled;
         button.addEventListener('click', (event) => {
@@ -656,18 +755,20 @@
         wrap.append(button);
         actions.append(wrap);
       };
-      action('✓', 'Wegboeken', 'Wegboeken: open het mutatiescherm', 'book', () => dialog.open(row), Boolean(row.edit));
+      action('✓', 'Wegboeken', 'Wegboeken: open het mutatiescherm', 'book', () => dialog.open(row, signature), Boolean(row.edit));
       action('⇪', 'Bon uploaden', 'Bon of factuur koppelen aan deze regel', 'attach', () => row.attach?.click(), Boolean(row.attach));
       action(isHidden ? '◉' : '◌', isHidden ? 'Weer tonen' : 'Verbergen', isHidden ? 'Weer tonen in de lijst' : 'Verbergen (alleen in jouw weergave, niet verwijderd)', 'hide', () => (isHidden ? this.unhide(row) : this.hideRows([row])));
       action('✕', 'Verwijderen', 'Verwijderen uit e-Boekhouden (vraagt om bevestiging)', 'delete', () => row.remove?.click(), Boolean(row.remove));
 
       node.append(box, date, party, description, amount, actions);
       node.addEventListener('click', () => {
-        if (row.edit) dialog.open(row);
+        if (row.edit) dialog.open(row, signature);
       });
       return node;
     },
 
+    // The line fades out (140 ms) where it is, then the lines below slide up
+    // (FLIP, 180 ms). With reduced motion: the fade only.
     hideRows(rows) {
       const signatures = rows.map(EBS.rowSignature).filter((signature) => !this.prefs.hidden.includes(signature));
       if (!signatures.length) return;
@@ -675,7 +776,7 @@
         for (const signature of signatures) this.leaving.delete(signature);
         this.prefs.hidden = [...this.prefs.hidden, ...signatures];
         this.savePrefs();
-        this.draw();
+        this.draw({ flip: true });
       };
       // Unselect what gets hidden, through the native checkboxes.
       clickingRange = true;
@@ -684,12 +785,16 @@
       } finally {
         clickingRange = false;
       }
-      if (reducedMotion.matches || this.ui.showHidden) {
+      if (this.ui.showHidden || !this.root) {
         commit();
         return;
       }
+      // The class goes on the lines already on screen, so the transition runs;
+      // a redraw in between keeps them faded through `leaving`.
       for (const signature of signatures) this.leaving.add(signature);
-      this.draw();
+      for (const node of this.body.children) {
+        if (signatures.includes(node.dataset.signature)) node.classList.add('leaving');
+      }
       setTimeout(commit, 140);
     },
 
@@ -857,30 +962,47 @@
   // Mutation dialog: e-Boekhouden's own "Handmatig invoeren" page for one row.
   // -------------------------------------------------------------------------
 
+  // Open and close are transitions, not keyframes: Esc while it opens turns
+  // the same motion around. The page behind is inert while it is open.
   const dialog = {
     host: null,
-    open(row) {
+    open(row, signature = EBS.rowSignature(row)) {
       this.close(true);
+      this.returnTo = { element: document.activeElement, signature };
       const backdrop = el('div', 'ebs-dialog-backdrop');
       const panel = el('div', 'ebs-dialog');
       panel.setAttribute('role', 'dialog');
       panel.setAttribute('aria-modal', 'true');
-      panel.setAttribute('aria-label', 'Mutatie aanmaken');
+      panel.setAttribute('aria-labelledby', 'ebs-dialog-title');
       const head = el('div', 'ebs-dialog-head');
       const titles = el('span', 'ebs-dialog-titles');
-      titles.append(el('span', 'ebs-dialog-title', 'Mutatie aanmaken'));
-      titles.append(el('span', 'ebs-dialog-sub', [row.party ?? row.description, row.amountText, row.bookDate].filter(Boolean).join(' · ')));
+      const title = el('span', 'ebs-dialog-title', 'Mutatie aanmaken');
+      title.id = 'ebs-dialog-title';
+      const amount = Number.isFinite(row.amount) ? `${row.amount > 0 ? '+' : '−'} € ${EBS.formatMoney(Math.abs(row.amount))}` : row.amountText;
+      titles.append(title, el('span', 'ebs-dialog-sub', [row.party ?? row.description, amount, row.bookDate].filter(Boolean).join(' · ')));
+      const url = `${location.origin}${location.pathname}${location.search}${EDIT_HASH}${encodeURIComponent(signature)}`;
+      const newTab = el('a', 'ebs-dialog-newtab', 'Openen in nieuw tabblad');
+      newTab.href = url;
+      newTab.target = '_blank';
+      newTab.rel = 'noopener';
+      newTab.addEventListener('click', () => this.close());
       const close = el('button', 'ebs-dialog-close', '✕');
       close.type = 'button';
       close.setAttribute('aria-label', 'Sluiten');
       close.addEventListener('click', () => this.close());
-      head.append(titles, close);
+      head.append(titles, newTab, close);
 
       const frame = el('iframe', 'ebs-dialog-frame');
       frame.title = 'Mutatie aanmaken';
-      frame.src = `${location.origin}${location.pathname}${location.search}${EDIT_HASH}${encodeURIComponent(EBS.rowSignature(row))}`;
+      frame.src = url;
 
-      const foot = el('div', 'ebs-dialog-foot', 'Na opslaan sluit dit venster en wordt de lijst ververst.');
+      const foot = el('div', 'ebs-dialog-foot');
+      const note = el('span', '', 'Na opslaan sluit dit venster en wordt de lijst ververst.');
+      note.setAttribute('role', 'status');
+      const done = el('button', 'ebs-dialog-done', 'Sluiten');
+      done.type = 'button';
+      done.addEventListener('click', () => this.close());
+      foot.append(note, done);
       panel.append(head, frame, foot);
       backdrop.append(panel);
       backdrop.addEventListener('mousedown', (event) => {
@@ -892,17 +1014,23 @@
       document.addEventListener('keydown', this.onKey, true);
       this.onMessage = (event) => {
         if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
-        if (event.data?.ebs === 'edit-done') {
+        const kind = event.data?.ebs;
+        if (kind === 'edit-done') {
           this.close();
           location.reload();
         }
-        if (event.data?.ebs === 'edit-missing') {
-          foot.textContent = 'Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.';
-        }
+        if (kind === 'edit-escape') this.close();
+        if (kind === 'edit-missing') note.textContent = 'Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.';
+        if (kind === 'edit-failed') note.textContent = 'Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.';
       };
       window.addEventListener('message', this.onMessage);
+      this.inert = [...document.body.children].filter((child) => !child.inert);
+      for (const child of this.inert) child.inert = true;
       document.body.append(backdrop);
       this.host = backdrop;
+      // Start from the closed state in this frame, then open.
+      void backdrop.offsetWidth;
+      backdrop.classList.add('open');
       close.focus();
     },
     close(immediate = false) {
@@ -911,81 +1039,112 @@
       this.host = null;
       document.removeEventListener('keydown', this.onKey, true);
       window.removeEventListener('message', this.onMessage);
-      if (immediate || reducedMotion.matches) {
+      for (const child of this.inert ?? []) child.inert = false;
+      this.inert = null;
+      // Back to the button or line the dialog came from, also after a redraw.
+      const { element, signature } = this.returnTo ?? {};
+      const target = element?.isConnected && element !== document.body ? element
+        : [...(better.body?.children ?? [])].find((node) => node.dataset.signature === signature)?.querySelector('[data-control="book"]');
+      target?.focus({ preventScroll: true });
+      if (immediate || !better.root) {
         host.remove();
         return;
       }
+      host.classList.remove('open');
       host.classList.add('closing');
       setTimeout(() => host.remove(), 120);
     },
   };
 
   // -------------------------------------------------------------------------
-  // The page inside the dialog.
+  // The page inside the dialog (or in its own tab, "Openen in nieuw tabblad").
   // -------------------------------------------------------------------------
 
-  function runEditFrame(signature) {
-    const style = document.createElement('style');
-    // Only the page content: the shell's header and menus are already around the dialog.
-    // The page itself is projected inside app-site-navigation(-b) (#navBody), so hide the
-    // header and sidebar within it and drop its grid, the way e-Boekhouden's own print
-    // stylesheet does.
-    style.textContent = `
-      app-eb-header, app-header-identity, app-header-identity-b, app-notification-bar,
-      :is(app-site-navigation, app-site-navigation-b) :is(#navHeader, #navSidebar, .sidebar-menu-overlay) { display: none !important; }
-      :is(app-site-navigation, app-site-navigation-b) .nav { display: block !important; width: auto !important; height: auto !important; overflow: visible !important; }
-      :is(app-site-navigation, app-site-navigation-b) #navBody { display: block !important; }
-    `;
-    document.documentElement.append(style);
-
-    const started = Date.now();
-    let clicked = false;
-    const tick = setInterval(() => {
-      if (!clicked) {
-        const grid = findGridIn(document);
-        if (grid) {
-          const row = readRowsIn(grid).find((item) => EBS.rowSignature(item) === signature);
-          if (row?.edit) {
-            clicked = true;
-            row.edit.click();
-          } else if (row || Date.now() - started > 15000) {
-            clearInterval(tick);
-            parent.postMessage({ ebs: 'edit-missing' }, location.origin);
-          }
-        }
-        return;
-      }
-      // Back on the import list: e-Boekhouden saved or cancelled.
-      if (PAGE.test(location.pathname)) {
-        clearInterval(tick);
-        parent.postMessage({ ebs: 'edit-done' }, location.origin);
-      }
-    }, 250);
-
-    function findGridIn(doc) {
-      for (const grid of doc.querySelectorAll('app-grid')) {
-        if (grid.querySelector('.grid-header-title')?.textContent.includes(TITLE)) return grid;
-      }
-      return null;
-    }
-
-    function readRowsIn(grid) {
-      const headers = [...grid.querySelectorAll('app-grid-body table.grid thead th')].map((th) => th.textContent.trim());
-      const at = (label) => headers.findIndex((text) => text.startsWith(label));
-      const columns = { importDate: at('Importdatum'), account: at('RekeningNr'), bookDate: at('Boekdatum'), amount: at('Bedrag'), description: at('Omschrijving') };
-      return [...grid.querySelectorAll('app-grid-body table.grid tbody tr')].map((tr) => {
-        const cells = [...tr.children];
-        const text = (key) => (columns[key] >= 0 ? cells[columns[key]]?.textContent.replace(/\s+/g, ' ').trim() ?? '' : '');
-        return {
-          importDate: text('importDate'),
-          account: text('account'),
-          bookDate: text('bookDate'),
-          amount: EBS.parseAmount(text('amount')),
-          description: text('description'),
-          edit: tr.querySelector('[title="Handmatig invoeren"]'),
-        };
+  function runEditFrame(signature, framed) {
+    const tell = (ebs) => {
+      if (framed) parent.postMessage({ ebs }, location.origin);
+    };
+    if (framed) {
+      const style = document.createElement('style');
+      // Only the page content: the shell's header and menus are already around the dialog.
+      // The page itself is projected inside app-site-navigation(-b) (#navBody), so hide the
+      // header and sidebar within it and drop its grid, the way e-Boekhouden's own print
+      // stylesheet does.
+      style.textContent = `
+        app-eb-header, app-header-identity, app-header-identity-b, app-notification-bar,
+        :is(app-site-navigation, app-site-navigation-b) :is(#navHeader, #navSidebar, .sidebar-menu-overlay) { display: none !important; }
+        :is(app-site-navigation, app-site-navigation-b) .nav { display: block !important; width: auto !important; height: auto !important; overflow: visible !important; }
+        :is(app-site-navigation, app-site-navigation-b) #navBody { display: block !important; }
+      `;
+      document.documentElement.append(style);
+      // Esc in the page closes the dialog too, unless the page used it (a dropdown).
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !event.defaultPrevented) tell('edit-escape');
       });
     }
+
+    // find     wait for the grid; the line on this page: click its "Handmatig
+    //          invoeren"; not on it: "Volgende" (e-Boekhouden shows 100 per page)
+    // paging   wait until the next page has replaced the lines
+    // opening  wait until e-Boekhouden has left the list for the mutation page
+    // editing  back on the list: saved or cancelled
+    let phase = 'find';
+    let since = Date.now();
+    let seen = null;
+    let pages = 0;
+    const to = (next) => {
+      phase = next;
+      since = Date.now();
+    };
+    const stop = (message) => {
+      clearInterval(tick);
+      if (message) tell(message);
+    };
+    const firstLine = (rows) => (rows.length ? EBS.rowSignature(rows[0]) : '');
+    const tick = setInterval(() => {
+      const waited = Date.now() - since;
+      if (phase === 'find' || phase === 'paging') {
+        const grid = PAGE.test(location.pathname) ? findGrid() : null;
+        const rows = grid ? readRows(grid) : [];
+        if (phase === 'paging') {
+          if (firstLine(rows) && firstLine(rows) !== seen) to('find');
+          else if (waited > 10000) stop('edit-missing');
+          return;
+        }
+        // The same lines twice in a row: the grid has settled.
+        const key = `${rows.length}|${firstLine(rows)}`;
+        const settled = rows.length > 0 && key === seen;
+        seen = key;
+        const row = rows.find((item) => EBS.rowSignature(item) === signature);
+        if (row?.edit) {
+          row.edit.click();
+          if (!framed) history.replaceState(history.state, '', location.href.replace(/#.*$/, ''));
+          to('opening');
+          return;
+        }
+        if (row && settled) {
+          stop('edit-missing');
+          return;
+        }
+        const next = grid && [...grid.querySelectorAll('app-pagination .pagination li')].find((li) => /volgende/i.test(li.textContent));
+        if (settled && next && !next.classList.contains('disabled') && pages < 50) {
+          pages += 1;
+          seen = firstLine(rows);
+          next.click();
+          to('paging');
+          return;
+        }
+        if ((settled && !rows.length) || (settled && !next) || (settled && next?.classList.contains('disabled')) || waited > 15000) stop('edit-missing');
+        return;
+      }
+      if (phase === 'opening') {
+        if (!PAGE.test(location.pathname)) to('editing');
+        else if (waited > 10000) stop('edit-failed');
+        return;
+      }
+      // editing
+      if (PAGE.test(location.pathname)) stop(framed ? 'edit-done' : null);
+    }, 250);
   }
 
   // -------------------------------------------------------------------------
@@ -1015,7 +1174,9 @@
     .ebs-bar-button.ghost { border: 1px solid rgba(255, 255, 255, .35); background: transparent; color: #fff; }
     .ebs-bar-button.quiet { border: 0; background: transparent; color: #c4cae0; }
     .ebs-bar-button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-    .ebs-group-menu { position: absolute; bottom: calc(100% + 8px); left: 60px; min-width: 220px; padding: 6px; display: flex; flex-direction: column; background: #fff; color: #232c4f; border-radius: 10px; box-shadow: 0 12px 32px rgba(20, 26, 48, .25); }
+    .ebs-group-wrap { position: relative; display: flex; }
+    .ebs-bar-button:disabled { opacity: .5; cursor: default; }
+    .ebs-group-menu { position: absolute; bottom: calc(100% + 8px); left: 0; min-width: 220px; padding: 6px; display: flex; flex-direction: column; background: #fff; color: #232c4f; border-radius: 10px; box-shadow: 0 12px 32px rgba(20, 26, 48, .25); }
     .ebs-group-item { height: 36px; padding: 0 10px; border: 0; border-radius: 6px; background: #fff; color: #232c4f; text-align: left; font: 13px Ubuntu, system-ui, sans-serif; cursor: pointer; }
     .ebs-group-item:hover, .ebs-group-item:focus-visible { background: #f3f5fa; }
     .ebs-group-new input { box-sizing: border-box; width: 100%; height: 34px; margin-top: 4px; padding: 0 10px; border: 1px solid #d6dbe8; border-radius: 6px; font: 13px Ubuntu, system-ui, sans-serif; }
@@ -1046,7 +1207,7 @@
     .ebs-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid #e6e9f1; }
     .ebs-tab { height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
     .ebs-tab.on { border-bottom-color: #232c4f; color: #232c4f; font-weight: 700; }
-    .ebs-tab-list { display: contents; }
+    .ebs-tab-list, .ebs-tab-actions { display: contents; }
     .ebs-tab-action { height: 30px; margin-left: 4px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #8c93ab; font-size: 12px; cursor: pointer; }
     .ebs-tab-action:hover, .ebs-tab-action:focus-visible { color: #232c4f; background: #f3f5fa; }
     .ebs-tab-new { display: inline-flex; align-items: center; }
@@ -1074,7 +1235,9 @@
     .ebs-row { display: grid; grid-template-columns: 44px 150px minmax(0, 1.2fr) minmax(0, 1.6fr) 130px 170px; align-items: center; min-height: 54px; padding: 0 14px; border-bottom: 1px solid #eef0f5; background: #fff; cursor: pointer; }
     .ebs-row:hover { background: #fafbfd; }
     .ebs-row.checked { background: #e8eefb; }
-    .ebs-row.is-hidden { opacity: .55; }
+    .ebs-row.is-hidden { opacity: .55; background: #fafafa; }
+    .ebs-row.ebs-range { background: #f3f6fd; }
+    .ebs-row.anchor { box-shadow: inset 3px 0 0 #232c4f; }
     .ebs-row-head { min-height: 38px; font-size: 12px; color: #5d6584; background: #f7f8fb; cursor: default; }
     .ebs-row-head:hover { background: #f7f8fb; }
     .ebs-row-head span:nth-child(5) { text-align: right; }
@@ -1098,35 +1261,42 @@
     .ebs-tooltip { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 3; padding: 6px 10px; border-radius: 6px; background: #1b2240; color: #fff; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 12px rgba(20, 26, 48, .25); pointer-events: none; animation: ebs-tip 120ms ease-out; }
     .ebs-tooltip.instant { animation: none; }
     .ebs-empty { padding: 24px 14px; font-size: 13px; color: #5d6584; }
-    .ebs-footer { padding: 12px 14px; font-size: 13px; color: #5d6584; }
-    .ebs-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483100; display: flex; align-items: center; justify-content: center; background: rgba(20, 26, 48, .5); animation: ebs-fade 160ms cubic-bezier(0.23, 1, 0.32, 1); }
-    .ebs-dialog { width: min(1040px, calc(100vw - 48px)); height: min(760px, calc(100vh - 48px)); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(10, 14, 30, .4); font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; animation: ebs-pop 180ms cubic-bezier(0.23, 1, 0.32, 1); }
-    .ebs-dialog-backdrop.closing { opacity: 0; transition: opacity 120ms ease-in; }
-    .ebs-dialog-backdrop.closing .ebs-dialog { transform: scale(0.98); transition: transform 120ms ease-in; }
+    .ebs-footer { padding: 12px 14px; border-top: 1px solid #e6e9f1; font-size: 13px; color: #5d6584; }
+    .ebs-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483100; display: flex; align-items: center; justify-content: center; background: rgba(20, 26, 48, .5); }
+    .ebs-dialog { width: min(1040px, calc(100vw - 48px)); height: min(760px, calc(100vh - 48px)); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(10, 14, 30, .4); font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; }
     .ebs-dialog-head { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e6e9f1; }
     .ebs-dialog-titles { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
     .ebs-dialog-title { font-size: 17px; font-weight: 700; }
     .ebs-dialog-sub { font-size: 13px; color: #5d6584; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ebs-dialog-newtab { font-size: 13px; color: #232c4f; }
     .ebs-dialog-close { width: 36px; height: 36px; border: 0; border-radius: 8px; background: #f3f5fa; color: #232c4f; font-size: 18px; cursor: pointer; }
     .ebs-dialog-frame { flex: 1; width: 100%; border: 0; }
-    .ebs-dialog-foot { padding: 10px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
+    .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
+    .ebs-dialog-done { height: 36px; padding: 0 14px; border: 1px solid #d6dbe8; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; cursor: pointer; }
+    .ebs-dialog-close:focus-visible, .ebs-dialog-done:focus-visible, .ebs-dialog-newtab:focus-visible, .ebs-group-item:focus-visible, .ebs-tab-action:focus-visible, .ebs-hidden-toggle:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     /* Better design motion (the approved list). */
     .ebs-bar.better { opacity: 0; transform: translate(-50%, 16px); transition: opacity 150ms ease-in, transform 150ms ease-in, visibility 0s linear 150ms; }
     .ebs-bar.better.show { opacity: 1; transform: translate(-50%, 0); transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s; }
     .ebs-bar.better .ebs-group-menu { transform-origin: bottom left; animation: ebs-menu 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-bar.better .ebs-group-menu.closing { opacity: 0; transform: scale(0.96); transition: opacity 100ms ease-in, transform 100ms ease-in; pointer-events: none; }
+    .ebs-dialog-backdrop { opacity: 0; transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-dialog { opacity: 0; transform: scale(0.97); transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-dialog-backdrop.open, .ebs-dialog-backdrop.open .ebs-dialog { opacity: 1; transform: none; }
+    .ebs-dialog-backdrop.closing, .ebs-dialog-backdrop.closing .ebs-dialog { transition-duration: 120ms; transition-timing-function: ease-in; pointer-events: none; }
     .ebs-bar.better .ebs-bar-button { transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-bar.better .ebs-bar-button:active { transform: scale(0.97); }
     .ebs-row.leaving { opacity: 0; transform: translateX(8px); transition: opacity 140ms cubic-bezier(0.23, 1, 0.32, 1), transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
     @keyframes ebs-fade { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes ebs-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
     @keyframes ebs-menu { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
     @keyframes ebs-tip { from { opacity: 0; } to { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) {
       .ebs-bar.better, .ebs-bar.better.show { transform: translate(-50%, 0); }
       .ebs-bar.better.show { transition: opacity 150ms ease-out, visibility 0s; }
-      .ebs-dialog, .ebs-bar.better .ebs-group-menu { animation: ebs-fade 120ms ease-out; }
-      .ebs-dialog-backdrop.closing .ebs-dialog { transform: none; }
+      .ebs-bar.better .ebs-group-menu { animation: ebs-fade 120ms ease-out; }
+      .ebs-bar.better .ebs-group-menu.closing { transform: none; }
+      .ebs-dialog, .ebs-dialog-backdrop.open .ebs-dialog { transform: none; transition: opacity 120ms ease-out; }
+      .ebs-dialog-backdrop { transition: opacity 120ms ease-out; }
       .ebs-row.leaving { transform: none; }
       .ebs-bar.better .ebs-bar-button:active { transform: none; }
     }
@@ -1152,11 +1322,13 @@
       schedule();
     });
     // Our own drawing must not wake the loop, or it would redraw forever.
+    // A change inside a subtree that is already gone (a tooltip removed from a
+    // row that a redraw replaced) says nothing about the page either.
     const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-dialog-backdrop, #ebs-import-style';
     new MutationObserver((records) => {
       const native = records.some((record) => {
         const node = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;
-        return !node?.closest(OURS);
+        return Boolean(node?.isConnected) && !node.closest(OURS);
       });
       if (native) schedule();
     }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
@@ -1166,6 +1338,7 @@
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
       anchor = null;
+      better.anchor = null;
       applyBetterClass();
       schedule();
     }, 300);
