@@ -14,10 +14,15 @@
 // the page waits, so it must answer at once: return { claim: true } for
 // window.open, { retarget: 'ebs-<frame name>' } or { cancel: true } for a
 // form, and anything else to leave the page alone. Until a feature registers
-// one, the answer is null and the page goes its own way.
+// one, the answer is null and the page goes its own way. A handler is only
+// asked during a user gesture (navigator.userActivation.isActive): a page
+// script cannot make a feature open a dialog on its own.
 //
-// Everything from the page world is untrusted: it is the page's own realm.
-// Messages are checked here before a feature sees them.
+// Everything from the page world is untrusted: it is the page's own realm,
+// and a same-origin parent frame can even read and forge this channel (see
+// main-world.js). Messages are checked here before a feature sees them, an
+// answer from there (a result, an observed response) is page data and
+// nothing more, and nothing goes over the channel that the page may not see.
 
 (() => {
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -101,11 +106,19 @@
     settleReady(true);
   }
 
+  // A popup or a form only reaches a feature during a user gesture. This is
+  // the check that counts: the page's world can say anything, but the
+  // browser's own activation state is the same in both worlds and only the
+  // user sets it. Without one the browser would have blocked the popup.
+  function userGesture() {
+    return root.navigator?.userActivation?.isActive === true;
+  }
+
   function answerQuery(message) {
     let value = null;
     const handler = interceptors.get(message.hook);
     const data = checkQuery(message.hook, message.data);
-    if (handler && data) {
+    if (handler && data && userGesture()) {
       try {
         const answer = handler(data);
         value = answer && typeof answer === 'object' ? answer : null;

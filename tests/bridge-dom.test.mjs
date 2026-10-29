@@ -11,16 +11,24 @@ const URL_V2 = 'https://secure20.e-boekhouden.nl/boekhouden/facturen';
 const HTML = '<!doctype html><html><head></head><body><form id="f" action="/print/factuur" target="_blank" name="frmPrint"></form><button id="b">Klik</button></body></html>';
 
 // The page's own functions, replaced by recorders before the scripts load.
+// jsdom has no navigator.userActivation: `gesture.active` stands in for a
+// click of the user that is still fresh.
 function pageWithNatives(html = HTML, { order = ['main-world.js', 'shared.js', 'bridge.js', 'request.js'] } = {}) {
-  const p = page(html, { url: URL_V2 });
+  const p = page(html, { url: URL_V2, answer: (message) => (message.type === 'requests:slot' ? { ok: true, lease: 'test' } : {}) });
   const { window } = p;
+  const gesture = { active: false };
+  class UserActivation {
+    get isActive() { return gesture.active; }
+    get hasBeenActive() { return gesture.active; }
+  }
+  Object.defineProperty(window.navigator, 'userActivation', { configurable: true, value: new UserActivation() });
   const log = { opened: [], submitted: [], fetched: [] };
   window.open = function open(...args) {
     log.opened.push(args);
     return 'page-window';
   };
   window.HTMLFormElement.prototype.submit = function submit() {
-    log.submitted.push(this.getAttribute('target'));
+    log.submitted.push(window.Element.prototype.getAttribute.call(this, 'target'));
   };
   window.fetch = async function fetch(input, init) {
     log.fetched.push({ url: String(input), init });
@@ -34,7 +42,18 @@ function pageWithNatives(html = HTML, { order = ['main-world.js', 'shared.js', '
     xhrSend: window.XMLHttpRequest.prototype.send,
   };
   p.load(...order);
-  return { ...p, log, natives, bridge: window.EBS.bridge };
+  return { ...p, log, natives, gesture, bridge: window.EBS.bridge };
+}
+
+// The channel name, read the way a same-origin parent frame could.
+function sniffChannel(p) {
+  const names = [];
+  const dispatch = p.document.dispatchEvent.bind(p.document);
+  p.document.dispatchEvent = (event) => {
+    if (/^ebs:/.test(event.type)) names.push(event.type);
+    return dispatch(event);
+  };
+  return names;
 }
 
 function untouched(p) {
@@ -85,6 +104,7 @@ test('a late ready event from the page gets no hello with the channel name', asy
 test('window.open: unclaimed popups open as always, a claimed one returns null', async () => {
   const p = pageWithNatives();
   await p.bridge.ready();
+  p.gesture.active = true;
   p.bridge.enable('windowOpen');
   assert.notEqual(p.window.open, p.natives.open, 'the hook is in place now');
   assert.equal(p.window.open('/bh/factuur.asp?id=1', 'print', 'width=800'), 'page-window', 'no feature registered: the page decides');
@@ -120,6 +140,7 @@ test('form submits into another window can go into a frame of ours, or stay as t
   const p = pageWithNatives();
   await p.bridge.ready();
   const form = p.document.getElementById('f');
+  p.gesture.active = true;
   p.bridge.enable('formTarget');
   form.submit();
   assert.deepEqual(p.log.submitted, ['_blank'], 'nobody claims it: as before');
@@ -240,5 +261,138 @@ test('request.js in main mode runs a GET with the page\'s own fetch', async () =
   assert.ok(posted.some((message) => message.type === 'call' && message.method === 'request.get'), 'it went through the bridge');
   assert.throws(() => p.bridge.claimRequest(), /already claimed/, 'only request.js has the page-world GET');
   assert.throws(() => p.bridge.enable('request'), /belongs to request.js/);
+  p.close();
+});
+
+test('without a user gesture no feature is asked: a page script cannot open a dialog on its own', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  const asked = [];
+  p.bridge.enable('windowOpen');
+  p.bridge.enable('formTarget');
+  p.bridge.intercept('windowOpen', (popup) => {
+    asked.push(popup.url);
+    return { claim: true };
+  });
+  p.bridge.intercept('formSubmit', (submit) => {
+    asked.push(submit.action);
+    return { cancel: true };
+  });
+  assert.equal(p.window.open('/bh/factuur.asp?id=1'), 'page-window', 'the page\'s own window.open (and so its popup blocker)');
+  p.document.getElementById('f').submit();
+  assert.deepEqual(p.log.submitted, ['_blank']);
+  assert.deepEqual(asked, []);
+  p.gesture.active = true;
+  assert.equal(p.window.open('/bh/factuur.asp?id=2'), null);
+  assert.deepEqual(asked, ['https://secure20.e-boekhouden.nl/bh/factuur.asp?id=2']);
+  p.close();
+});
+
+test('a forged message on the channel gets no feature to act without a gesture', async () => {
+  const p = pageWithNatives();
+  const names = sniffChannel(p);
+  await p.bridge.ready();
+  const asked = [];
+  p.bridge.intercept('windowOpen', (popup) => {
+    asked.push(popup.url);
+    return { claim: true };
+  });
+  p.bridge.enable('windowOpen');
+  const toIsolated = names.find((name) => name.endsWith(':main')).replace(/:main$/, ':isolated');
+  const answers = [];
+  p.document.addEventListener(names.find((name) => name.endsWith(':main')), (event) => answers.push(JSON.parse(event.detail)));
+  const forge = (id) => p.document.dispatchEvent(new p.window.CustomEvent(toIsolated, {
+    detail: JSON.stringify({ v: 1, type: 'query', id, hook: 'windowOpen', data: { url: 'https://secure20.e-boekhouden.nl/bh/x.asp', target: '', features: '' } }),
+  }));
+  forge(9001);
+  assert.deepEqual(asked, []);
+  assert.deepEqual(answers.filter((message) => message.id === 9001).map((message) => message.value), [null]);
+  // During a real gesture it is no more than the page calling window.open itself.
+  p.gesture.active = true;
+  forge(9002);
+  assert.deepEqual(asked, ['https://secure20.e-boekhouden.nl/bh/x.asp']);
+  p.close();
+});
+
+test('form fields that shadow the form\'s own properties cannot break or fool the hook', async () => {
+  const p = pageWithNatives('<!doctype html><html><head></head><body><form id="f" action="/print/factuur" method="post" target="_blank"><input name="action" value="/elders"><input name="method" value="x"><input name="id" value="y"><input name="getAttribute" value="z"><input name="target" value="w"></form></body></html>');
+  await p.bridge.ready();
+  const seen = [];
+  p.gesture.active = true;
+  p.bridge.enable('formTarget');
+  p.bridge.intercept('formSubmit', (submit) => {
+    seen.push(submit);
+    return { retarget: 'ebs-popup' };
+  });
+  const form = p.document.getElementById('f');
+  // What Chrome does for a form (jsdom does not): a field named like a
+  // property of the form hides that property.
+  for (const field of form.elements) Object.defineProperty(form, field.name, { configurable: true, value: field });
+  assert.equal(typeof form.getAttribute, 'object');
+  form.submit();
+  assert.deepEqual(p.log.submitted, ['ebs-popup'], 'the page\'s submit ran');
+  assert.deepEqual(plain(seen), [{ action: 'https://secure20.e-boekhouden.nl/print/factuur', method: 'post', target: '_blank', name: '', id: 'f' }]);
+  assert.equal(p.window.Element.prototype.getAttribute.call(form, 'target'), '_blank');
+  p.close();
+});
+
+test('getters the page puts on Object.prototype never see what the extension sends', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  const seen = [];
+  const names = ['bubbles', 'cancelable', 'composed', 'claim', 'retarget', 'cancel', 'accept', 'options', 'args'];
+  // jsdom runs both halves in one realm. In Chrome the extension's side has
+  // its own Object.prototype, so a hit on an object of that side (a message
+  // it sends: call, answer, enable, disable) is not a hit the page gets.
+  const ofIsolated = (object) => {
+    try {
+      return ['call', 'answer', 'enable', 'disable'].includes(JSON.parse(Object.getOwnPropertyDescriptor(object, 'detail')?.value).type);
+    } catch {
+      return false;
+    }
+  };
+  for (const name of names) {
+    Object.defineProperty(p.window.Object.prototype, name, {
+      configurable: true,
+      get() {
+        if (!ofIsolated(this)) seen.push(name);
+        return undefined;
+      },
+    });
+  }
+  p.gesture.active = true;
+  p.bridge.enable('windowOpen');
+  p.bridge.enable('ckeditor');
+  p.bridge.intercept('windowOpen', () => ({ claim: true }));
+  p.window.CKEDITOR = { instances: { txt: { getData: () => '<p>x</p>' } } };
+  assert.equal(p.window.open('/bh/factuur.asp?id=1'), null);
+  assert.equal(await p.bridge.call('ckeditor.getData', { name: 'txt' }), '<p>x</p>');
+  await p.window.EBS.request.bulk('k', '/api/k', { mode: 'main' });
+  for (const name of names) delete p.window.Object.prototype[name];
+  assert.deepEqual(seen, [], 'the page saw these being read');
+  p.close();
+});
+
+test('off and on again after the page wrapped submit: one question per submit', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  p.gesture.active = true;
+  const seen = [];
+  p.bridge.intercept('formSubmit', (submit) => {
+    seen.push(submit.action);
+    return null;
+  });
+  p.bridge.enable('formTarget');
+  const ours = p.window.HTMLFormElement.prototype.submit;
+  p.window.HTMLFormElement.prototype.submit = function pageSubmit() {
+    return ours.call(this);
+  };
+  p.bridge.disable('formTarget');
+  p.document.getElementById('f').submit();
+  assert.deepEqual(seen, [], 'off: ours passes through');
+  p.bridge.enable('formTarget');
+  p.document.getElementById('f').submit();
+  assert.equal(seen.length, 1);
+  assert.deepEqual(p.log.submitted, ['_blank', '_blank']);
   p.close();
 });

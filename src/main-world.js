@@ -16,9 +16,15 @@
 // CustomEvent on document; from then on each side talks on its own event
 // name under that id. Only JSON text travels, never objects, credentials or
 // keys. A handshake is only accepted while the document has no <script>
-// yet, so a page script cannot open or join a channel later. This world is
-// the page's own, so nothing here is secret from the page: the isolated side
-// treats every message from here as untrusted data and checks it.
+// yet, so a script of this document cannot open or join a channel later.
+//
+// This world is the page's own, so nothing here is secret from the page. A
+// same-origin parent can even reach a frame's window before this script
+// runs (Chrome keeps the window of a frame's first about:blank) and replace
+// the built-ins captured below, and so learn the channel. That is why the
+// isolated side treats every message from here as untrusted data, gives a
+// popup or a form to a feature only during a real user gesture, and never
+// sends anything over this channel that the page may not see.
 
 (() => {
   'use strict';
@@ -46,6 +52,54 @@
   const stringify = JSON.stringify;
   const PageURL = URL;
   const hasOwn = Object.prototype.hasOwnProperty;
+  const create = Object.create;
+  const isArray = Array.isArray;
+  const ElementProto = Element.prototype;
+  const getAttribute = ElementProto.getAttribute;
+  const setAttribute = ElementProto.setAttribute;
+  const removeAttribute = ElementProto.removeAttribute;
+  const hasAttribute = ElementProto.hasAttribute;
+  const FormProto = HTMLFormElement.prototype;
+  const FormElement = HTMLFormElement;
+  // A form's own properties lose to its fields: <input name="action"> is
+  // form.action. Read the real ones from the prototype.
+  const formGetter = (name) => Object.getOwnPropertyDescriptor(FormProto, name)?.get;
+  const formAction = formGetter('action');
+  const formMethod = formGetter('method');
+  const elementId = Object.getOwnPropertyDescriptor(ElementProto, 'id')?.get;
+  const activationOf = typeof navigator !== 'undefined' && navigator.userActivation
+    ? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator.userActivation), 'isActive')?.get
+    : null;
+  const userActivation = activationOf ? navigator.userActivation : null;
+
+  // Objects without Object.prototype: a getter the page puts there (say on
+  // "bubbles", read while a CustomEvent is made) never sees our messages.
+  function bare(source) {
+    const object = create(null);
+    for (const key in source) {
+      if (apply(hasOwn, source, [key])) object[key] = source[key];
+    }
+    return object;
+  }
+
+  // JSON from the isolated side, every object without a prototype.
+  function parseBare(textValue) {
+    return parse(textValue, (key, value) => (value !== null && typeof value === 'object' && !isArray(value) ? bare(value) : value));
+  }
+
+  function own(object, key) {
+    return object !== null && typeof object === 'object' && apply(hasOwn, object, [key]) ? object[key] : undefined;
+  }
+
+  // The browser's own popup blocker asks the same: is a click or key of the
+  // user still fresh? Without one the page's call goes its own way.
+  function userGesture() {
+    try {
+      return Boolean(userActivation && apply(activationOf, userActivation, []));
+    } catch {
+      return false;
+    }
+  }
 
   let channel = null;
   let sequence = 0;
@@ -64,7 +118,9 @@
       return false;
     }
     if (text.length > MAX_MESSAGE) return false;
-    apply(dispatch, doc, [new PageCustomEvent(channel.toIsolated, { detail: text })]);
+    const init = create(null);
+    init.detail = text;
+    apply(dispatch, doc, [new PageCustomEvent(channel.toIsolated, init)]);
     return true;
   }
 
@@ -111,7 +167,9 @@
   // -------------------------------------------------------------------------
   // window.open: a feature may claim a popup to an e-Boekhouden page (and show
   // it in a dialog). Unclaimed, the page's own window.open runs as always.
-  // A claimed call returns null, as a blocked popup does.
+  // A claimed call returns null, as a blocked popup does. Only a call during
+  // a user gesture is offered: one without could not have opened a popup
+  // either, so a script cannot make a dialog appear on its own.
   // -------------------------------------------------------------------------
 
   const windowOpen = {
@@ -125,14 +183,15 @@
       const original = window.open;
       this.original = original;
       this.wrapper = function open(url, target, features) {
-        if (hook.on) {
-          const absolute = url === undefined || url === '' ? null : appUrl(url);
+        let claimed = false;
+        try {
+          const absolute = !hook.on || url === undefined || url === '' || !userGesture() ? null : appUrl(url);
           if (absolute) {
             const answer = ask('windowOpen', { url: absolute, target: text(target, 200), features: text(features, 500) });
-            if (answer?.claim === true) return null;
+            claimed = own(answer, 'claim') === true;
           }
-        }
-        return apply(original, this, arguments);
+        } catch { /* never in the page's way */ }
+        return claimed ? null : apply(original, this, arguments);
       };
       window.open = this.wrapper;
     },
@@ -150,15 +209,21 @@
   // -------------------------------------------------------------------------
   // Form submits into another window (target="_blank" or a named popup). A
   // feature may send the submit into a frame of its own (retarget, a name
-  // starting with "ebs-") or cancel it. Field values never cross: only the
-  // action, method and target.
+  // starting with "ebs-") or cancel it, during a user gesture only. Field
+  // values never cross: only the action, method and target. The form's own
+  // fields can shadow its properties (<input name="getAttribute">), so every
+  // read goes through the prototypes captured above.
   // -------------------------------------------------------------------------
 
   const SELF_TARGETS = new Set(['', '_self', '_top', '_parent']);
 
-  function restoreAttribute(node, attribute, value) {
-    if (value === null) node.removeAttribute(attribute);
-    else node.setAttribute(attribute, value);
+  function attribute(node, name) {
+    return apply(getAttribute, node, [name]);
+  }
+
+  function restoreAttribute(node, name, value) {
+    if (value === null) apply(removeAttribute, node, [name]);
+    else apply(setAttribute, node, [name, value]);
   }
 
   const formTarget = {
@@ -166,26 +231,32 @@
     installed: false,
     originalSubmit: null,
     wrapper: null,
+    // null (the page's own way), { cancel: true } or { retarget }. Never throws.
     decide(form, submitter) {
-      const target = (submitter?.getAttribute?.('formtarget') ?? form.getAttribute('target') ?? '').trim();
-      if (SELF_TARGETS.has(target.toLowerCase())) return null;
-      const action = appUrl(submitter?.getAttribute?.('formaction') || form.action || location.href);
-      if (!action) return null;
-      const answer = ask('formSubmit', {
-        action,
-        method: text(String(form.method || 'get').toLowerCase(), 10),
-        target: text(target, 200),
-        name: text(form.getAttribute('name') ?? '', 200),
-        id: text(form.id, 200),
-      });
-      if (answer?.cancel === true) return { cancel: true };
-      if (typeof answer?.retarget === 'string' && FRAME_NAME.test(answer.retarget)) return { retarget: answer.retarget };
+      try {
+        if (!userGesture()) return null;
+        const button = submitter instanceof Element ? submitter : null;
+        const target = String((button ? attribute(button, 'formtarget') : null) ?? attribute(form, 'target') ?? '').trim();
+        if (SELF_TARGETS.has(target.toLowerCase())) return null;
+        const action = appUrl((button ? attribute(button, 'formaction') : null) || (formAction ? apply(formAction, form, []) : '') || location.href);
+        if (!action) return null;
+        const answer = ask('formSubmit', {
+          action,
+          method: text(String((formMethod ? apply(formMethod, form, []) : '') || 'get').toLowerCase(), 10),
+          target: text(target, 200),
+          name: text(attribute(form, 'name') ?? '', 200),
+          id: text(elementId ? apply(elementId, form, []) : '', 200),
+        });
+        if (own(answer, 'cancel') === true) return { cancel: true };
+        const retarget = own(answer, 'retarget');
+        if (typeof retarget === 'string' && FRAME_NAME.test(retarget)) return { retarget };
+      } catch { /* never in the page's way */ }
       return null;
     },
     // A submit event (a button, Enter, requestSubmit) after the page's own
     // handlers: one that the page cancelled is left alone.
     onSubmit(event) {
-      if (!formTarget.on || event.defaultPrevented || !(event.target instanceof HTMLFormElement)) return;
+      if (!formTarget.on || event.defaultPrevented || !(event.target instanceof FormElement)) return;
       const form = event.target;
       const decision = formTarget.decide(form, event.submitter);
       if (!decision) return;
@@ -193,44 +264,51 @@
         event.preventDefault();
         return;
       }
-      const node = event.submitter?.hasAttribute?.('formtarget') ? event.submitter : form;
-      const attribute = node === form ? 'target' : 'formtarget';
-      const before = node.getAttribute(attribute);
-      node.setAttribute(attribute, decision.retarget);
+      const submitter = event.submitter instanceof Element ? event.submitter : null;
+      const node = submitter && apply(hasAttribute, submitter, ['formtarget']) ? submitter : form;
+      const name = node === form ? 'target' : 'formtarget';
+      const before = attribute(node, name);
+      apply(setAttribute, node, [name, decision.retarget]);
       // The browser reads the target right after this event; then the form
       // gets its own attribute back.
-      setTimeout(() => restoreAttribute(node, attribute, before), 0);
+      setTimeout(() => restoreAttribute(node, name, before), 0);
     },
     enable() {
       this.on = true;
       if (this.installed) return;
       this.installed = true;
       apply(addListener, window, ['submit', this.onSubmit, false]);
+      // Still in the chain from before (the page wrapped it): it works again.
+      if (this.wrapper) return;
       const hook = this;
-      const original = HTMLFormElement.prototype.submit;
+      const original = FormProto.submit;
       this.originalSubmit = original;
       // form.submit() fires no submit event.
       this.wrapper = function submit() {
-        const decision = hook.on ? hook.decide(this, null) : null;
+        const decision = hook.on && this instanceof FormElement ? hook.decide(this, null) : null;
         if (decision?.cancel) return undefined;
         if (!decision) return apply(original, this, arguments);
-        const before = this.getAttribute('target');
-        this.setAttribute('target', decision.retarget);
+        const before = attribute(this, 'target');
+        apply(setAttribute, this, ['target', decision.retarget]);
         try {
           return apply(original, this, arguments);
         } finally {
           restoreAttribute(this, 'target', before);
         }
       };
-      HTMLFormElement.prototype.submit = this.wrapper;
+      FormProto.submit = this.wrapper;
     },
     disable() {
       this.on = false;
       if (!this.installed) return;
       apply(removeListener, window, ['submit', this.onSubmit, false]);
-      if (HTMLFormElement.prototype.submit === this.wrapper) HTMLFormElement.prototype.submit = this.originalSubmit;
       this.installed = false;
-      this.wrapper = null;
+      // Put the original back unless the page wrapped ours meanwhile; then
+      // ours stays as a plain pass-through, and is used again on enable.
+      if (FormProto.submit === this.wrapper) {
+        FormProto.submit = this.originalSubmit;
+        this.wrapper = null;
+      }
     },
   };
 
@@ -312,7 +390,9 @@
     },
     enable(options) {
       const patterns = [];
-      for (const source of Array.isArray(options?.urls) ? options.urls.slice(0, 50) : []) {
+      const urls = own(options, 'urls');
+      for (let i = 0; isArray(urls) && i < urls.length && i < 50; i += 1) {
+        const source = urls[i];
         try {
           if (typeof source === 'string' && source.length <= 500) patterns.push(new RegExp(source));
         } catch { /* an invalid pattern matches nothing */ }
@@ -438,8 +518,9 @@
       // The page's fetch as it is now, but not our observer around it.
       return observe.fetchWrapper && window.fetch === observe.fetchWrapper ? observe.fetchOriginal : window.fetch;
     },
-    async get({ id, url, accept }) {
-      const absolute = sameOriginUrl(url);
+    async get(args) {
+      const id = own(args, 'id');
+      const absolute = sameOriginUrl(own(args, 'url'));
       if (!absolute || !/^https:/.test(absolute)) throw new Error('only same-origin https URLs');
       const now = Date.now();
       this.started = this.started.filter((time) => now - time < 60_000);
@@ -449,12 +530,9 @@
       const controller = new AbortController();
       if (id !== undefined) this.controllers.set(String(id), controller);
       try {
-        const response = await apply(this.pageFetch(), window, [absolute, {
-          method: 'GET',
-          credentials: 'include',
-          headers: { Accept: text(accept, 100) || '*/*' },
-          signal: controller.signal,
-        }]);
+        const init = bare({ method: 'GET', credentials: 'include', signal: controller.signal });
+        init.headers = bare({ Accept: text(own(args, 'accept'), 100) || '*/*' });
+        const response = await apply(this.pageFetch(), window, [absolute, init]);
         const body = await response.text();
         if (body.length > MAX_REQUEST_BODY) throw new Error('too-large');
         return {
@@ -487,8 +565,8 @@
     'request.get': { capability: request, run: (args) => request.get(args) },
     'request.abort': {
       capability: request,
-      run: ({ id }) => {
-        request.controllers.get(String(id))?.abort();
+      run: (args) => {
+        request.controllers.get(String(own(args, 'id')))?.abort();
         return true;
       },
     },
@@ -499,7 +577,8 @@
     try {
       if (!method) throw new Error('unknown method');
       if (!method.capability.on) throw new Error('capability is off');
-      const args = message.args && typeof message.args === 'object' ? message.args : {};
+      const given = own(message, 'args');
+      const args = given !== null && typeof given === 'object' && !isArray(given) ? given : create(null);
       const value = await method.run(args);
       emit({ v: VERSION, type: 'result', id: message.id, ok: true, value });
     } catch (error) {
@@ -512,19 +591,19 @@
     try {
       const detail = apply(detailOf, event, []);
       if (typeof detail !== 'string' || detail.length > MAX_MESSAGE) return;
-      message = parse(detail);
+      message = parseBare(detail);
     } catch {
       return;
     }
-    if (!message || message.v !== VERSION) return;
+    if (own(message, 'v') !== VERSION) return;
     if (message.type === 'answer') {
-      if (answers.has(message.id)) answers.set(message.id, message.value ?? null);
+      if (answers.has(message.id)) answers.set(message.id, own(message, 'value') ?? null);
       return;
     }
     if (message.type === 'enable' || message.type === 'disable') {
       const capability = apply(hasOwn, CAPABILITIES, [message.capability]) ? CAPABILITIES[message.capability] : null;
       if (!capability) return;
-      if (message.type === 'enable') capability.enable(message.options ?? {});
+      if (message.type === 'enable') capability.enable(own(message, 'options') ?? null);
       else capability.disable();
       return;
     }
@@ -535,11 +614,11 @@
     if (channel || !noPageScriptYet()) return;
     let hello;
     try {
-      hello = parse(apply(detailOf, event, []));
+      hello = parseBare(apply(detailOf, event, []));
     } catch {
       return;
     }
-    if (!hello || hello.v !== VERSION || typeof hello.channel !== 'string' || !/^[0-9a-f-]{36}$/.test(hello.channel)) return;
+    if (own(hello, 'v') !== VERSION || typeof hello.channel !== 'string' || !/^[0-9a-f-]{36}$/.test(hello.channel)) return;
     channel = { toMain: `ebs:${hello.channel}:main`, toIsolated: `ebs:${hello.channel}:isolated` };
     apply(removeListener, doc, [HELLO, onHello]);
     apply(addListener, doc, [channel.toMain, onMessage]);
