@@ -690,12 +690,13 @@
     #ebs-better #frm input.act-btn:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
     #ebs-better .ebs-forgot { align-self: center; display: block !important; font-size: 13px; color: #232c4f; transition: color 150ms ease; }
 
-    /* Sessions: one list for any number of them. */
+    /* Sessions: one list for any number of them. The board's search field is
+       40 px high plus its border (content-box): 42 px in all. */
     #ebs-better button { font-family: inherit; color: inherit; cursor: pointer; }
     #ebs-better .ebs-avatar { border-radius: 50%; box-sizing: border-box; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; object-fit: cover; background: #dfe4f1; color: #232c4f; }
     #ebs-better .ebs-avatar.expired { background: #fbe9e9; color: #b42318; }
     #ebs-better .ebs-avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
-    #ebs-better .ebs-search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; box-sizing: border-box; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font-size: 13px; color: #5d6584; transition: border-color 150ms ease; }
+    #ebs-better .ebs-search { display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 12px; box-sizing: border-box; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font-size: 13px; color: #5d6584; transition: border-color 150ms ease; }
     #ebs-better .ebs-search:focus-within { border-color: #232c4f; }
     #ebs-better .ebs-search svg { flex: none; }
     #ebs-better .ebs-search input { flex: 1; min-width: 0; height: 100%; padding: 1px 2px; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
