@@ -144,11 +144,29 @@
         attach: tr.querySelector('[title="Bestand koppelen"]'),
       });
     }
-    return rows;
+    return EBS.signRows(rows);
   }
 
-  function bulkAction(grid, word) {
-    return [...grid.querySelectorAll('app-grid-bulk-action li')].find((li) => li.textContent.toLowerCase().includes(word)) ?? null;
+  // More than one page of lines (e-Boekhouden shows 100 per page by default).
+  function paginated(grid) {
+    return [...grid.querySelectorAll('app-pagination .pagination li')].filter((li) => /^\s*\d+\s*$/.test(li.textContent)).length > 1;
+  }
+
+  // e-Boekhouden's own labels, matched whole: "verwijderen" alone would also
+  // match "Geselecteerde importregels verwijderen" on other grids.
+  const BULK_LABELS = { wegboeken: 'Geselecteerde regels wegboeken', verwijderen: 'Geselecteerde regels verwijderen' };
+
+  function bulkAction(grid, action) {
+    if (!grid) return null;
+    return [...grid.querySelectorAll('app-grid-bulk-action li')]
+      .find((li) => li.textContent.replace(/\s+/g, ' ').trim() === BULK_LABELS[action]) ?? null;
+  }
+
+  // The <li> carries Angular's click handler (app-grid-bulk-action's template).
+  function runBulkAction(action) {
+    const target = bulkAction(findGrid(), action);
+    if (target) target.click();
+    else bar.fail(`De actie "${BULK_LABELS[action]}" staat niet meer op de pagina. Gebruik de klassieke weergave.`);
   }
 
   // -------------------------------------------------------------------------
@@ -243,6 +261,12 @@
   function render() {
     if (!settingsLoaded) return;
     const grid = onImportPage() ? findGrid() : null;
+    // The Better design CSS only touches the grid marked here, never another
+    // grid on the page or a page where the import grid was not found.
+    for (const marked of document.querySelectorAll('app-grid[data-ebs-import]')) {
+      if (marked !== grid || !useBetter()) delete marked.dataset.ebsImport;
+    }
+    if (grid && useBetter()) grid.dataset.ebsImport = '';
     if (!grid) {
       bar.hide();
       better.unmount();
@@ -291,6 +315,17 @@
     hide() {
       this.host?.classList.remove('show');
       this.closeGroupMenu(true);
+      this.spacer?.remove();
+      this.message?.remove();
+    },
+
+    // Says so in the bar when a native action could not be found.
+    fail(text) {
+      if (!this.host) return;
+      this.message?.remove();
+      this.message = el('span', 'ebs-bar-message', text);
+      this.message.setAttribute('role', 'alert');
+      this.host.append(this.message);
     },
 
     // Centred under the list, not under the whole window with its sidebar.
@@ -330,7 +365,7 @@
           parent.append(node);
           return node;
         };
-        this.native.wegboeken = button('Wegboeken', 'primary', () => bulkAction(findGrid(), 'wegboeken')?.click());
+        this.native.wegboeken = button('Wegboeken', 'primary', () => runBulkAction('wegboeken'));
         if (mode === 'better') {
           // The menu opens from the button itself, as in the design.
           const wrap = el('span', 'ebs-group-wrap');
@@ -340,7 +375,7 @@
           groupButton.setAttribute('aria-expanded', 'false');
           button('Verbergen', 'ghost', () => better.hideRows(readRows(findGrid()).filter((row) => row.checkbox.checked)));
         }
-        this.native.verwijderen = button('Verwijderen', 'ghost', () => bulkAction(findGrid(), 'verwijderen')?.click());
+        this.native.verwijderen = button('Verwijderen', 'ghost', () => runBulkAction('verwijderen'));
         button('Selectie wissen', 'quiet', () => {
           clickingRange = true;
           try {
@@ -358,6 +393,9 @@
         this.native[word].disabled = Boolean(bulkAction(grid, word)?.classList.contains('disabled'));
       }
       this.place();
+      // Room below the list, so the bar never covers the pagination.
+      if (!this.spacer) this.spacer = el('div', 'ebs-bar-spacer');
+      if (this.spacer.previousElementSibling !== grid) grid.after(this.spacer);
       // A class change, so a quick select and clear reverses mid-way.
       requestAnimationFrame(() => this.host.classList.add('show'));
     },
@@ -567,23 +605,39 @@
 
     draw({ flip = false } = {}) {
       if (!this.root) return;
+      // Tabs and chips are rebuilt below: keep keyboard focus on the same one.
+      const focusKey = this.root.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
       const all = this.rows;
       const visible = this.visibleRows();
       const summary = EBS.summarize(visible);
       const hiddenCount = all.filter((row) => this.prefs.hidden.includes(EBS.rowSignature(row))).length;
       const total = /\((\d+) regels?\)/.exec(this.grid.querySelector('.grid-header-title')?.textContent ?? '')?.[1];
       const account = [...new Set(all.map((row) => row.account).filter(Boolean))];
+      // With pages, search, filters and totals only see this page: say so.
+      const paged = paginated(this.grid);
+      const scope = paged ? 'op deze pagina' : 'in beeld';
+      this.searchInput.placeholder = paged
+        ? 'Zoek op deze pagina: tegenpartij, rekening, omschrijving, datum, bedrag'
+        : 'Zoek in alle kolommen: tegenpartij, rekening, omschrijving, datum, bedrag';
+      const signatures = all.map((row) => EBS.rowSignature(row));
+      if (!paged && all.length && Number(total) === all.length) {
+        const pruned = EBS.prunePrefs(this.prefs, signatures);
+        if (pruned.changed) {
+          this.prefs = pruned.prefs;
+          this.savePrefs();
+        }
+      }
       this.subtitle.textContent = `${total ?? all.length} regels uit de import${account.length === 1 ? ` · rekening ${account[0]}` : ''}`;
 
       this.cards.replaceChildren(
-        this.card('Binnengekomen (in beeld)', `€ ${EBS.formatMoney(summary.inTotal)}`, `${summary.inCount} ${summary.inCount === 1 ? 'regel' : 'regels'}`, 'in'),
-        this.card('Uitgegaan (in beeld)', `€ ${summary.outTotal < 0 ? '−' : ''}${EBS.formatMoney(Math.abs(summary.outTotal))}`, `${summary.outCount} ${summary.outCount === 1 ? 'regel' : 'regels'}`),
-        this.card('Oudste regel', summary.oldest ? `${summary.oldest.day} ${EBS.monthLabel(summary.oldest.key)}` : 'Geen', summary.oldest ? `${Math.max(0, Math.floor((Date.now() - summary.oldest.time) / 86400000))} dagen niet verwerkt` : ''),
+        this.card(`Binnengekomen (${scope})`, `€ ${EBS.formatMoney(summary.inTotal)}`, `${summary.inCount} ${summary.inCount === 1 ? 'regel' : 'regels'}`, 'in'),
+        this.card(`Uitgegaan (${scope})`, `€ ${summary.outTotal < 0 ? '−' : ''}${EBS.formatMoney(Math.abs(summary.outTotal))}`, `${summary.outCount} ${summary.outCount === 1 ? 'regel' : 'regels'}`),
+        this.card(paged ? 'Oudste regel (op deze pagina)' : 'Oudste regel', summary.oldest ? `${summary.oldest.day} ${EBS.monthLabel(summary.oldest.key)}` : 'Geen', summary.oldest ? `${Math.max(0, Math.floor((Date.now() - summary.oldest.time) / 86400000))} dagen niet verwerkt` : ''),
       );
 
       // Group tabs. Rebuilt only when they change: draw() also runs on every
       // native grid update, and a rebuild would take focus from the tabs.
-      const counts = EBS.groupCounts(this.prefs.groupOf, this.prefs.groups);
+      const counts = EBS.groupCounts(this.prefs.groupOf, this.prefs.groups, signatures);
       const tabsKey = JSON.stringify([this.prefs.groups, counts, this.ui.group, this.editor.mode]);
       if (this.tabList.dataset.key !== tabsKey) {
         this.tabList.dataset.key = tabsKey;
@@ -591,6 +645,7 @@
         const tab = (label, name) => {
           const button = el('button', `ebs-tab${this.ui.group === name ? ' on' : ''}`, label);
           button.type = 'button';
+          button.dataset.focusKey = `tab:${name ?? ''}`;
           button.setAttribute('role', 'tab');
           button.setAttribute('aria-selected', String(this.ui.group === name));
           button.addEventListener('click', () => {
@@ -605,6 +660,7 @@
         if (this.ui.group && !this.editor.mode) {
           const rename = el('button', 'ebs-tab-action', 'Naam wijzigen');
           rename.type = 'button';
+          rename.dataset.focusKey = 'tab-rename';
           rename.addEventListener('click', () => this.openEditor('rename'));
           const remove = el('button', 'ebs-tab-action', `Groep "${this.ui.group}" verwijderen`);
           remove.type = 'button';
@@ -620,6 +676,7 @@
       for (const [value, label] of [['all', 'Alles'], ['in', 'Bij'], ['out', 'Af']]) {
         const chip = el('button', `ebs-chip${this.ui.direction === value ? ' on' : ''}`, label);
         chip.type = 'button';
+        chip.dataset.focusKey = `direction:${value}`;
         chip.setAttribute('aria-pressed', String(this.ui.direction === value));
         chip.addEventListener('click', () => {
           this.ui.direction = value;
@@ -640,7 +697,10 @@
       this.hiddenToggle.classList.toggle('on', this.ui.showHidden);
 
       this.drawRows(visible, all.length, { flip });
-      this.footer.textContent = `${visible.length} ${visible.length === 1 ? 'regel' : 'regels'} in beeld · ${hiddenCount} verborgen · ${total ?? all.length} in totaal`;
+      if (focusKey && !this.root.contains(document.activeElement)) {
+        this.root.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+      }
+      this.footer.textContent = `${visible.length} ${visible.length === 1 ? 'regel' : 'regels'} in beeld${paged ? ' op deze pagina' : ''} · ${hiddenCount} verborgen · ${total ?? all.length} in totaal`;
     },
 
     card(label, value, sub, tone) {
@@ -661,6 +721,7 @@
       if (!visible.length) {
         this.body.append(el('div', 'ebs-empty', totalRows ? 'Geen regels die passen bij je zoekopdracht of filters.' : 'Er staan geen afschriftregels klaar om te verwerken.'));
       }
+      if (this.preview) this.paintPreview();
       if (focus?.signature && focus.control) {
         const node = [...this.body.children].find((child) => child.dataset.signature === focus.signature);
         node?.querySelector(`[data-control="${focus.control}"]`)?.focus({ preventScroll: true });
@@ -680,12 +741,18 @@
       }
     },
 
-    // Shift held over a line: show which lines a shift-click would set.
+    // Shift held over a line: show which lines a shift-click would set. The
+    // line under the mouse is kept, so a redraw shows the same preview.
     previewRange(event) {
-      const rows = [...this.body.children].filter((node) => node.classList.contains('ebs-row'));
       const over = event?.shiftKey && settings.shiftSelect && event.target instanceof Element ? event.target.closest('.ebs-row') : null;
-      const from = over ? rows.findIndex((node) => node.dataset.signature === this.anchor) : -1;
-      const to = over ? rows.indexOf(over) : -1;
+      this.preview = over?.dataset.signature ?? null;
+      this.paintPreview();
+    },
+
+    paintPreview() {
+      const rows = [...this.body.children].filter((node) => node.classList.contains('ebs-row'));
+      const from = this.preview ? rows.findIndex((node) => node.dataset.signature === this.anchor) : -1;
+      const to = this.preview ? rows.findIndex((node) => node.dataset.signature === this.preview) : -1;
       rows.forEach((node, i) => {
         const inRange = from >= 0 && to >= 0 && i >= Math.min(from, to) && i <= Math.max(from, to) && !node.classList.contains('checked');
         node.classList.toggle('ebs-range', inRange);
@@ -776,7 +843,7 @@
     // The line fades out (140 ms) where it is, then the lines below slide up
     // (FLIP, 180 ms). With reduced motion: the fade only.
     hideRows(rows) {
-      const signatures = rows.map(EBS.rowSignature).filter((signature) => !this.prefs.hidden.includes(signature));
+      const signatures = rows.map((row) => EBS.rowSignature(row)).filter((signature) => !this.prefs.hidden.includes(signature));
       if (!signatures.length) return;
       const commit = () => {
         for (const signature of signatures) this.leaving.delete(signature);
@@ -848,6 +915,9 @@
     openEditor(mode) {
       const { input, error } = this.editor;
       this.editor.mode = mode;
+      // The group being renamed, fixed now: clicking another tab meanwhile
+      // must not rename that one.
+      this.editor.target = mode === 'rename' ? this.ui.group : null;
       error.textContent = '';
       input.value = mode === 'rename' ? this.ui.group ?? '' : '';
       input.placeholder = mode === 'rename' ? 'Nieuwe naam' : 'Naam van de groep';
@@ -873,11 +943,12 @@
         return;
       }
       if (this.editor.mode === 'rename') {
-        if (name === this.ui.group) {
+        const target = this.editor.target;
+        if (name === target || !this.prefs.groups.includes(target)) {
           this.closeEditor();
           return;
         }
-        const next = EBS.renameGroup(this.prefs.groups, this.prefs.groupOf, this.ui.group, name);
+        const next = EBS.renameGroup(this.prefs.groups, this.prefs.groupOf, target, name);
         if (!next.renamed) {
           error.textContent = 'Die naam bestaat al.';
           input.focus();
@@ -885,7 +956,7 @@
         }
         this.prefs.groups = next.groups;
         this.prefs.groupOf = next.groupOf;
-        this.ui.group = name;
+        if (this.ui.group === target) this.ui.group = name;
         this.savePrefs();
       } else {
         if (this.prefs.groups.includes(name)) {
@@ -915,7 +986,7 @@
     },
 
     assign(rows, name) {
-      this.prefs.groupOf = EBS.assignGroup(this.prefs.groupOf, rows.map(EBS.rowSignature), name);
+      this.prefs.groupOf = EBS.assignGroup(this.prefs.groupOf, rows.map((row) => EBS.rowSignature(row)), name);
       this.savePrefs();
       this.draw();
     },
@@ -1001,6 +1072,12 @@
       const frame = el('iframe', 'ebs-dialog-frame');
       frame.title = 'Mutatie aanmaken';
       frame.src = url;
+      // Covers the frame while it loads the list and opens the line, so the
+      // list never shows inside the dialog.
+      const body = el('div', 'ebs-dialog-body');
+      const cover = el('div', 'ebs-dialog-cover', 'Het mutatiescherm wordt geopend…');
+      cover.setAttribute('role', 'status');
+      body.append(frame, cover);
 
       const foot = el('div', 'ebs-dialog-foot');
       const note = el('span', '', 'Na opslaan sluit dit venster en wordt de lijst ververst.');
@@ -1009,7 +1086,7 @@
       done.type = 'button';
       done.addEventListener('click', () => this.close());
       foot.append(note, done);
-      panel.append(head, frame, foot);
+      panel.append(head, body, foot);
       backdrop.append(panel);
       backdrop.addEventListener('mousedown', (event) => {
         if (event.target === backdrop) this.close();
@@ -1026,8 +1103,9 @@
           location.reload();
         }
         if (kind === 'edit-escape') this.close();
-        if (kind === 'edit-missing') note.textContent = 'Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.';
-        if (kind === 'edit-failed') note.textContent = 'Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.';
+        if (kind === 'edit-opened') cover.remove();
+        if (kind === 'edit-missing') cover.textContent = 'Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.';
+        if (kind === 'edit-failed') cover.textContent = 'Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.';
       };
       window.addEventListener('message', this.onMessage);
       this.inert = [...document.body.children].filter((child) => !child.inert);
@@ -1144,7 +1222,10 @@
         return;
       }
       if (phase === 'opening') {
-        if (!PAGE.test(location.pathname)) to('editing');
+        if (!PAGE.test(location.pathname)) {
+          to('editing');
+          tell('edit-opened');
+        }
         else if (waited > 10000) stop('edit-failed');
         return;
       }
@@ -1182,19 +1263,21 @@
     .ebs-bar-button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .ebs-group-wrap { position: relative; display: flex; }
     .ebs-bar-button:disabled { opacity: .5; cursor: default; }
+    .ebs-bar-message { max-width: 260px; font-size: 12px; line-height: 16px; color: #ffd8d3; }
+    .ebs-bar-spacer { height: 96px; }
     .ebs-group-menu { position: absolute; bottom: calc(100% + 8px); left: 0; min-width: 220px; padding: 6px; display: flex; flex-direction: column; background: #fff; color: #232c4f; border-radius: 10px; box-shadow: 0 12px 32px rgba(20, 26, 48, .25); }
     .ebs-group-item { height: 36px; padding: 0 10px; border: 0; border-radius: 6px; background: #fff; color: #232c4f; text-align: left; font: 13px Ubuntu, system-ui, sans-serif; cursor: pointer; }
     .ebs-group-item:hover, .ebs-group-item:focus-visible { background: #f3f5fa; }
     .ebs-group-new input { box-sizing: border-box; width: 100%; height: 34px; margin-top: 4px; padding: 0 10px; border: 1px solid #d6dbe8; border-radius: 6px; font: 13px Ubuntu, system-ui, sans-serif; }
 
     /* Better design: hide the native table, keep pagination and the native machinery. */
-    html.ebs-better-import app-grid-header, html.ebs-better-import app-grid-body, html.ebs-better-import app-grid-bulk-actions { display: none !important; }
+    html.ebs-better-import app-grid[data-ebs-import] :is(app-grid-header, app-grid-body, app-grid-bulk-actions) { display: none !important; }
     /* The page has no content padding of its own (the native grid insets itself), so the view and the
        remaining footer share one gutter. The footer only holds pagination now: without pages
        (app-pagination renders no div) it would be an empty white bar. */
-    html.ebs-better-import app-grid { display: block; width: auto !important; margin: 0 32px 16px; }
-    html.ebs-better-import app-grid-footer:not(:has(app-pagination > div)) { display: none !important; }
-    html.ebs-better-import app-grid-footer .grid-footer { padding: 0 !important; background: transparent !important; overflow: visible !important; }
+    html.ebs-better-import app-grid[data-ebs-import] { display: block; width: auto !important; margin: 0 32px 16px; }
+    html.ebs-better-import app-grid[data-ebs-import] app-grid-footer:not(:has(app-pagination > div)) { display: none !important; }
+    html.ebs-better-import app-grid[data-ebs-import] app-grid-footer .grid-footer { padding: 0 !important; background: transparent !important; overflow: visible !important; }
     .ebs-native-toggle { width: 93%; margin: 0 0 6px; text-align: right; font-size: 13px; }
     .ebs-native-toggle a { color: var(--colorPrimary, #30395f); text-decoration: underline; cursor: pointer; }
     .ebs-import { box-sizing: border-box; margin: 24px 32px 16px; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; display: flex; flex-direction: column; gap: 14px; }
@@ -1276,7 +1359,9 @@
     .ebs-dialog-sub { font-size: 13px; color: #5d6584; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ebs-dialog-newtab { font-size: 13px; color: #232c4f; }
     .ebs-dialog-close { width: 36px; height: 36px; border: 0; border-radius: 8px; background: #f3f5fa; color: #232c4f; font-size: 18px; cursor: pointer; }
+    .ebs-dialog-body { position: relative; flex: 1; display: flex; }
     .ebs-dialog-frame { flex: 1; width: 100%; border: 0; }
+    .ebs-dialog-cover { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: #fff; font-size: 14px; color: #5d6584; text-align: center; }
     .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
     .ebs-dialog-done { height: 36px; padding: 0 14px; border: 1px solid #d6dbe8; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; cursor: pointer; }
     .ebs-dialog-close:focus-visible, .ebs-dialog-done:focus-visible, .ebs-dialog-newtab:focus-visible, .ebs-group-item:focus-visible, .ebs-tab-action:focus-visible, .ebs-hidden-toggle:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
@@ -1330,7 +1415,7 @@
     // Our own drawing must not wake the loop, or it would redraw forever.
     // A change inside a subtree that is already gone (a tooltip removed from a
     // row that a redraw replaced) says nothing about the page either.
-    const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-dialog-backdrop, #ebs-import-style';
+    const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-bar-spacer, .ebs-dialog-backdrop, #ebs-import-style';
     new MutationObserver((records) => {
       const native = records.some((record) => {
         const node = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;
@@ -1339,8 +1424,20 @@
       if (native) schedule();
     }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
     document.addEventListener('change', schedule, true);
+    // Letting go of shift ends the range preview in the new view.
+    document.addEventListener('keyup', (event) => {
+      if (event.key === 'Shift' && better.preview && better.root) {
+        better.preview = null;
+        better.paintPreview();
+      }
+    });
     let lastPath = location.pathname;
-    setInterval(() => {
+    const watch = setInterval(() => {
+      // The extension was reloaded: this copy of the script is orphaned.
+      if (!chrome.runtime?.id) {
+        clearInterval(watch);
+        return;
+      }
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
       anchor = null;
