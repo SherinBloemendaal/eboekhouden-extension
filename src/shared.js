@@ -210,31 +210,6 @@
     return counts;
   }
 
-  // Bank descriptions come in a few shapes. Pull out the counterparty and its
-  // IBAN where the text says so; otherwise the description stays as it is.
-  //   "Naam: Demo Klant B.V. IBAN: NL00DEMO0000000011 Omschrijving: Factuur 12"
-  //   "/TRTP/SEPA OVERBOEKING/IBAN/NL00DEMO0000000011/BIC/DEMONL2A/NAME/Demo Klant B.V./REMI/Factuur 12"
-  function counterparty(description) {
-    const text = String(description ?? '').replace(/\s+/g, ' ').trim();
-    let party = null;
-    let iban = null;
-    let rest = text;
-    const sepa = /\/NAME\/([^/]+)/i.exec(text);
-    if (sepa) {
-      party = sepa[1].trim();
-      iban = /\/IBAN\/([^/]+)/i.exec(text)?.[1]?.trim() ?? null;
-      rest = /\/REMI\/(?:USTD\/\/)?([^/]+)/i.exec(text)?.[1]?.trim() ?? text;
-    } else {
-      const named = /Naam:\s*(.+?)(?=\s+(?:IBAN|BIC|Omschrijving|Kenmerk|Machtiging|Incassant|Referentie):|$)/i.exec(text);
-      if (named) {
-        party = named[1].trim();
-        iban = /IBAN:\s*([A-Z]{2}\d{2}[A-Z0-9]{8,30})/i.exec(text)?.[1] ?? null;
-        rest = /Omschrijving:\s*(.+?)(?=\s+(?:IBAN|BIC|Kenmerk|Machtiging|Incassant|Referentie):|$)/i.exec(text)?.[1]?.trim() ?? text;
-      }
-    }
-    return { party, iban, rest };
-  }
-
   // A square 128 px crop, compressed; the original file never leaves the browser.
   async function toAvatar(file) {
     const bitmap = await createImageBitmap(file);
@@ -303,7 +278,7 @@
   }
 
   const helpers = {
-    toAvatar, counterparty,
+    toAvatar,
     SETTINGS_DEFAULTS, settingsWithDefaults, watchSettings, statusOf, initials, reloadWarning,
     parseAmount, formatMoney, parseDate, monthLabel,
     rangeToggles, rowSignature, signRows, prunePrefs, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,

@@ -44,24 +44,9 @@
     return node;
   }
 
-  // EBS.icon (Lucide), plus the two icons of the login boards that icons.js
-  // does not have yet. Shared change requested: add 'arrow-right' and
-  // 'arrow-down' (lucide-static 1.63.0) to src/icons.js; EXTRA_ICONS then
-  // goes. They take the frame and attributes of an EBS.icon.
-  const EXTRA_ICONS = {
-    'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
-    'arrow-down': ['M12 5v14', 'm19 12-7 7-7-7'],
-  };
+  // EBS.icon (Lucide).
   function icon(name, options = {}) {
-    if (EBS.icon.has(name) || !EXTRA_ICONS[name]) return EBS.icon(name, options);
-    const svg = EBS.icon('minus', options);
-    svg.replaceChildren(...EXTRA_ICONS[name].map((d) => {
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', d);
-      return path;
-    }));
-    svg.setAttribute('class', svg.getAttribute('class').replace('lucide-minus', `lucide-${name}`));
-    return svg;
+    return EBS.icon(name, options);
   }
 
   async function loadState() {

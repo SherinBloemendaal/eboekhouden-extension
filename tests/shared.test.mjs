@@ -72,12 +72,6 @@ test('amounts and dates in e-Boekhouden notation', () => {
   assert.equal(EBS.formatMoney(-1284.6), '-1.284,60');
 });
 
-test('counterparty and IBAN come out of both description formats', () => {
-  assert.deepEqual(EBS.counterparty(rows[0].description), { party: 'Demo Klant B.V.', iban: 'NL00DEMO0000000011', rest: 'Factuur 2026-0412' });
-  assert.deepEqual(EBS.counterparty('/TRTP/SEPA OVERBOEKING/IBAN/NL00DEMO0000000012/BIC/DEMONL2A/NAME/Voorbeeld Studio/REMI/Offerte 118/EREF/X'), { party: 'Voorbeeld Studio', iban: 'NL00DEMO0000000012', rest: 'Offerte 118' });
-  assert.deepEqual(EBS.counterparty('Kosten betaalverkeer'), { party: null, iban: null, rest: 'Kosten betaalverkeer' });
-});
-
 test('status and initials as the shell shows them', () => {
   const view = { activeSlotId: 'a', loggedIn: true, ready: ['a', 'b'] };
   assert.equal(EBS.statusOf({ id: 'a' }, view), 'active');

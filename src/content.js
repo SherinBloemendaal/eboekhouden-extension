@@ -423,29 +423,8 @@
   }
 
   // A Lucide icon (EBS.icon) in a span, so the shadow styles can place it.
-  // 'image-off' is not in icons.js yet. Shared change requested: add it
-  // (lucide-static 1.63.0) to src/icons.js; EXTRA_ICONS then goes. It takes
-  // the frame and attributes of an EBS.icon.
-  const EXTRA_ICONS = {
-    'image-off': [
-      ['line', { x1: '2', x2: '22', y1: '2', y2: '22' }],
-      ['path', { d: 'M10.41 10.41a2 2 0 1 1-2.83-2.83' }],
-      ['line', { x1: '13.5', x2: '6', y1: '13.5', y2: '21' }],
-      ['line', { x1: '18', x2: '21', y1: '12', y2: '15' }],
-      ['path', { d: 'M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59' }],
-      ['path', { d: 'M21 15V5a2 2 0 0 0-2-2H9' }],
-    ],
-  };
   function lucide(name, size) {
-    if (EBS.icon.has(name) || !EXTRA_ICONS[name]) return EBS.icon(name, { size });
-    const svg = EBS.icon('minus', { size });
-    svg.replaceChildren(...EXTRA_ICONS[name].map(([tag, attributes]) => {
-      const child = document.createElementNS('http://www.w3.org/2000/svg', tag);
-      for (const [attribute, value] of Object.entries(attributes)) child.setAttribute(attribute, value);
-      return child;
-    }));
-    svg.setAttribute('class', svg.getAttribute('class').replace('lucide-minus', `lucide-${name}`));
-    return svg;
+    return EBS.icon(name, { size });
   }
 
   function icon(name, size = 16) {
