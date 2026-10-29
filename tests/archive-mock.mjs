@@ -26,7 +26,11 @@ export function demoData({ many = 0, fail = false } = {}) {
   ];
   const at = (day, hour = 9) => `2026-10-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:15:00`;
   const files = {
-    0: [],
+    0: [
+      { id: 11, naam: 'Inbox', soort: 'D', datum: at(2, 8), size: 0, koppelCount: 0, isDeleted: false },
+      { id: 12, naam: 'Inkoopfacturen 2026', soort: 'D', datum: at(3, 10), size: 0, koppelCount: 0, isDeleted: false },
+      { id: 14, naam: 'Leeg', soort: 'D', datum: at(1, 7), size: 0, koppelCount: 0, isDeleted: false },
+    ],
     11: [
       { id: 201, naam: 'Bonnetje tankstation.jpg', soort: 'F', datum: at(27), size: 1468006, koppelCount: 0, dateDone: at(27), isDeleted: false },
       { id: 202, naam: 'Scan 0043.pdf', soort: 'F', datum: at(22), size: 2202009, koppelCount: 0, dateRequested: at(22), isDeleted: false },
@@ -96,7 +100,7 @@ export const nativeScript = String.raw`
 (function (data, options) {
   const transport = options.transport || 'fetch';
   const api = ${JSON.stringify(API)};
-  const state = { folder: data.start, list: [], selected: new Set(), rightClick: null, knip: null, opened: new Map(), koppel: {}, menu: null, upload: false, ready: false, header: null, openDirs: new Set([12]) };
+  const state = { folder: data.start, list: [], selected: new Set(), rightClick: null, knip: null, opened: new Map(), koppel: {}, menu: null, upload: false, ready: false, header: null, headerFor: null, headerLoading: false, openDirs: new Set([12]) };
   const log = [];
   window.__archive = { log, state };
   const esc = (value) => String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -149,7 +153,7 @@ export const nativeScript = String.raw`
   function renderHeader() {
     const h = state.header;
     if (!h) { header.innerHTML = ''; return; }
-    const inbox = h.menhFolderId === state.folder;
+    const inbox = h.menhFolderId === state.headerFor;
     header.innerHTML = '<div><div class="grid"><div class="grid-wrap"><div class="dirLabel" title="' + esc(h.directoryInfo.directoryName) + '"><i class="eb-icon-folder-open-regular folder"></i><span>' + esc(h.directoryInfo.directoryName) + '</span></div></div><div><div class="dirLabel"><span>Automatisch herkennen</span></div></div><div class="data-usage-align datagebruik"><div class="datalimit-align"> Opslag: (2,3 gb / 5 gb) &nbsp; <a>wijzig</a></div></div><div class="align-text"> ' + h.directoryInfo.subDirectoryCount + ' submappen </div><div> Credits: 12 </div><div class="data-usage-align"><div class="datalimit-align datalimit"><div id="datagebruik"></div></div></div><div class="align-text"> ' + h.directoryInfo.fileCount + ' bestanden </div><div class="herken">' + (inbox ? '<div class="grid-herken"> Inbox voor \'Mail & Herken\' ( <a>meer informatie</a> ) </div>' : '<div class="grid-herken"><a>Maak</a> deze map uw inbox voor \'Mail & Herken\' ( <a>meer informatie</a> ) </div>') + '</div><div class="align-right download-button"><a>Downloaden</a></div></div></div>';
   }
 
@@ -190,7 +194,20 @@ export const nativeScript = String.raw`
     return list.filter((item) => item.soort === 'D').sort((a, b) => a.naam.localeCompare(b.naam)).concat(list.filter((item) => item.soort === 'F').sort((a, b) => a.naam.localeCompare(b.naam)));
   }
 
-  // e-Boekhouden's loadDirectory: header and files, the list empty for a moment.
+  // e-Boekhouden's file header (its loadDirectory): while its own GET runs it
+  // skips the next folder, so after a quick second click it keeps showing the
+  // folder before.
+  function loadHeader() {
+    if (state.headerLoading) return;
+    state.headerLoading = true;
+    const id = state.folder;
+    get('folder/' + id + '/header').then((h) => { state.header = h; state.headerFor = id; renderHeader(); }, () => {}).finally(() => { state.headerLoading = false; });
+  }
+
+  // e-Boekhouden's loadDirectory: the tree shows the folder at once and asks
+  // its folder list again, the header loads, and the file list asks its files
+  // without dropping an older request (the answer that comes last is shown),
+  // empty for a moment before the rows.
   function loadDirectory(id) {
     state.folder = id;
     state.selected.clear();
@@ -198,7 +215,8 @@ export const nativeScript = String.raw`
     state.opened.clear();
     renderFolders();
     renderToolbar();
-    get('folder/' + id + '/header').then((h) => { state.header = h; renderHeader(); }, () => {});
+    get('folder/directory').then((list) => { data.folders = list; renderFolders(); }, () => {});
+    loadHeader();
     get('folder/' + id + '/filelist').then((list) => {
       state.ready = true;
       state.list = [];
@@ -312,7 +330,10 @@ export const nativeScript = String.raw`
     container.insertBefore(node, container.querySelector('app-digitaal-archief-folder-form'));
   }
 
-  get('folder/directory').then((list) => { data.folders = list; renderFolders(); }, () => {});
+  // For the tests: a folder change e-Boekhouden starts itself (a new
+  // folder, Naam wijzigen on a folder, a deleted folder, its upload menu).
+  window.__archive.loadDirectory = loadDirectory;
+
   render();
   loadDirectory(data.start);
 })`;
