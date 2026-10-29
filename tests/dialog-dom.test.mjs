@@ -265,10 +265,22 @@ test('a loading dialog shows the animated mark over its text, and no request for
   assert.match(css, /\.ebs-mark \.ebs-mark-cres \{[^}]*animation: ebsMarkCresOut 560ms linear 640ms/);
   assert.match(css, /\.ebs-mark \{ animation: ebsMarkBreathe 2800ms ease-in-out 1250ms infinite/);
   assert.match(css, /\.ebs-mark-light \.ebs-mark-white \{ animation: ebsMarkInkIn/);
-  // Motion uses transform, opacity and the stroke's dash only.
-  for (const [, body] of css.matchAll(/@keyframes \w+ \{([\s\S]*?\})\s*\}/g)) {
-    const props = [...body.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]).filter((name) => name !== 'animation-timing-function');
-    assert.deepEqual(props.filter((name) => !['transform', 'opacity', 'stroke-dashoffset'].includes(name)), [], body);
+  // Motion uses transform, opacity and the stroke's dash only: the mark's
+  // keyframes and the cover's own (its error fade), and the cover's fade is
+  // a transition of opacity (visibility only flips once it is transparent).
+  const dialogCss = document.getElementById('ebs-dialog-style').textContent;
+  let keyframes = 0;
+  for (const sheet of [css, dialogCss]) {
+    for (const [, body] of sheet.matchAll(/@keyframes \w+ \{([\s\S]*?\})\s*\}/g)) {
+      keyframes += 1;
+      const props = [...body.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]).filter((name) => name !== 'animation-timing-function');
+      assert.deepEqual(props.filter((name) => !['transform', 'opacity', 'stroke-dashoffset'].includes(name)), [], body);
+    }
+  }
+  assert.ok(keyframes >= 10, `every keyframe block was read (${keyframes})`);
+  for (const [, list] of dialogCss.matchAll(/\.ebs-dialog-cover[^{]*\{[^}]*transition: ([^;]+);/g)) {
+    const props = list.split(',').map((part) => part.trim().split(/\s+/)[0]);
+    assert.deepEqual(props.filter((name) => !['opacity', 'transform', 'visibility'].includes(name)), [], list);
   }
   assert.deepEqual(p.fetched, [], 'no request for the logo');
   assert.equal(p.sent.filter((sent) => sent.type === 'requests:slot').length, 0, 'not through the request layer either');
@@ -325,12 +337,14 @@ test('without Better design the mark stands still and complete', async () => {
 test('less motion: the mark is static and complete; only the cover fades', async () => {
   const p = await dialogPage({ betterDesign: true, reduced: true });
   const { document, window } = p;
-  // Also e-Boekhouden's own logo, when the loader read it on this page: no mask that draws its e.
-  assert.equal(window.EBS.mark.useLogo(LOGO_PARTS), true);
   window.EBS.dialog.open({ title: 'Map', content: content(document), loading: 'Map wordt geladen…' });
   const mark = document.querySelector('.ebs-dialog-cover .ebs-mark');
-  assert.equal(mark.querySelector('mask'), null);
-  assert.equal(mark.querySelector('[mask]'), null);
+  assert.ok(!mark.classList.contains('is-still'), 'the CSS stills it, so the same mark serves both');
+  // e-Boekhouden's own logo (the loader's) has no mask that draws its e either.
+  const own = window.EBS.mark.create({ size: 220, tone: 'dark', motion: 'entry', logo: LOGO_PARTS }).node;
+  assert.ok(own.querySelector('g.ebs-mark-cres > path'));
+  assert.equal(own.querySelector('mask'), null);
+  assert.equal(own.querySelector('[mask]'), null);
   const css = document.getElementById('ebs-mark-style').textContent;
   const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
   assert.match(reduced, /\.ebs-mark, \.ebs-mark \.ebs-mark-halo, \.ebs-mark \.ebs-mark-cres \{ animation: none; \}/, 'no breathing, glow or crescent');
@@ -342,27 +356,28 @@ test('less motion: the mark is static and complete; only the cover fades', async
   p.close();
 });
 
-test('the logo the loader read on this page is used, the drawn mark otherwise; never fetched for a dialog', async () => {
+test('a dialog shows the board\'s drawn mark and requests nothing for it; the loader\'s logo builds the same way on white', async () => {
   const p = await dialogPage({ betterDesign: true });
   const { document, window } = p;
-  assert.equal(window.EBS.mark.logo(), null);
-  const drawn = window.EBS.dialog.open({ title: 'Een', content: content(document), loading: 'Laden…' });
-  assert.ok(drawn.body.querySelector('circle.ebs-mark-cres'), 'our drawn crescent');
-  drawn.close({ immediate: true });
-  assert.equal(window.EBS.mark.useLogo({ disc: LOGO_PARTS.disc }), false, 'parts that are not the mark are ignored');
-  assert.equal(window.EBS.mark.useLogo(LOGO_PARTS), true);
-  const own = window.EBS.dialog.open({ title: 'Twee', content: content(document), loading: 'Laden…' });
-  const mark = own.body.querySelector('.ebs-mark');
+  // Dialogs live in the app's frames, where the loader never reads the logo.
+  assert.equal(window.EBS.mark.logo, undefined, 'no logo kept between documents or frames');
+  const dialog = window.EBS.dialog.open({ title: 'Een', content: content(document), loading: 'Laden…' });
+  assert.ok(dialog.body.querySelector('circle.ebs-mark-cres'), 'our drawn crescent');
+  assert.equal(dialog.body.querySelector('mask'), null, 'the drawn e needs no mask');
+  dialog.close({ immediate: true });
+  // e-Boekhouden's own parts on a light panel: the navy e first, uncovered by the strokes.
+  const mark = window.EBS.mark.create({ size: 120, tone: 'light', logo: LOGO_PARTS }).node;
   assert.equal(mark.querySelector('circle.ebs-mark-cres'), null);
   assert.equal(mark.querySelector('g.ebs-mark-cres > path').getAttribute('d'), LOGO_PARTS.crescent.d);
   assert.equal(mark.querySelector('.ebs-mark-white > path').getAttribute('fill'), '#ffffff');
   assert.equal(mark.querySelector('.ebs-mark-ink > path').getAttribute('fill'), '#232c4f', 'the navy e first, on white');
   const maskId = mark.querySelector('mask').id;
   assert.equal(mark.querySelector('.ebs-mark-white').getAttribute('mask'), `url(#${maskId})`, 'the strokes uncover their e');
+  assert.equal(mark.querySelector('.ebs-mark-ink').getAttribute('mask'), `url(#${maskId})`);
   await sleep(800);
   assert.equal(mark.querySelector('[mask]'), null, 'the mask goes once the e is drawn');
   assert.deepEqual(p.fetched, []);
-  own.close({ immediate: true });
+  assert.equal(p.sent.filter((sent) => sent.type === 'requests:slot').length, 0);
   p.close();
 });
 

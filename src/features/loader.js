@@ -42,9 +42,9 @@
 // with one bulk GET of EBS.request per page and split into its parts (disc,
 // crescent, e) so the mark can be built up as on the board. Anything that
 // does not look like that mark falls back to our own drawn one, the board's.
-// The file itself is never stored or shipped; the parts stay in this page's
-// memory (EBS.mark.useLogo), where its dialogs use them too. Building and
-// animating the mark is EBS.mark's (src/mark.js).
+// The file itself is never stored or shipped. Building and animating the
+// mark is EBS.mark's (src/mark.js); the dialogs in the app's frames use the
+// same module with the drawn mark, so they never request the logo.
 //
 // Classic design: no loader. When the view state says a session is logged
 // in, a plain neutral cover in e-Boekhouden's own background colour hides
@@ -1007,8 +1007,6 @@
       if (mode !== 'better') return;
 
       const marked = fetchMark().then((mark) => {
-        // Kept for this page's dialogs too, which never fetch it themselves.
-        if (mark) EBS.mark.useLogo(mark);
         if (state.mark === undefined) state.mark = mark;
         fill();
       });

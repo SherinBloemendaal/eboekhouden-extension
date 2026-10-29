@@ -23,9 +23,11 @@
 //            and breathing (a loader that continues); 'still' complete and
 //            without any motion (classic design). With prefers-reduced-motion
 //            every mark is still: only the covers around it fade
-//   logo     e-Boekhouden's own mark as parsed by the loader, null for our
-//            drawn one; default: the logo the loader parsed on this page
-//            (useLogo), never a request of its own
+//   logo     e-Boekhouden's own mark as parsed by the loader, or nothing for
+//            our drawn one (the board's). Only the loader's top /bh/ frame
+//            reads the logo; the dialogs live in the app's frames (another
+//            document, another origin), so they show the drawn mark and
+//            never request the logo themselves
 // done() lifts the mask that draws e-Boekhouden's e; it runs by itself once
 // the e is drawn.
 //
@@ -54,8 +56,6 @@
 
   const round = (value) => Math.round(value * 1000) / 1000;
   let serial = 0;
-  // The logo the loader parsed on this page, if it did.
-  let pageLogo = null;
 
   function reducedMotion() {
     try {
@@ -145,7 +145,7 @@
     serial += 1;
     const id = (name) => `ebs-mark-${serial}-${name}`;
     const ids = { halo: id('halo'), crescent: id('crescent'), disc: id('disc'), sheen: id('sheen'), clip: id('clip'), mask: id('e') };
-    const parts = logo === undefined ? pageLogo : logo;
+    const parts = logo ?? null;
     const box = Math.max(16, Math.round(Number(size) || 220));
     const light = tone === 'light';
     const state = ['entry', 'settled', 'still'].includes(motion) ? motion : 'entry';
@@ -164,20 +164,11 @@
     return { node, done: e.done };
   }
 
-  // Parts as markFromSvg (loader.js) returns them; anything else is ignored.
-  function useLogo(parts) {
-    const part = (value) => value && typeof value.d === 'string' && typeof value.transform === 'string' && typeof value.fill === 'string';
-    if (!parts || !part(parts.disc) || !Array.isArray(parts.e) || !parts.e.length || !parts.e.every(part) || (parts.crescent && !part(parts.crescent))) return false;
-    const box = parts.eBox;
-    if (!box || ![box.x, box.y, box.w, box.h].every(Number.isFinite)) return false;
-    pageLogo = Object.freeze({ ...parts });
-    return true;
-  }
-
   // A place for a mark in a loading cover. It keeps its size, so the text
   // under it never moves. start() puts a new mark in (its entry plays from
   // the start) unless one is there; stop() takes it out once the cover has
-  // faded, so no loop keeps running behind a page.
+  // faded, so no loop keeps running behind a page. motion may be a function:
+  // it is asked at every start() (a setting that changed meanwhile).
   function slot({ size = 120, tone = 'light', motion = 'entry' } = {}) {
     injectStyle(document);
     const node = document.createElement('div');
@@ -284,9 +275,6 @@
     slot,
     css,
     injectStyle,
-    useLogo,
-    // The logo the loader parsed on this page, or null (then the drawn mark).
-    logo: () => pageLogo,
     reducedMotion,
   }));
 })();

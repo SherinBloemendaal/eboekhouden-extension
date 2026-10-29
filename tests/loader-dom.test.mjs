@@ -193,8 +193,6 @@ test('Better design: the loader covers /bh/ with the logo, the administration an
   assert.equal(shadow.querySelectorAll('mask .ebs-mark-bar, mask .ebs-mark-bowl').length, 2);
   // The mark's styles are in the shadow root, next to the loader's own.
   assert.match(shadow.querySelector('style').textContent, /@keyframes ebsMarkBadgeIn/);
-  // The parsed logo stays in this page's memory for its dialogs.
-  assert.equal(p.window.EBS.mark.logo().e.length, 3);
   // The slow state is there, but hidden and out of the tab order.
   assert.equal(shadow.querySelector('.ebs-slow').getAttribute('aria-hidden'), 'true');
   assert.equal(shadow.querySelector('.ebs-link').tabIndex, -1);
@@ -232,7 +230,6 @@ for (const [label, options] of [['a failed request', { logo: new Error('offline'
     const shadow = p.shadow();
     assert.ok(shadow.querySelector('circle.ebs-mark-cres'), 'the board\'s crescent');
     assert.ok(shadow.querySelector('.ebs-mark-white > path.ebs-mark-bar') && shadow.querySelector('.ebs-mark-white > path.ebs-mark-bowl'), 'the board\'s e');
-    assert.equal(p.window.EBS.mark.logo(), null, 'nothing kept for the dialogs');
     assert.equal(shadow.querySelector('mask'), null);
     assert.equal(p.fetched.length, 1, 'never asked twice');
     p.close();
