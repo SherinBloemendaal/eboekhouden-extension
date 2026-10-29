@@ -24,9 +24,12 @@ const html = (rows = 6) => `<!doctype html><html><head></head><body>
 </ul></app-grid-bulk-actions></app-grid-footer></app-grid>
 <span id="clock">0</span></div></body></html>`;
 
+// In manifest order: import.js uses the shared dialog.
+const SCRIPTS = ['shared.js', 'icons.js', 'dialog.js', 'import.js'];
+
 async function importPage(options = {}) {
   const p = page(html(options.rows), { url: 'https://secure20.e-boekhouden.nl/boekhouden/importeren', store: { settings: { betterDesign: true } } });
-  p.load('shared.js', 'import.js');
+  p.load(...SCRIPTS);
   await p.settle();
   return p;
 }
@@ -90,7 +93,7 @@ test('bulk actions click e-Boekhouden\'s own action with the exact label', async
   const p = page(html().replace('<app-grid-bulk-action><li id="del">', '<app-grid-bulk-action><li id="other-del"><span>Geselecteerde importregels verwijderen</span></li></app-grid-bulk-action><app-grid-bulk-action><li id="del">'), {
     url: 'https://secure20.e-boekhouden.nl/boekhouden/importeren', store: { settings: { betterDesign: true } },
   });
-  p.load('shared.js', 'import.js');
+  p.load(...SCRIPTS);
   await p.settle();
   const { document } = p;
   const clicked = [];
@@ -119,5 +122,28 @@ test('hiding a line fades the row that is on screen, then drops it', async () =>
 test('an empty import says so instead of blaming the filters', async () => {
   const p = await importPage({ rows: 0 });
   assert.equal(p.document.querySelector('.ebs-empty').textContent, 'Er staan geen afschriftregels klaar om te verwerken.');
+  p.close();
+});
+
+test('a line opens the mutation screen in the shared dialog, and Escape brings focus back', async () => {
+  const p = await importPage();
+  const { document, window } = p;
+  const book = document.querySelectorAll('.ebs-body .ebs-action.book')[1];
+  book.focus();
+  book.click();
+  const panel = document.querySelector('.ebs-dialog-backdrop .ebs-dialog');
+  assert.ok(panel, 'the dialog is open');
+  assert.equal(panel.getAttribute('role'), 'dialog');
+  assert.equal(document.querySelector('.ebs-dialog-title').textContent, 'Mutatie aanmaken');
+  assert.match(document.querySelector('.ebs-dialog-frame').src, /\/boekhouden\/importeren#ebs-edit=/);
+  assert.equal(document.querySelector('.ebs-dialog-cover').textContent, 'Het mutatiescherm wordt geopend…');
+  assert.equal(document.querySelector('.ebs-dialog-link').textContent, 'Openen in nieuw tabblad');
+  assert.equal(document.getElementById('content').inert, true, 'the page behind is inert');
+  assert.ok(document.querySelector('.ebs-dialog-backdrop').classList.contains('ebs-motion'), 'Better design moves');
+  document.activeElement.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(document.getElementById('content').inert, false);
+  assert.equal(document.activeElement.dataset.control, 'book', 'focus is back on a book button');
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  assert.equal(document.querySelector('.ebs-dialog-backdrop'), null, 'gone after the close transition');
   p.close();
 });

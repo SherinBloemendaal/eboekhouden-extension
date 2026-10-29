@@ -42,7 +42,7 @@ function fakeChrome(window, { store, answer, answerDelay, sent }) {
         async set(values) {
           const changes = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, { oldValue: store[key], newValue: structuredClone(value) }]));
           Object.assign(store, structuredClone(values));
-          for (const listener of listeners) listener(changes, 'local');
+          for (const listener of [...listeners]) listener(changes, 'local');
         },
       },
       onChanged: { addListener: (listener) => listeners.push(listener) },
@@ -70,8 +70,16 @@ function helpers(window, store, sent) {
   return { window, document: window.document, store, sent, load, settle, close: () => window.close() };
 }
 
-export function page(html, { url, store = {}, answer = () => ({}), answerDelay = 0 } = {}) {
-  const dom = new JSDOM(html, { url, runScripts: 'outside-only', pretendToBeVisual: true });
+// `serve` maps URLs to the HTML a frame of the page gets for them (no network).
+export function page(html, { url, store = {}, answer = () => ({}), answerDelay = 0, serve = null } = {}) {
+  const resources = serve ? {
+    resources: {
+      interceptors: [requestInterceptor((request) => new Response(serve[request.url] ?? '<html><body></body></html>', {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      }))],
+    },
+  } : {};
+  const dom = new JSDOM(html, { url, runScripts: 'outside-only', pretendToBeVisual: true, ...resources });
   const { window } = dom;
   open.add(window);
   const sent = [];

@@ -1039,104 +1039,66 @@
   // Mutation dialog: e-Boekhouden's own "Handmatig invoeren" page for one row.
   // -------------------------------------------------------------------------
 
-  // Open and close are transitions, not keyframes: Esc while it opens turns
-  // the same motion around. The page behind is inert while it is open.
+  // The shared dialog (dialog.js) does the frame, the motion, Escape, the
+  // focus trap and the inert page; this part fills it for one row and listens
+  // to the import page inside it.
   const dialog = {
-    host: null,
+    handle: null,
     open(row, signature = EBS.rowSignature(row)) {
       this.close(true);
-      this.returnTo = { element: document.activeElement, signature };
-      const backdrop = el('div', 'ebs-dialog-backdrop');
-      const panel = el('div', 'ebs-dialog');
-      panel.setAttribute('role', 'dialog');
-      panel.setAttribute('aria-modal', 'true');
-      panel.setAttribute('aria-labelledby', 'ebs-dialog-title');
-      const head = el('div', 'ebs-dialog-head');
-      const titles = el('span', 'ebs-dialog-titles');
-      const title = el('span', 'ebs-dialog-title', 'Mutatie aanmaken');
-      title.id = 'ebs-dialog-title';
+      const opener = document.activeElement;
       const amount = Number.isFinite(row.amount) ? `${row.amount > 0 ? '+' : '−'} € ${EBS.formatMoney(Math.abs(row.amount))}` : row.amountText;
-      titles.append(title, el('span', 'ebs-dialog-sub', [row.party ?? row.description, amount, row.bookDate].filter(Boolean).join(' · ')));
       const url = `${location.origin}${location.pathname}${location.search}${EDIT_HASH}${encodeURIComponent(signature)}`;
-      const newTab = el('a', 'ebs-dialog-newtab', 'Openen in nieuw tabblad');
+      const newTab = el('a', 'ebs-dialog-link', 'Openen in nieuw tabblad');
       newTab.href = url;
       newTab.target = '_blank';
       newTab.rel = 'noopener';
       newTab.addEventListener('click', () => this.close());
-      const close = el('button', 'ebs-dialog-close', '✕');
-      close.type = 'button';
-      close.setAttribute('aria-label', 'Sluiten');
-      close.addEventListener('click', () => this.close());
-      head.append(titles, newTab, close);
-
-      const frame = el('iframe', 'ebs-dialog-frame');
-      frame.title = 'Mutatie aanmaken';
-      frame.src = url;
-      // Covers the frame while it loads the list and opens the line, so the
-      // list never shows inside the dialog.
-      const body = el('div', 'ebs-dialog-body');
-      const cover = el('div', 'ebs-dialog-cover', 'Het mutatiescherm wordt geopend…');
-      cover.setAttribute('role', 'status');
-      body.append(frame, cover);
-
-      const foot = el('div', 'ebs-dialog-foot');
       const note = el('span', '', 'Na opslaan sluit dit venster en wordt de lijst ververst.');
       note.setAttribute('role', 'status');
-      const done = el('button', 'ebs-dialog-done', 'Sluiten');
+      const done = el('button', 'ebs-dialog-button', 'Sluiten');
       done.type = 'button';
       done.addEventListener('click', () => this.close());
-      foot.append(note, done);
-      panel.append(head, body, foot);
-      backdrop.append(panel);
-      backdrop.addEventListener('mousedown', (event) => {
-        if (event.target === backdrop) this.close();
-      });
-      this.onKey = (event) => {
-        if (event.key === 'Escape') this.close();
-      };
-      document.addEventListener('keydown', this.onKey, true);
-      this.onMessage = (event) => {
-        if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
+
+      let handle = null;
+      const onMessage = (event) => {
+        if (!handle || event.origin !== location.origin || event.source !== handle.frame.contentWindow) return;
         const kind = event.data?.ebs;
         if (kind === 'edit-done') {
           this.close();
           location.reload();
         }
         if (kind === 'edit-escape') this.close();
-        if (kind === 'edit-opened') cover.remove();
-        if (kind === 'edit-missing') cover.textContent = 'Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.';
-        if (kind === 'edit-failed') cover.textContent = 'Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.';
+        if (kind === 'edit-opened') handle.setReady();
+        if (kind === 'edit-missing') handle.setError('Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.');
+        if (kind === 'edit-failed') handle.setError('Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.');
       };
-      window.addEventListener('message', this.onMessage);
-      this.inert = [...document.body.children].filter((child) => !child.inert);
-      for (const child of this.inert) child.inert = true;
-      document.body.append(backdrop);
-      this.host = backdrop;
-      // Start from the closed state in this frame, then open.
-      void backdrop.offsetWidth;
-      backdrop.classList.add('open');
-      close.focus();
+      handle = EBS.dialog.open({
+        title: 'Mutatie aanmaken',
+        subtitle: [row.party ?? row.description, amount, row.bookDate].filter(Boolean).join(' · '),
+        src: url,
+        frameTitle: 'Mutatie aanmaken',
+        // Covers the frame while it loads the list and opens the line, so the
+        // list never shows inside the dialog.
+        loading: 'Het mutatiescherm wordt geopend…',
+        ready: 'manual',
+        width: 1040,
+        height: 760,
+        actions: [newTab],
+        footer: [note, done],
+        // Back to the button or line the dialog came from, also after a redraw.
+        returnFocus: () => (opener?.isConnected && opener !== document.body ? opener
+          : [...(better.body?.children ?? [])].find((node) => node.dataset.signature === signature)?.querySelector('[data-control="book"]')),
+        onClose: () => {
+          window.removeEventListener('message', onMessage);
+          if (this.handle === handle) this.handle = null;
+        },
+      });
+      window.addEventListener('message', onMessage);
+      this.handle = handle;
     },
     close(immediate = false) {
-      if (!this.host) return;
-      const host = this.host;
-      this.host = null;
-      document.removeEventListener('keydown', this.onKey, true);
-      window.removeEventListener('message', this.onMessage);
-      for (const child of this.inert ?? []) child.inert = false;
-      this.inert = null;
-      // Back to the button or line the dialog came from, also after a redraw.
-      const { element, signature } = this.returnTo ?? {};
-      const target = element?.isConnected && element !== document.body ? element
-        : [...(better.body?.children ?? [])].find((node) => node.dataset.signature === signature)?.querySelector('[data-control="book"]');
-      target?.focus({ preventScroll: true });
-      if (immediate || !better.root) {
-        host.remove();
-        return;
-      }
-      host.classList.remove('open');
-      host.classList.add('closing');
-      setTimeout(() => host.remove(), 120);
+      this.handle?.close({ immediate: immediate || !better.root });
     },
   };
 
@@ -1351,30 +1313,12 @@
     .ebs-tooltip.instant { animation: none; }
     .ebs-empty { padding: 24px 14px; font-size: 13px; color: #5d6584; }
     .ebs-footer { padding: 12px 14px; border-top: 1px solid #e6e9f1; font-size: 13px; color: #5d6584; }
-    .ebs-dialog-backdrop { position: fixed; inset: 0; z-index: 2147483100; display: flex; align-items: center; justify-content: center; background: rgba(20, 26, 48, .5); }
-    .ebs-dialog { width: min(1040px, calc(100vw - 48px)); height: min(760px, calc(100vh - 48px)); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(10, 14, 30, .4); font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; }
-    .ebs-dialog-head { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e6e9f1; }
-    .ebs-dialog-titles { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-    .ebs-dialog-title { font-size: 17px; font-weight: 700; }
-    .ebs-dialog-sub { font-size: 13px; color: #5d6584; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ebs-dialog-newtab { font-size: 13px; color: #232c4f; }
-    .ebs-dialog-close { width: 36px; height: 36px; border: 0; border-radius: 8px; background: #f3f5fa; color: #232c4f; font-size: 18px; cursor: pointer; }
-    .ebs-dialog-body { position: relative; flex: 1; display: flex; }
-    .ebs-dialog-frame { flex: 1; width: 100%; border: 0; }
-    .ebs-dialog-cover { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: #fff; font-size: 14px; color: #5d6584; text-align: center; }
-    .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
-    .ebs-dialog-done { height: 36px; padding: 0 14px; border: 1px solid #d6dbe8; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; cursor: pointer; }
-    .ebs-dialog-close:focus-visible, .ebs-dialog-done:focus-visible, .ebs-dialog-newtab:focus-visible, .ebs-group-item:focus-visible, .ebs-tab-action:focus-visible, .ebs-hidden-toggle:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     /* Better design motion (the approved list). */
     .ebs-bar.better { opacity: 0; transform: translate(-50%, 16px); transition: opacity 150ms ease-in, transform 150ms ease-in, visibility 0s linear 150ms; }
     .ebs-bar.better.show { opacity: 1; transform: translate(-50%, 0); transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s; }
     .ebs-bar.better .ebs-group-menu { transform-origin: bottom left; animation: ebs-menu 150ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-bar.better .ebs-group-menu.closing { opacity: 0; transform: scale(0.96); transition: opacity 100ms ease-in, transform 100ms ease-in; pointer-events: none; }
-    .ebs-dialog-backdrop { opacity: 0; transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1); }
-    .ebs-dialog { opacity: 0; transform: scale(0.97); transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1); }
-    .ebs-dialog-backdrop.open, .ebs-dialog-backdrop.open .ebs-dialog { opacity: 1; transform: none; }
-    .ebs-dialog-backdrop.closing, .ebs-dialog-backdrop.closing .ebs-dialog { transition-duration: 120ms; transition-timing-function: ease-in; pointer-events: none; }
     .ebs-bar.better .ebs-bar-button { transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-bar.better .ebs-bar-button:active { transform: scale(0.97); }
     .ebs-row.leaving { opacity: 0; transform: translateX(8px); transition: opacity 140ms cubic-bezier(0.23, 1, 0.32, 1), transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
@@ -1386,8 +1330,6 @@
       .ebs-bar.better.show { transition: opacity 150ms ease-out, visibility 0s; }
       .ebs-bar.better .ebs-group-menu { animation: ebs-fade 120ms ease-out; }
       .ebs-bar.better .ebs-group-menu.closing { transform: none; }
-      .ebs-dialog, .ebs-dialog-backdrop.open .ebs-dialog { transform: none; transition: opacity 120ms ease-out; }
-      .ebs-dialog-backdrop { transition: opacity 120ms ease-out; }
       .ebs-row.leaving { transform: none; }
       .ebs-bar.better .ebs-bar-button:active { transform: none; }
     }
@@ -1415,7 +1357,7 @@
     // Our own drawing must not wake the loop, or it would redraw forever.
     // A change inside a subtree that is already gone (a tooltip removed from a
     // row that a redraw replaced) says nothing about the page either.
-    const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-bar-spacer, .ebs-dialog-backdrop, #ebs-import-style';
+    const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-bar-spacer, .ebs-dialog-backdrop, #ebs-import-style, #ebs-dialog-style';
     new MutationObserver((records) => {
       const native = records.some((record) => {
         const node = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;

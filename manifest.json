@@ -47,6 +47,7 @@
       "js": [
         "src/shared.js",
         "src/icons.js",
+        "src/dialog.js",
         "src/bridge.js",
         "src/request.js",
         "src/login-breakout.js",
