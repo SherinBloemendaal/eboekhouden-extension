@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Check syntax
+        run: npm run check
+
+      - name: Validate manifest
+        run: node -e "const m = JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')); if (m.manifest_version !== 3) throw new Error('not MV3'); console.log(m.name, m.version)"
+
+      - name: Test
+        run: npm test
