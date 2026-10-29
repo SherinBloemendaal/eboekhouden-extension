@@ -251,6 +251,7 @@
       #ebs-sessions .title { font-size: 16px; font-weight: 700; }
       #ebs-sessions .hint { font-size: 11px; color: #6b6b6b; }
       #ebs-sessions .row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 0; border-top: 1px solid #ececec; background: #fff; text-align: left; font-family: inherit; color: inherit; cursor: pointer; }
+      #ebs-sessions .row { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
       #ebs-sessions .row:hover { background: #f5f5f5; }
       #ebs-sessions .row.opening { background: #eff0e2; }
       #ebs-sessions .text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
@@ -380,16 +381,12 @@
       node = node.parentElement;
     }
     const forgot = document.getElementById('resetPassword');
-    const note = el('div', 'ebs-lock');
-    note.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
-    note.append(document.createTextNode('Wachtwoorden blijven in 1Password. Je logt rechtstreeks in bij e-Boekhouden.'));
     right.append(head, form);
     if (forgot) {
       forgot.classList.add('ebs-forgot');
       forgot.textContent = 'Gebruikersnaam of wachtwoord vergeten?';
       right.append(forgot);
     }
-    right.append(note);
     main.append(left, right);
 
     const footer = el('footer', 'ebs-footer');
@@ -576,12 +573,11 @@
     #ebs-better #frm tr.TRNORM > td:first-child, #ebs-better #frm tr.TRNORM > td:first-child font { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #232c4f !important; }
     #ebs-better #frm input.INPUTBOX { box-sizing: border-box; width: 100% !important; height: 46px; padding: 0 14px; border: 1.5px solid #cfd4e2; border-radius: 10px; font: 15px Ubuntu, system-ui, sans-serif; color: #232c4f; background: #fff; }
     #ebs-better #frm input.INPUTBOX:focus { border-color: #232c4f; outline: 3px solid rgba(35, 44, 79, .12); }
-    #ebs-better #frm input.act-btn { box-sizing: border-box; width: 100%; height: 48px; margin-top: 4px; border: 0; border-radius: 10px; background: #232c4f; color: #fff; font: 700 15px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    #ebs-better #frm input.act-btn { box-sizing: border-box; width: 100%; height: 48px; margin-top: 4px; border: 0; border-radius: 10px; background: #232c4f; color: #fff; font: 700 15px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     #ebs-better #frm input.act-btn:active { transform: scale(0.98); }
     #ebs-better #frm input.act-btn.ebs-busy { background: #4a5272; cursor: wait; transform: none; }
     #ebs-better #frm input.act-btn:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
     #ebs-better .ebs-forgot { align-self: center; display: block !important; font-size: 13px; color: #232c4f; }
-    #ebs-better .ebs-lock { display: flex; align-items: center; gap: 8px; padding-top: 16px; border-top: 1px solid #eef0f5; font-size: 12px; color: #5d6584; }
 
     /* Sessions. */
     #ebs-better button { font-family: inherit; color: inherit; cursor: pointer; }
@@ -589,7 +585,7 @@
     #ebs-better .ebs-avatar.expired { background: #fbe9e9; color: #b42318; }
     #ebs-better .ebs-avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
     #ebs-better .ebs-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    #ebs-better .ebs-card { display: flex; flex-direction: column; gap: 16px; padding: 18px; border: 1px solid #dfe3ec; border-radius: 14px; background: #fff; text-align: left; box-shadow: 0 8px 22px rgba(20, 26, 48, .08); transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    #ebs-better .ebs-card { display: flex; flex-direction: column; gap: 16px; padding: 18px; border: 1px solid #dfe3ec; border-radius: 14px; background: #fff; text-align: left; box-shadow: 0 8px 22px rgba(20, 26, 48, .08); transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     #ebs-better .ebs-card:active, #ebs-better .ebs-list-row:active, #ebs-better .ebs-other:active { transform: scale(0.98); }
     #ebs-better .ebs-card.opening { border: 2px solid #5d9e35; }
     #ebs-better .ebs-card:focus-visible, #ebs-better .ebs-list-row:focus-visible, #ebs-better .ebs-other:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
@@ -606,7 +602,7 @@
     #ebs-better .ebs-pill.login { background: #f1f3f8; color: #4a5272; }
     #ebs-better .ebs-search { box-sizing: border-box; height: 40px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
     #ebs-better .ebs-list { display: flex; flex-direction: column; gap: 6px; max-height: 400px; overflow: auto; padding-right: 4px; }
-    #ebs-better .ebs-list-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e6ee; border-radius: 10px; background: #fff; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    #ebs-better .ebs-list-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e6ee; border-radius: 10px; background: #fff; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     #ebs-better .ebs-list-row.opening { border-color: #5d9e35; }
     #ebs-better .ebs-list-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #ebs-better .ebs-more { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #5d6584; }
@@ -616,7 +612,13 @@
     #ebs-better .ebs-empty span { font-size: 13px; line-height: 19px; color: #5d6584; max-width: 300px; }
     #ebs-better .ebs-others { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
     #ebs-better .ebs-others-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: #6b7290; }
-    #ebs-better .ebs-other { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    #ebs-better .ebs-other { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+    @media (hover: hover) {
+      #ebs-better .ebs-card:hover { border-color: #c9cfdf; }
+      #ebs-better .ebs-list-row:hover { border-color: #c9cfdf; background: #fafbfd; }
+      #ebs-better .ebs-other:hover { background: #ffffff; }
+      #ebs-better #frm input.act-btn:hover { background: #1b2240; }
+    }
     #ebs-better .ebs-other.picked { border: 1.5px solid #232c4f; background: #fff; }
     #ebs-better .ebs-other-name { flex: 1; min-width: 0; font-size: 14px; }
     #ebs-better .ebs-other-number { font-size: 12px; color: #6b7290; }

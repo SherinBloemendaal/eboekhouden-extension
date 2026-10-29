@@ -26,6 +26,7 @@ button { font: inherit; cursor: pointer; }
 .btn[aria-busy="true"] { opacity: 1; }
 .btn:focus-visible, .icon-btn:focus-visible, .add:focus-visible, .switch:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
 .icon-btn { width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: #5d6584; display: flex; align-items: center; justify-content: center; }
+.btn, .icon-btn, .add, .row { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, opacity 150ms ease; }
 .icon-btn:hover { background: #e6e9f1; color: #232c4f; }
 .add { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 2px 8px 0; padding: 8px; border: 0; border-radius: 8px; background: #fff; text-align: left; font-size: 14px; font-weight: 500; color: #232c4f; }
 .add:hover { background: #f5f6fa; }
