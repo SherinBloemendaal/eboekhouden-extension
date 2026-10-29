@@ -17,7 +17,10 @@
 //                        lifts it when the iframe has loaded, 'manual' leaves
 //                        that to setReady(); without src the body shows at once
 //                        unless loading is given
-//   fallbackUrl          offered as "Openen in een nieuw venster" with an error
+//   fallbackUrl          offered as "Openen in een nieuw venster" with an error.
+//                        A frame that cannot show its page (it went to another
+//                        site, or the browser refused it) gets an error by
+//                        itself, with this link or else one to src
 //   actions              nodes in the head, before the close button
 //   footer               a node, a list of nodes or a text; none: no footer
 //   width, height        requested size in px, clamped to the viewport (24 px
@@ -120,7 +123,7 @@
   // <body>): the dialog's own key handler does not see that one.
   function onDocumentKey(event) {
     const top = stack.at(-1);
-    if (!top || event.key !== 'Escape' || top.host.contains(event.target)) return;
+    if (!top || event.key !== 'Escape' || event.isComposing || top.host.contains(event.target)) return;
     top.close({ reason: 'escape' });
   }
 
@@ -275,15 +278,17 @@
       },
     };
 
+    // Escape that ends an IME composition or that something inside used (a
+    // dropdown) is not for the dialog.
     function onKey(event) {
-      if (event.key === 'Escape' && !event.defaultPrevented && stack.at(-1) === handle) {
+      if (event.key === 'Escape' && !event.isComposing && !event.defaultPrevented && stack.at(-1) === handle) {
         event.stopPropagation();
         handle.close({ reason: 'escape' });
       }
     }
 
     function onFrameKey(event) {
-      if (event.key === 'Escape' && !event.defaultPrevented && stack.at(-1) === handle) handle.close({ reason: 'escape' });
+      if (event.key === 'Escape' && !event.isComposing && !event.defaultPrevented && stack.at(-1) === handle) handle.close({ reason: 'escape' });
     }
 
     function detachFrameKeys() {
@@ -304,8 +309,23 @@
       } catch { /* cross-origin: its own Escape stays inside it */ }
     }
 
+    // Chrome shows its own error page for a frame it refused (or one that
+    // went to another site), which this page cannot read: say so instead of
+    // lifting the cover over an empty frame.
+    function frameReadable() {
+      try {
+        return frame.contentWindow?.location.origin === location.origin;
+      } catch {
+        return false;
+      }
+    }
+
     function onFrameLoad() {
       attachFrameKeys();
+      if (!frameReadable()) {
+        handle.setError('Deze pagina kan hier niet worden getoond.', { fallbackUrl: fallbackDefault ?? src });
+        return;
+      }
       if ((options.ready ?? 'load') === 'load' && !cover.classList.contains('error')) handle.setReady();
     }
 

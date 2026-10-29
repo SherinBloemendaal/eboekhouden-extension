@@ -137,6 +137,38 @@ test('an iframe page: ready on load, and Escape inside it closes the dialog', as
   p.close();
 });
 
+test('a frame that cannot show the page gets the error and a link to open it in a new window', async () => {
+  const frameUrl = 'https://secure20.e-boekhouden.nl/boekhouden/archief/map/4';
+  const p = await dialogPage();
+  const { document, window } = p;
+  const dialog = window.EBS.dialog.open({ title: 'Map', src: frameUrl });
+  // What Chrome's error page for a refused frame is to this page: unreadable.
+  Object.defineProperty(dialog.frame, 'contentWindow', {
+    configurable: true,
+    get() {
+      return { get location() { throw new window.DOMException('Blocked a frame', 'SecurityError'); } };
+    },
+  });
+  dialog.frame.dispatchEvent(new window.Event('load'));
+  const cover = document.querySelector('.ebs-dialog-cover');
+  assert.equal(cover.hidden, false);
+  assert.ok(cover.classList.contains('error'));
+  assert.match(cover.textContent, /kan hier niet worden getoond/);
+  assert.equal(cover.querySelector('.ebs-dialog-fallback').href, frameUrl, 'the page itself, in a window of its own');
+  p.close();
+});
+
+test('Escape that ends a composition (IME) does not close the dialog', async () => {
+  const p = await dialogPage();
+  const { document, window } = p;
+  const dialog = window.EBS.dialog.open({ title: 'Map', content: content(document) });
+  key(window, document.getElementById('first'), { key: 'Escape', isComposing: true });
+  assert.ok(dialog.isOpen);
+  key(window, document.getElementById('first'), { key: 'Escape' });
+  assert.equal(dialog.isOpen, false);
+  p.close();
+});
+
 test('motion only with Better design: open, then a 120 ms close', async () => {
   const p = await dialogPage({ betterDesign: true });
   const { document, window } = p;
