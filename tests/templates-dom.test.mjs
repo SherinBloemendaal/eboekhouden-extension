@@ -368,6 +368,21 @@ test('e-mail: the picker loads the invoice list once on its click, and one invoi
   p.close();
 });
 
+test('e-mail: a list that fails to load says so in the picker, and the preview keeps the sample data', async () => {
+  const p = await emailPage();
+  p.window.fetch = async (input) => {
+    p.fetched.push(String(input));
+    return new Response('nee', { status: 500 });
+  };
+  userClick(p, p.document.querySelector('.ebs-tpl-picker-button'));
+  await p.settle();
+  assert.equal(p.document.querySelector('.ebs-tpl-picker-note').textContent, 'De facturen konden niet worden geladen. Probeer het later opnieuw.');
+  assert.equal(p.document.querySelectorAll('.ebs-tpl-picker-panel .ebs-tpl-option').length, 1);
+  assert.match(p.document.querySelector('.ebs-tpl-mail-body').textContent, /VB-0001/);
+  assert.equal(p.slots(), 1, 'one try, no retry on its own');
+  p.close();
+});
+
 test('e-mail: Klassieke weergave gives e-Boekhouden\'s page back, with Nieuwe weergave at the same spot', async () => {
   const p = await emailPage();
   const { document } = p;
