@@ -738,7 +738,7 @@
         }
       });
       this.dialog = EBS.dialog.open({
-        title: 'Aanmaanladder instellen', subtitle: 'Eén keer per administratie', content: box, width: 960, className: 'ebs-op-map-dialog',
+        title: 'Aanmaanladder instellen', subtitle: 'Eén keer per administratie', content: box, width: 1240, className: 'ebs-op-map-dialog',
       });
       fetchList();
     },
@@ -1470,7 +1470,8 @@
     .ebs-op-text { padding-right: 12px; font-size: 13px; color: #4a5272; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ebs-op-amount { font-size: 13px; color: #4a5272; font-variant-numeric: tabular-nums; }
     .ebs-op-open { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .ebs-op-due { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .ebs-op-due { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 4px 8px 4px 0; font-size: 13px; }
+    .ebs-op-due > span:first-child { white-space: nowrap; }
     .ebs-op-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; background: #eef0f5; color: #4a5272; }
     .ebs-op-badge.due { background: #fff1dc; color: #8a5300; }
     .ebs-op-badge.late { background: #fdf0ef; color: #b42318; }
