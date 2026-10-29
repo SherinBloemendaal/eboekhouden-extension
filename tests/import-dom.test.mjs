@@ -13,12 +13,13 @@ const line = (i, amount = lineAmount(i)) => `<tr>
   <td>Naam: Partij ${i} IBAN: NL00DEMO00000000${i} Omschrijving: Factuur ${i}</td><td></td><td></td></tr>`;
 
 // options: amounts (one per line, as the grid shows them), count (the
-// number in the grid's title), pages (the pagination has two pages).
+// number in the grid's title, or 'loading' for the "(...)" it shows while
+// it loads), pages (the pagination has two pages).
 const html = (rows = 6, { amounts = null, count = null, pages = false } = {}) => `<!doctype html><html><head></head><body>
 <app-header-identity-b><div class="header-identity"><div class="userInfo"><span class="userName">Demo</span><span class="administratieId">123</span></div></div></app-header-identity-b>
 <div id="content">
 <app-grid id="other"><app-grid-header><div class="grid-header-title">Importbestanden</div></app-grid-header><app-grid-body><table class="grid"><tbody><tr><td>ander grid</td></tr></tbody></table></app-grid-body></app-grid>
-<app-grid id="import"><app-grid-header><div class="grid-header-title">Niet verwerkte afschriftregels (${count ?? (amounts ? amounts.length : rows)} regels)</div></app-grid-header>
+<app-grid id="import"><app-grid-header><div class="grid-header-title">Niet verwerkte afschriftregels ${count === 'loading' ? '(...)' : `(${count ?? (amounts ? amounts.length : rows)} regels)`}</div></app-grid-header>
 <app-grid-body><table class="grid"><thead><tr><th></th><th></th><th></th><th>Importdatum</th><th>RekeningNr</th><th>Boekdatum</th><th>Bedrag</th><th>Omschrijving</th><th>Verwerkingsfouten</th><th>Opmerking</th></tr></thead>
 <tbody>${(amounts ?? Array.from({ length: rows }, (_, i) => lineAmount(i))).map((amount, i) => line(i, amount)).join('')}</tbody></table></app-grid-body>
 <app-grid-footer><app-pagination>${pages ? '<div><ul class="pagination"><li>Vorige</li><li>1</li><li>2</li><li>3</li><li>Volgende</li></ul></div>' : ''}</app-pagination><app-grid-bulk-actions><ul>
@@ -366,5 +367,81 @@ test('1000 lines make one request, however often the grid redraws; a changed imp
   await p.settle();
   assert.equal(p.fetches.length, 1, 'no request without a click');
   assert.equal(document.querySelector('.ebs-card-label').textContent, 'Binnengekomen (deze pagina)');
+  p.close();
+});
+
+// The grid's own lines as e-Boekhouden's endpoint returns them (see line()),
+// followed by `extra` lines of other pages.
+function matchingAnswer(rows, extra) {
+  const data = Array.from({ length: rows }, (_, i) => ({
+    id: i + 1, datum: '2026-09-29T00:00:00', rekening: 'NL00DEMO0000000001', mutDatum: `2026-09-${String((i % 28) + 1).padStart(2, '0')}T00:00:00`,
+    mutBedrag: (i % 2 ? -1 : 1) * (10 + i), mutOmschrijving: `Naam: Partij ${i} IBAN: NL00DEMO00000000${i} Omschrijving: Factuur ${i}`,
+  }));
+  for (let i = 0; i < extra; i += 1) {
+    data.push({ id: rows + i + 1, datum: '2026-09-30', rekening: 'NL00DEMO0000000001', mutDatum: '2026-08-15', mutBedrag: -2.5, mutOmschrijving: `Andere pagina ${i}` });
+  }
+  return { data, rowCount: data.length };
+}
+const otherPageSignature = (i) => `30-09-2026|NL00DEMO0000000001|15-08-2026|-2.5|Andere pagina ${i}`;
+
+test('a grid that is still loading never clears the hidden lines and groups', async () => {
+  const prefs = { hidden: ['a|b|c|1|d'], groups: ['Bank'], groupOf: { 'a|b|c|1|d': 'Bank' } };
+  const p = await importPage({ rows: 0, count: 'loading', store: { 'store:123/import/prefs': { v: prefs, at: 1 } } });
+  await p.settle();
+  assert.ok(p.document.querySelector('.ebs-import'), 'the view is there');
+  assert.deepEqual(p.store['store:123/import/prefs'].v, prefs, 'nothing pruned against an empty body');
+  p.close();
+});
+
+test('with pages, the bulk lines carry the grid\'s signatures: a line hidden on another page counts, and only gone lines are pruned', async () => {
+  const gone = 'x|y|z|1|weg';
+  const prefs = { hidden: [otherPageSignature(3), gone], groups: ['Bank'], groupOf: { [otherPageSignature(4)]: 'Bank', [gone]: 'Bank' } };
+  const p = await importPage({
+    rows: 6, count: 16, pages: true, fetch: () => matchingAnswer(6, 10), store: { 'store:123/import/prefs': { v: prefs, at: 1 } },
+  });
+  const { document } = p;
+  await p.settle();
+  assert.equal(p.fetches.length, 1);
+  assert.equal(document.querySelector('.ebs-footer-total').textContent, '16 regels in totaal · 1 verborgen', 'the line hidden on page 2');
+  assert.ok([...document.querySelectorAll('.ebs-tab')].some((tab) => tab.textContent === 'Bank · 1'), 'its group counts the line on page 2');
+  const stored = p.store['store:123/import/prefs'].v;
+  assert.deepEqual(stored.hidden, [otherPageSignature(3)], 'the line that left the import is pruned, the one on page 2 stays');
+  assert.deepEqual(stored.groupOf, { [otherPageSignature(4)]: 'Bank' });
+  document.querySelector('.ebs-body .ebs-action.hide').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-footer-total').textContent, '16 regels in totaal · 2 verborgen', 'a line hidden here matches its bulk line');
+  assert.equal(p.store['store:123/import/prefs'].v.hidden.length, 2);
+  assert.equal(p.fetches.length, 1, 'still one request');
+  p.close();
+});
+
+test('with pages, bulk lines in another shape than the grid never prune what the user stored', async () => {
+  const p = await importPage({ rows: 6, count: 250, pages: true, fetch: () => gridAnswer(250) });
+  const { document } = p;
+  await p.settle();
+  document.querySelector('.ebs-body .ebs-action.hide').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await p.settle();
+  assert.equal(p.store['store:123/import/prefs'].v.hidden.length, 1, 'the hidden line stays stored');
+  assert.equal(document.querySelector('.ebs-footer-total').textContent, '250 regels in totaal · 1 verborgen', 'counted from this page');
+  assert.equal(document.querySelector('.ebs-card-value.in').textContent, '€ 250,00', 'the cards still count every line');
+  p.close();
+});
+
+test('leaving the import screen forgets the lines read for it and stops a request on its way', async () => {
+  let calls = 0;
+  const p = await importPage({ rows: 6, count: 250, pages: true, fetch: () => { calls += 1; return calls === 1 ? new Promise(() => {}) : gridAnswer(250); } });
+  const { document, window } = p;
+  assert.equal(document.querySelector('.ebs-card-value.in').textContent, 'Bezig…');
+  window.history.pushState({}, '', '/boekhouden/overzicht');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-import'), null, 'the view is gone');
+  window.history.pushState({}, '', '/boekhouden/importeren');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await p.settle();
+  assert.equal(p.fetches.length, 2, 'the stopped request is asked once more on return');
+  assert.equal(document.querySelector('.ebs-card-value.in').textContent, '€ 250,00');
   p.close();
 });

@@ -635,16 +635,33 @@
         if (again) EBS.request.clear(ALL_LINES_KEY);
         rows = allLinesOf(await EBS.request.bulk(ALL_LINES_KEY, allLinesUrl()), expected);
       } catch (error) {
-        console.warn('EB Sessions: the import lines could not be read in one go', error?.code ?? error?.message ?? error);
+        // An abort means the screen was left: nothing to say.
+        if (error?.code !== 'abort') console.warn('EB Sessions: the import lines could not be read in one go', error?.code ?? error?.message ?? error);
       }
       if (this.totals?.key !== key) return;
-      this.totals = rows ? { key, scope: 'all', rows } : { key, scope: 'page', rows: [] };
+      this.totals = rows
+        ? { key, scope: 'all', rows, signatures: rows.map((row) => EBS.rowSignature(row)), keySet: null, warned: false }
+        : { key, scope: 'page', rows: [] };
       if (this.root) this.draw();
     },
 
     // The lines the cards count.
     countedRows() {
       return this.totals?.scope === 'all' ? this.totals.rows : this.rows;
+    },
+
+    // Whether the bulk lines carry the grid's signatures: every line of this
+    // page is among them.
+    bulkMatches(pageSignatures) {
+      const totals = this.totals;
+      if (totals?.scope !== 'all' || !totals.signatures) return false;
+      totals.keySet ??= new Set(totals.signatures);
+      const matches = pageSignatures.every((signature) => totals.keySet.has(signature));
+      if (!matches && !totals.warned) {
+        totals.warned = true;
+        console.warn('EB Sessions: the import lines read in one go do not match the grid; hidden lines and groups count this page only');
+      }
+      return matches;
     },
 
     mount(grid, rows) {
@@ -665,6 +682,12 @@
       this.root?.remove();
       this.root = null;
       dialog.close();
+      // Leaving the import screen: what was read belongs to that visit, and a
+      // request still on its way is not needed any more.
+      if (!onImportPage() && this.totals) {
+        this.totals = null;
+        EBS.request.abort(ALL_LINES_KEY);
+      }
     },
 
     build() {
@@ -781,10 +804,18 @@
       const paged = paginated(this.grid);
       const scope = this.totals?.scope ?? 'all';
       const counted = this.countedRows();
-      const total = headerCount(this.grid) ?? (scope === 'all' ? counted.length : all.length);
+      const expected = headerCount(this.grid);
+      const total = expected ?? (scope === 'all' ? counted.length : all.length);
+      const pageSignatures = all.map((row) => EBS.rowSignature(row));
+      // Hidden lines and groups are stored under the grid's own signatures.
+      // The lines of the bulk request stand for them only when they carry the
+      // same ones, so every line of this page must be among them; otherwise
+      // (a date or an amount in another format) only this page counts for
+      // them, and nothing is pruned. The cards count the amounts either way.
+      const sameKeys = counted === all || this.bulkMatches(pageSignatures);
       // Every line is known: from the grid without pages, or from the bulk request.
-      const everyLine = scope === 'all';
-      const signatures = counted.map((row) => EBS.rowSignature(row));
+      const everyLine = scope === 'all' && sameKeys;
+      const signatures = everyLine ? (counted === all ? pageSignatures : this.totals.signatures) : pageSignatures;
       const hiddenSet = new Set(this.prefs.hidden);
       const hiddenCount = signatures.filter((signature) => hiddenSet.has(signature)).length;
       const account = [...new Set(counted.map((row) => row.account).filter(Boolean))];
@@ -792,7 +823,10 @@
       this.searchInput.placeholder = paged
         ? 'Zoek op deze pagina: tegenpartij, rekening, omschrijving, datum, bedrag'
         : 'Zoek in alle kolommen: tegenpartij, rekening, omschrijving, datum, bedrag';
-      if (everyLine && counted.length === total) {
+      // Pruning drops what the user stored, so only against a count that the
+      // grid's title states: while the grid loads, its title says "(...)" and
+      // its body is empty, which must never read as an empty import.
+      if (everyLine && expected !== null && expected > 0 && counted.length === expected) {
         const pruned = EBS.prunePrefs(this.prefs, signatures);
         if (pruned.changed) {
           this.prefs = pruned.prefs;
@@ -805,7 +839,7 @@
 
       // Group tabs. Rebuilt only when they change: draw() also runs on every
       // native grid update, and a rebuild would take focus from the tabs.
-      const counts = EBS.groupCounts(this.prefs.groupOf, this.prefs.groups, everyLine ? signatures : all.map((row) => EBS.rowSignature(row)));
+      const counts = EBS.groupCounts(this.prefs.groupOf, this.prefs.groups, signatures);
       const tabsKey = JSON.stringify([this.prefs.groups, counts, this.ui.group, this.editor.mode]);
       if (this.tabList.dataset.key !== tabsKey) {
         this.tabList.dataset.key = tabsKey;
