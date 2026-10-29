@@ -54,6 +54,7 @@
         "src/shared.js",
         "src/store.js",
         "src/icons.js",
+        "src/mark.js",
         "src/dialog.js",
         "src/bridge.js",
         "src/request.js",

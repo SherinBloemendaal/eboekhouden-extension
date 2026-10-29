@@ -59,9 +59,10 @@ test('shared modules load before the scripts that use them, every feature file i
   const list = isolated.js;
   const at = (file) => list.indexOf(file);
   assert.equal(list[0], 'src/shared.js');
-  for (const shared of ['src/store.js', 'src/icons.js', 'src/dialog.js', 'src/bridge.js', 'src/request.js']) {
+  for (const shared of ['src/store.js', 'src/icons.js', 'src/mark.js', 'src/dialog.js', 'src/bridge.js', 'src/request.js']) {
     assert.ok(at(shared) > 0 && at(shared) < at('src/import.js'), shared);
   }
+  assert.ok(at('src/mark.js') < at('src/dialog.js'), 'the dialog\'s loading cover uses EBS.mark');
   assert.ok(at('src/bridge.js') < at('src/request.js'), 'request.js claims the bridge');
   const features = readdirSync(join(root, 'src/features')).filter((file) => file.endsWith('.js')).map((file) => `src/features/${file}`);
   assert.deepEqual(features.filter((file) => !list.includes(file)), []);

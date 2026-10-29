@@ -10,7 +10,7 @@ const TOP = 'https://secure.e-boekhouden.nl/bh/';
 const APP_ENTRY = 'https://secure.e-boekhouden.nl/bh?v2Url=%2Fboekhouden';
 const SECURE20 = 'https://secure20.e-boekhouden.nl';
 const FRAMESET = '<html><head><title>e-Boekhouden.nl</title></head><frameset rows="0,*"><frame name="topframe" src="about:blank"><frame name="mainframe" id="mainframe" src="about:blank"></frameset></html>';
-const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'bridge.js', 'request.js', 'features/loader.js'];
+const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'bridge.js', 'request.js', 'features/loader.js'];
 const SLOT = { id: 's1', name: 'Demo Holding B.V.', number: '100001' };
 const BETTER = { settings: { betterDesign: true, onePassword: false }, view: { activeSlotId: 's1', loggedIn: true, ready: [] }, slots: [SLOT] };
 // Values from a page's realm, as plain data for deepEqual.
@@ -181,11 +181,20 @@ test('Better design: the loader covers /bh/ with the logo, the administration an
   assert.equal(shadow.querySelector('.ebs-avatar').textContent, 'DH');
   assert.equal(shadow.querySelector('.ebs-brand').textContent, 'EB Sessions');
   // e-Boekhouden's own mark: paths, no drawn circles for disc and crescent.
-  assert.equal(shadow.querySelector('circle.ebs-cres'), null);
-  assert.ok(shadow.querySelector('g.ebs-cres > path'));
-  assert.equal(shadow.querySelectorAll('.ebs-e > g > path').length, 3);
-  assert.equal(shadow.querySelector('.ebs-e > g').getAttribute('mask'), 'url(#ebsEMask)', 'the mask draws the e');
-  assert.equal(shadow.querySelectorAll('mask .ebs-bar, mask .ebs-bowl').length, 2);
+  assert.equal(shadow.querySelector('circle.ebs-mark-cres'), null);
+  assert.ok(shadow.querySelector('g.ebs-mark-cres > path'));
+  // The shared mark (EBS.mark) at the board's size, on the loader's navy: no navy e first.
+  const mark = shadow.querySelector('.ebs-content > .ebs-mark.ebs-mark-dark');
+  assert.equal(mark.style.width, '220px');
+  assert.equal(mark.querySelector('.ebs-mark-ink'), null);
+  assert.equal(shadow.querySelectorAll('.ebs-mark-e > g.ebs-mark-white > path').length, 3);
+  const maskId = shadow.querySelector('.ebs-mark-e mask').id;
+  assert.equal(shadow.querySelector('.ebs-mark-e > g').getAttribute('mask'), `url(#${maskId})`, 'the mask draws the e');
+  assert.equal(shadow.querySelectorAll('mask .ebs-mark-bar, mask .ebs-mark-bowl').length, 2);
+  // The mark's styles are in the shadow root, next to the loader's own.
+  assert.match(shadow.querySelector('style').textContent, /@keyframes ebsMarkBadgeIn/);
+  // The parsed logo stays in this page's memory for its dialogs.
+  assert.equal(p.window.EBS.mark.logo().e.length, 3);
   // The slow state is there, but hidden and out of the tab order.
   assert.equal(shadow.querySelector('.ebs-slow').getAttribute('aria-hidden'), 'true');
   assert.equal(shadow.querySelector('.ebs-link').tabIndex, -1);
@@ -193,7 +202,7 @@ test('Better design: the loader covers /bh/ with the logo, the administration an
   assert.deepEqual(p.fetched, ['https://secure.e-boekhouden.nl/images/Logo-EB_blauwopwit.svg']);
   assert.equal(p.sent.filter((sent) => sent.type === 'requests:slot').length, 1);
   await sleep(800);
-  assert.equal(shadow.querySelector('.ebs-e > g').getAttribute('mask'), null, 'the mask goes once the e is drawn');
+  assert.equal(shadow.querySelector('.ebs-mark-e > g').getAttribute('mask'), null, 'the mask goes once the e is drawn');
   p.close();
 });
 
@@ -221,8 +230,9 @@ for (const [label, options] of [['a failed request', { logo: new Error('offline'
     p.load(...SCRIPTS);
     await p.settle();
     const shadow = p.shadow();
-    assert.ok(shadow.querySelector('circle.ebs-cres'), 'the board\'s crescent');
-    assert.ok(shadow.querySelector('.ebs-e > path.ebs-bar') && shadow.querySelector('.ebs-e > path.ebs-bowl'), 'the board\'s e');
+    assert.ok(shadow.querySelector('circle.ebs-mark-cres'), 'the board\'s crescent');
+    assert.ok(shadow.querySelector('.ebs-mark-white > path.ebs-mark-bar') && shadow.querySelector('.ebs-mark-white > path.ebs-mark-bowl'), 'the board\'s e');
+    assert.equal(p.window.EBS.mark.logo(), null, 'nothing kept for the dialogs');
     assert.equal(shadow.querySelector('mask'), null);
     assert.equal(p.fetched.length, 1, 'never asked twice');
     p.close();
@@ -322,6 +332,7 @@ test('a navigation while the loader shows hands over: the next /bh/ continues at
   assert.equal(next.window.sessionStorage.getItem('ebs-loader'), null, 'used once');
   await next.settle();
   assert.ok(next.box().classList.contains('is-settled'), 'no second entry');
+  assert.ok(next.shadow().querySelector('.ebs-mark').classList.contains('is-settled'), 'the mark is complete and breathes on');
   assert.equal(next.shadow().querySelector('mask'), null);
   assert.equal(next.fetched.length, 1);
   next.close();
