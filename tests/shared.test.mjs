@@ -89,7 +89,7 @@ test('status and initials as the shell shows them', () => {
 });
 
 test('settings default to Better design off and every feature on', () => {
-  assert.deepEqual(EBS.settingsWithDefaults(), { betterDesign: false, onePassword: true, switcher: true, relogin: true, shiftSelect: true, actionBar: true });
+  assert.deepEqual(EBS.settingsWithDefaults(), { betterDesign: false, onePassword: true, switcher: true, relogin: true, shiftSelect: true, actionBar: true, popupDialogs: false, aiWriter: false });
   assert.equal(EBS.settingsWithDefaults({ betterDesign: true }).betterDesign, true);
 });
 

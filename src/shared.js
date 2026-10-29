@@ -1,11 +1,21 @@
 // Shared, side-effect free helpers for the content scripts (and the tests).
 // Loaded first in every e-Boekhouden frame; the other content scripts in the
-// same isolated world use them as EBS.*.
+// same isolated world use them as EBS.*. The service worker imports it too,
+// for SETTINGS_DEFAULTS.
+//
+// EBS is not frozen as a whole: the shared modules loaded after this file
+// (icons.js, dialog.js, bridge.js, request.js) add themselves with
+// EBS.define(name, value). Every property, these helpers included, can be
+// defined once and never be replaced.
 
 (() => {
   const root = typeof window !== 'undefined' ? window : globalThis;
   if (root.EBS) return;
 
+  // One switch per feature in the popup. The Better design screens (login,
+  // import, archive, open posts, templates, billing) and the page loader all
+  // fall under betterDesign: the loader is part of the redesign, not a
+  // feature of its own, so it has no switch.
   const SETTINGS_DEFAULTS = Object.freeze({
     betterDesign: false,
     onePassword: true,
@@ -13,6 +23,8 @@
     relogin: true,
     shiftSelect: true,
     actionBar: true,
+    popupDialogs: false,
+    aiWriter: false,
   });
 
   function settingsWithDefaults(stored) {
@@ -237,10 +249,66 @@
     return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', 0.85);
   }
 
-  root.EBS = Object.freeze({
+  // The settings for a content script, now and after every change: one
+  // storage read and one change listener per frame, shared by every caller.
+  // callback(settings, previous) runs once the settings are known and again
+  // after each change; a callback that throws does not stop the others.
+  // Returns a function that stops the calls.
+  const settingsWatch = { listeners: new Set(), current: null, started: false };
+
+  function notifySettings(next) {
+    const previous = settingsWatch.current;
+    settingsWatch.current = next;
+    for (const listener of [...settingsWatch.listeners]) {
+      try {
+        listener(next, previous);
+      } catch (error) {
+        console.error('EB Sessions: settings listener failed', error);
+      }
+    }
+  }
+
+  function watchSettings(callback) {
+    settingsWatch.listeners.add(callback);
+    if (!settingsWatch.started) {
+      settingsWatch.started = true;
+      try {
+        const storage = root.chrome?.storage;
+        storage?.local?.get('settings').then(({ settings }) => notifySettings(settingsWithDefaults(settings)), () => {});
+        storage?.onChanged?.addListener((changes, area) => {
+          if (area === 'local' && changes.settings) notifySettings(settingsWithDefaults(changes.settings.newValue));
+        });
+      } catch {
+        // After the extension is reloaded an orphaned script has no storage:
+        // its features stay off.
+      }
+    } else if (settingsWatch.current) {
+      try {
+        callback(settingsWatch.current, null);
+      } catch (error) {
+        console.error('EB Sessions: settings listener failed', error);
+      }
+    }
+    return () => settingsWatch.listeners.delete(callback);
+  }
+
+  const EBS = {};
+
+  function define(name, value) {
+    if (typeof name !== 'string' || !name) throw new TypeError('EBS.define needs a name');
+    if (Object.prototype.hasOwnProperty.call(EBS, name)) throw new Error(`EBS.${name} is already defined`);
+    // Not writable, not configurable: a later script cannot swap it out.
+    Object.defineProperty(EBS, name, { value, enumerable: true });
+    return value;
+  }
+
+  const helpers = {
     toAvatar, counterparty,
-    SETTINGS_DEFAULTS, settingsWithDefaults, statusOf, initials, reloadWarning,
+    SETTINGS_DEFAULTS, settingsWithDefaults, watchSettings, statusOf, initials, reloadWarning,
     parseAmount, formatMoney, parseDate, monthLabel,
     rangeToggles, rowSignature, signRows, prunePrefs, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,
-  });
+  };
+  for (const [name, value] of Object.entries(helpers)) define(name, value);
+  define('define', define);
+  Object.defineProperty(root, 'EBS', { value: EBS, enumerable: true });
 })();
