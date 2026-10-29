@@ -225,6 +225,12 @@ test('the pagination of e-Boekhouden, in the new footer', async () => {
   const footer = document.querySelector('.ebs-b-footer');
   assert.equal(footer.querySelector('.ebs-b-footer-info').textContent, '1 tot 100 van 233 · totaal incl. btw € 22.104,07');
   assert.equal(footer.querySelector('.ebs-b-pager-page').textContent, 'Pagina 1 van 3');
+  assert.equal(document.querySelector('.ebs-b-chip').textContent, 'Alles · 233', 'Alles counts every page of e-Boekhouden');
+  const search = document.querySelector('.ebs-b-search input');
+  search.value = 'VB-1';
+  search.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-b-chip').textContent, 'Alles · 11', 'a search counts the loaded rows it found');
   assert.equal(footer.querySelector('[aria-label="Vorige pagina"]').disabled, true);
   let next = 0;
   [...document.querySelectorAll('app-pagination li')].at(-1).addEventListener('click', () => { next += 1; });
@@ -324,6 +330,12 @@ test('the invoice status and periods', async () => {
   assert.equal(invoiceStatus({ number: 'C', verwerkt: true, due: null }, posts, now), 'paid', 'nothing left open');
   assert.equal(invoiceStatus({ number: 'D', verwerkt: true, due: null }, posts, now), 'paid');
   assert.equal(invoiceStatus({ number: 'D', verwerkt: true, due: null }, { ...posts, complete: false }, now), null, 'a cut-short list knows nothing');
+  const full = Array.from({ length: 2000 }, (_, i) => post(`F${i}`, 10, '2026-11-12'));
+  assert.equal(B.indexPosts({ data: full }).complete, false, 'as long as the limit, without a count: maybe cut short');
+  assert.equal(B.indexPosts({ data: full, rowCount: 2000 }).complete, true);
+  assert.equal(B.indexPosts({ data: full, rowCount: 2400 }).complete, false);
+  assert.equal(B.indexPosts({ data: full.slice(0, 10) }).complete, true);
+  assert.equal(B.indexPosts(full.slice(0, 10)).complete, true, 'a bare array');
   assert.equal(invoiceStatus({ number: 'D', verwerkt: true, due: null }, { ok: false }, now), null);
   assert.equal(invoiceStatus({ number: 'B', verwerkt: null, due: null }, posts, now), 'open', 'the Verwerkt column hidden');
   assert.equal(invoiceStatus({ number: 'D', verwerkt: null, due: null }, posts, now), null);
@@ -583,6 +595,31 @@ test('an edited line has no preselection warning; a touched field loses it', asy
   window.EBS.billing.schedule();
   await p.settle();
   assert.ok(overlay.querySelector('.ebs-b-modal-warning').classList.contains('show'));
+  p.close();
+});
+
+test('Overnemen that finds nothing leaves the field to e-Boekhouden, and never saves', async () => {
+  const store = { 'store:123/billing/last-line': { v: { 'DEMO Demo Klant B.V.': { vat: 'Btw onbekend 7%', ledger: '9999 Bestaat niet', at: 1 } }, at: 1, by: 'local' } };
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0', { store });
+  const { document } = p;
+  const overlay = openLineWindow(document);
+  await p.settle();
+  let submitted = 0;
+  overlay.querySelector('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitted += 1;
+  });
+  let saves = 0;
+  overlay.querySelector('button.form-submit').addEventListener('click', () => { saves += 1; });
+  const blurred = [];
+  for (const input of overlay.querySelectorAll('input.displayValue')) input.addEventListener('blur', () => blurred.push(input.id));
+  overlay.querySelector('.ebs-b-take').click();
+  await new Promise((resolve) => setTimeout(resolve, 4600));
+  await p.settle();
+  assert.deepEqual(blurred, ['btw-AutocompletePickerInput', 'grootboekrekeningId-AutocompletePickerInput'], 'each field is left, so e-Boekhouden puts its own choice back');
+  assert.deepEqual([submitted, saves], [0, 0], 'nothing saved, nothing submitted');
+  assert.ok(overlay.querySelector('.ebs-b-modal-warning').classList.contains('show'), 'still preselected');
+  assert.equal(overlay.querySelector('.ebs-b-take').getAttribute('aria-busy'), null, 'the button is free again');
   p.close();
 });
 

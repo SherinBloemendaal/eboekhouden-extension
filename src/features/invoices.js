@@ -389,8 +389,11 @@
         byRelation.set(post.relation, entry);
       }
     }
+    // Without a count, a list as long as the limit may have been cut short:
+    // then a missing invoice is not known to be paid.
     const rowCount = Number(answer?.rowCount);
-    return { ok: true, posts, byNumber, byRelation, complete: !(rowCount > posts.length) };
+    const complete = Number.isFinite(rowCount) && answer?.rowCount !== null && answer?.rowCount !== '' ? rowCount <= list.length : list.length < OPEN_POSTS_LIMIT;
+    return { ok: true, posts, byNumber, byRelation, complete };
   }
 
   // Per screen load (the path): one call. A failure stays a failure until
@@ -1037,7 +1040,12 @@
       input.dispatchEvent(new Event('input', { bubbles: true }));
       row = await wait(1500);
     }
-    if (!row) return false;
+    if (!row) {
+      // Nothing to pick: leaving the field lets e-Boekhouden put its own
+      // choice back (its blur selects the last one again).
+      input.blur();
+      return false;
+    }
     row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     row.click();
     return true;
@@ -2336,7 +2344,10 @@
       if (this.filters.status !== 'all' && !posts?.ok && this.filters.status !== 'draft') this.filters.status = 'all';
       const shown = base.filter((row) => this.filters.status === 'all' || statuses.get(row) === this.filters.status);
 
-      this.chips.all.textContent = `Alles · ${counts.all}`;
+      // Alles counts what e-Boekhouden has (every page), unless our own
+      // filters narrow the loaded rows.
+      const narrowed = Boolean(needle || this.filters.relation || this.filters.period !== 'all');
+      this.chips.all.textContent = `Alles · ${(narrowed ? counts.all : count).toLocaleString('nl-NL')}`;
       this.chips.open.textContent = posts?.ok ? `Open · ${counts.open}` : 'Open';
       this.chips.late.textContent = posts?.ok ? `Te laat · ${counts.late}` : 'Te laat';
       for (const [status, node] of Object.entries(this.chips)) {
