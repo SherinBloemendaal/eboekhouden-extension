@@ -1536,6 +1536,7 @@
     .ebs-action-wrap { position: relative; display: flex; }
     .ebs-action { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 7px; background: #f3f5fa; color: #232c4f; display: flex; align-items: center; justify-content: center; cursor: pointer; }
     .ebs-action.book { background: #f1f7ec; color: #2f6f1a; }
+    .ebs-action.hide { color: #5d6584; }
     .ebs-action.delete { background: transparent; color: #8c93ab; }
     .ebs-action:disabled { opacity: .35; cursor: default; }
     .ebs-tooltip { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 3; padding: 6px 10px; border-radius: 6px; background: #1b2240; color: #fff; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 12px rgba(20, 26, 48, .25); pointer-events: none; animation: ebs-tip 120ms ease-out; }
