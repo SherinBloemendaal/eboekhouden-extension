@@ -13,10 +13,10 @@
 <img src="https://img.shields.io/badge/chrome-116%2B-4E9A2C.svg?style=flat-square" alt="Chrome 116+">
 <img src="https://img.shields.io/badge/dependencies-none-555555.svg?style=flat-square" alt="No dependencies">
 
-**EB Sessions** is a small Chrome extension for [e-Boekhouden.nl](https://www.e-boekhouden.nl) that makes 1Password autofill work, switches between administrations in one click, and turns an expired session into a login dialog instead of a lost page.<br>
+**EB Sessions** is a small Chrome extension for [e-Boekhouden.nl](https://www.e-boekhouden.nl) that switches between administrations in one click and turns an expired session into a login dialog instead of a lost page.<br>
 Repo: [github.com/SherinBloemendaal/eboekhouden-extension](https://github.com/SherinBloemendaal/eboekhouden-extension)
 
-[Install](#-install) · [Highlights](#-highlights) · [1Password](#-why-1password-did-not-work) · [Switching](#-switching-sessions) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
+[Install](#-install) · [Highlights](#-highlights) · [1Password](#-1password-not-solved-yet) · [Switching](#-switching-sessions) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
 
 </div>
 
@@ -27,7 +27,6 @@ Repo: [github.com/SherinBloemendaal/eboekhouden-extension](https://github.com/Sh
 
 ## ✨ Highlights
 
-- **1Password works on the login form.** The inline menu used to close the moment it opened. The extension fixes the cause: it loads the login form outside the cross-origin frame that broke it, and labels the fields as `username` and `current-password`.
 - **One click between administrations.** A switcher in the e-Boekhouden header lists every administration you logged in to in this Chrome session. Pick one and all e-Boekhouden tabs move over, no logging out and in.
 - **Expired session? Log in where you are.** Instead of being dropped on the login page, you get a dialog over the page, with 1Password working there too. After login you are back on the page you were on.
 - **Passwords never touch the extension.** Logging in always goes through the real e-Boekhouden form and 1Password. The extension stores session cookies in memory only, and only for e-Boekhouden.
@@ -48,28 +47,18 @@ git clone https://github.com/SherinBloemendaal/eboekhouden-extension.git
 
 To update, run `git pull` in the folder and click the reload icon on the extension's card in `chrome://extensions`. To remove it, click **Remove** on that card; that also deletes everything it stored.
 
-## 🔑 Why 1Password did not work
+## 🔑 1Password: not solved yet
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works-dark.svg">
-  <img alt="Before: the login form sits in an iframe inside a cross-origin secure20 frame inside a frameset, and the 1Password menu closes. After: the extension loads the login form directly in mainframe, on the same origin as the frameset, and 1Password works." src="assets/how-it-works-light.svg" width="100%">
-</picture>
+On the e-Boekhouden login page, 1Password's inline menu closes the moment it opens. The extension does not fix that yet. It only labels the login fields as `username` and `current-password`.
 
-The e-Boekhouden login page is three documents deep:
+What is known so far:
 
-1. `secure.e-boekhouden.nl/bh/` is a `<frameset>` with twelve frames. A frameset document has no `<body>`.
-2. Its `mainframe` loads `secure20.e-boekhouden.nl/v1login`, an Angular app on another origin.
-3. That app shows the classic login form in an `<iframe>`: `secure.e-boekhouden.nl/bh/inloggen.asp`, back on the first origin.
+- **The login page is three documents deep.** `secure.e-boekhouden.nl/bh/` is a `<frameset>` (no `<body>`). Its `mainframe` loads `secure20.e-boekhouden.nl/v1login`, an Angular app on another origin, which shows the classic form `secure.e-boekhouden.nl/bh/inloggen.asp` in an `<iframe>`. Both e-Boekhouden documents render in quirks mode.
+- **The page does not steal focus.** On the live login page nothing calls `focus()` after load, no window blurs, no frame reloads, the form is not re-rendered, and no resize, scroll or message events fire.
+- **The layout alone does not explain it.** Local test pages that copy the layout (a frameset, a cross-origin frame in between, quirks mode, each on its own and together) keep the menu open, except the exact three-level layout.
+- **Removing the cross-origin frame is not enough.** Loading `inloggen.asp` straight into `mainframe` made the local copy work, but on the real site 1Password still inserts its menu and removes it about 40 ms later. That change was reverted, because it also broke opening the app with a session that was still valid.
 
-1Password normally draws its inline menu in the top document. A frameset has no body to draw in, so 1Password falls back to the frame that holds the field. That fallback works, until a cross-origin frame sits between the frameset and the form. Then the menu closes the moment it opens.
-
-How that was narrowed down:
-
-- **The page does not steal focus.** On the live login page, nothing calls `focus()` after load, no window blurs, no frame reloads, the form is not re-rendered, and no resize, scroll or message events fire.
-- **Five test pages, each changing one thing.** A plain iframe, a frameset, a frameset with a same-origin chain, and a cross-origin chain without a frameset all work. Only the exact e-Boekhouden layout (frameset, then cross-origin frame, then the form) fails.
-- **Where the menu lands.** With a normal top page, 1Password puts its `com-1password-menu` element in the top document. Under a frameset it puts it in the form's own frame, in the working and the failing case alike. What differs is the cross-origin frame in between.
-
-**The fix:** when `mainframe` is about to show `secure20/v1login`, the extension loads `/bh/inloggen.asp` there directly, on the same origin as the frameset. It is the same form e-Boekhouden itself uses, with the same fields and the same submit. A login form that turns up nested inside the secure20 frame later on is moved to `mainframe` the same way.
+The remaining difference is that 1Password has saved logins for e-Boekhouden and none for the local test pages. Ideas and reports are welcome as issues.
 
 ## 🔀 Switching sessions
 
@@ -78,7 +67,7 @@ How that was narrowed down:
 Cookies in Chrome are shared by every tab of a profile, so two administrations cannot be logged in side by side in one profile. The switcher does the next best thing: it keeps a copy of each administration's e-Boekhouden cookies and swaps them in when you switch.
 
 - **Logging in adds the administration.** The frameset's title is the administration's name, so after each login the session is saved under that name. Rename an entry with ✎; the extension keeps matching on the original name.
-- **Pick one to switch.** The current cookies are saved, the chosen ones are put back, and every e-Boekhouden tab reloads. With more than one e-Boekhouden tab open, the switcher asks first, because unsaved input in those tabs is lost.
+- **Pick one to switch.** The current cookies are saved, the chosen ones are put back, and every e-Boekhouden tab opens the app the way e-Boekhouden itself does after login (`/bh?v2Url=…`). With more than one e-Boekhouden tab open, the switcher asks first, because unsaved input in those tabs is lost.
 - **+ Sessie toevoegen** saves the current session and opens an empty login screen for the next administration.
 - **Status per entry:** *actief* (the one you are in), *opgeslagen* (ready to switch to), *inloggen* (known, but no session in memory: picking it opens the login screen).
 
@@ -92,7 +81,7 @@ The switcher sits in the e-Boekhouden header. On screens without that header, su
 
 <img alt="The re-login dialog over a dimmed page" src="assets/relogin.png" width="100%">
 
-When a session expires, e-Boekhouden sends the main frame to its login page, its *sessie verlopen* page, or a JWT error page. The extension remembers the last page you had open in that tab and shows the real login form as a centered dialog instead. 1Password works in the dialog, for the same reason as above. After you log in, the extension opens the page you were on again, including the classic page inside the Angular shell.
+When a session expires, e-Boekhouden sends the main frame to its login page, its *sessie verlopen* page, or a JWT error page. The extension remembers the last page you had open in that tab and shows the real login form as a centered dialog instead. After you log in, the extension opens the page you were on again, including the classic page inside the Angular shell.
 
 A real logout (the power button) does not trigger the dialog. **Gewoon inloggen** under the form drops the return and shows the normal login screen.
 
@@ -106,7 +95,7 @@ A real logout (the power button) does not trigger the dialog. **Gewoon inloggen*
 - **Why not encrypted local storage?** Storing on disk would keep sessions across restarts, but the key would have to live next to the data in the same profile, so the encryption would protect against very little. A session cookie is as good as a login, so it stays in memory. One login per administration after a restart is the price.
 - **What is stored on disk:** only the list of administration names and your renamed labels, in `chrome.storage.local`. No cookies, no customer data.
 - **Minimum permissions.** `cookies` and `storage`, and host access to `https://*.e-boekhouden.nl/*`, which covers the `secure*` hosts and the cookies e-Boekhouden sets on `.e-boekhouden.nl`. The content script only runs on `secure*.e-boekhouden.nl`. No `tabs` permission, no access to other sites, no remote code.
-- **No financial actions.** The extension never submits a form, never clicks for you, and never touches bookings. It only changes which login page loads, how it looks, and which page loads after login.
+- **No financial actions.** The extension never submits a form, never clicks for you, and never touches bookings. It only changes how the login form looks when a session expired, and which page loads after login or a switch.
 
 ## 🧪 Development
 
@@ -144,7 +133,7 @@ The tests cover the cookie swap (host-only and domain cookies, expired cookies),
 | ------------ | ------------------------------------------------- | ------------------------------------------------------ |
 | top          | top window on `/bh/`                              | Reports the title (the administration name).           |
 | `mainframe`  | `window.name === 'mainframe'`, parent is top      | Login fix, re-login dialog, switcher, page tracking.   |
-| inner        | child of `mainframe`                              | Tracks the classic page; moves a nested login form.    |
+| inner        | child of `mainframe`                              | Tracks the classic page; re-login dialog.              |
 | `topframe`   | `window.name === 'topframe'`                      | Switcher in the classic header, when it is visible.    |
 
 </details>
