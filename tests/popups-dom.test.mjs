@@ -200,6 +200,25 @@ test('a print preview the page writes: Afdrukken prints the frame, close() close
   p.close();
 });
 
+test('Escape in a print preview the page writes closes the dialog, also after its document.open()', { timeout: T }, async () => {
+  const p = await popupPage();
+  p.gesture.active = true;
+  const popup = p.window.open('', '', 'height=1000, width=1200');
+  const doc = popup.document;
+  doc.open();
+  doc.write('<!doctype html><html><head><title>Overeenkomst</title></head><body><p>Demo Klant B.V.</p></body></html>');
+  doc.close();
+  await p.settle(1);
+  const used = new popup.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  doc.body.addEventListener('keydown', (event) => event.preventDefault(), { once: true });
+  doc.body.dispatchEvent(used);
+  assert.ok(p.dialog(), 'an Escape the page used stays with the page');
+  doc.body.dispatchEvent(new popup.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(p.dialog(), null, 'Escape closes it, as in a page of its own');
+  assert.equal(p.document.querySelector('.ebs-popup-toast'), null, 'closed by the user: no toast');
+  p.close();
+});
+
 test('under the navbar the dialog fits in the rest of the viewport', { timeout: T }, async () => {
   const p = await popupPage({ html: HTML.replace('<main id="app">', '<div id="navHeader"></div><main id="app">') });
   p.document.getElementById('navHeader').getBoundingClientRect = () => ({ top: 0, bottom: 76, left: 0, right: 1280, width: 1280, height: 76 });

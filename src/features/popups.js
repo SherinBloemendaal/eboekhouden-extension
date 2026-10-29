@@ -389,7 +389,7 @@
 
     if (kind === 'write') {
       session.showReady();
-      watchWrittenTitle(session);
+      watchWritten(session);
     } else {
       session.expectPage();
     }
@@ -407,14 +407,22 @@
   }
 
   // The preview the page writes into the empty frame: its <title> is the
-  // dialog's title.
-  function watchWrittenTitle(session) {
+  // dialog's title, and Escape in there closes the dialog as it does in a
+  // page of its own (no content script runs in about:blank). The page's
+  // document.open() drops the frame's listeners, so the key listener is
+  // added again after every change (a second add is a no-op).
+  function watchWritten(session) {
+    const onKey = (event) => {
+      if (event.key === 'Escape' && !event.isComposing && !event.defaultPrevented && EBS.dialog.top() === session.handle) session.handle.close({ reason: 'escape' });
+    };
     const read = () => {
       try {
+        session.iframe.contentWindow?.addEventListener('keydown', onKey);
         const title = session.iframe.contentDocument?.title?.trim();
         if (title) session.handle.setTitle(title);
       } catch { /* gone */ }
     };
+    read();
     try {
       const target = session.iframe.contentDocument;
       if (!target || typeof MutationObserver !== 'function') return;
