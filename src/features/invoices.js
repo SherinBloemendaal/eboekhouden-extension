@@ -71,24 +71,8 @@
     return node;
   }
 
-  // TODO-merge: 'copy' is not in EBS.icon yet. This is its path data from
-  // lucide-static 1.63.0 (icons/copy.svg, ISC); it goes once the shared
-  // icon set has it (see the shared change in the billing report).
-  const PENDING_ICONS = {
-    copy: [['rect', { width: '14', height: '14', x: '8', y: '8', rx: '2', ry: '2' }], ['path', { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' }]],
-  };
-
   function icon(name, options = {}) {
-    if (EBS.icon.has(name) || !PENDING_ICONS[name]) return EBS.icon(name, options);
-    const svg = EBS.icon('check', options);
-    svg.replaceChildren();
-    svg.setAttribute('class', `ebs-icon lucide lucide-${name}`);
-    for (const [tag, attributes] of PENDING_ICONS[name]) {
-      const child = document.createElementNS('http://www.w3.org/2000/svg', tag);
-      for (const [attribute, value] of Object.entries(attributes)) child.setAttribute(attribute, value);
-      svg.append(child);
-    }
-    return svg;
+    return EBS.icon(name, options);
   }
 
   function withIcon(node, name, options) {
