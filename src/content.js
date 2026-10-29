@@ -68,7 +68,7 @@
     // In a tab of its own ("Openen in nieuw tabblad") it is an ordinary shell page.
     if (!isTop && location.hash.startsWith('#ebs-edit=')) return null;
     if (isTop && location.hostname === SECURE20) return 'shell';
-    if (isTop) return ['/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
+    if (isTop) return ['/bh', '/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
     if (parentIsTop && window.name === 'mainframe') return 'main';
     try {
       if (window.parent.parent === window.top && window.parent === window.top.frames.mainframe) return 'inner';
@@ -121,17 +121,41 @@
     onReady(() => callback(/reeds ingelogd/i.test(document.body?.innerText ?? '') ? 'already' : 'login'));
   }
 
+  // What the service worker answers to a page report: go back to the page
+  // the user was on, offer a link to it, or show the re-login dialog.
+  function answer(kind, response) {
+    if (response?.navigate) {
+      location.replace(response.navigate);
+      return;
+    }
+    if (response?.offerBack) onReady(() => showBackLink(response.offerBack));
+    if (kind === 'login' && response?.relogin) maybeReloginDialog();
+  }
+
   function runInner() {
-    const report = (kind) => send({ type: 'inner:page', url: location.href, kind }).then((response) => {
-      if (response?.navigate) {
-        location.replace(response.navigate);
+    const kind = classify(location.href);
+    const report = (pageKind) => send({ type: 'inner:page', url: location.href, kind: pageKind }).then((response) => {
+      // A classic "session expired" page in the shell only links to the
+      // login: open e-Boekhouden's login form here, where the dialog shows.
+      if (pageKind === 'expired') {
+        location.replace('/bh/inloggen.asp');
         return;
       }
-      if (kind === 'login' && response?.relogin) maybeReloginDialog();
+      answer(pageKind, response);
     });
-    const kind = classify(location.href);
     if (kind === 'login') loginFormKind(report);
     else report(kind);
+  }
+
+  // The answer to a login in the 1Password login iframe, landed on secure20:
+  // reported at document_start, before e-Boekhouden's own scripts have set
+  // up the session. Wait for the page to load and settle, then let the
+  // service worker open the app.
+  const LOGIN_SETTLE_MS = 3000;
+  function settleLogin() {
+    const done = () => window.setTimeout(() => send({ type: 'login:done', url: location.href }), LOGIN_SETTLE_MS);
+    if (document.readyState === 'complete') done();
+    else window.addEventListener('load', done, { once: true });
   }
 
   function runMain() {
@@ -150,11 +174,11 @@
       }
 
       const report = (pageKind) => send({ type: 'main:page', url: location.href, kind: pageKind }).then((response) => {
-        if (response?.navigate) {
-          location.replace(response.navigate);
+        if (response?.settleLogin) {
+          settleLogin();
           return;
         }
-        if (pageKind === 'login' && response?.relogin) maybeReloginDialog();
+        answer(pageKind, response);
       });
       // The classic login form loaded straight into mainframe: check it like the inner one.
       if (kind === 'login' && location.hostname !== SECURE20) loginFormKind(report);
@@ -163,7 +187,16 @@
 
     handle();
     // The secure20 shell is a single-page app: routes change without a page load.
-    if (location.hostname === SECURE20) setInterval(handle, 500);
+    if (location.hostname === SECURE20) {
+      const watch = setInterval(() => {
+        // The extension was reloaded: this copy of the script is orphaned.
+        if (!chrome.runtime?.id) {
+          clearInterval(watch);
+          return;
+        }
+        handle();
+      }, 500);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -246,6 +279,40 @@
     document.body.append(backdrop);
     document.documentElement.classList.add('ebs-relogin');
     document.getElementById('txtEmail')?.focus();
+  }
+
+  // -------------------------------------------------------------------------
+  // After a re-login whose last page was not a plain page view (its URL could
+  // repeat an action): a link back to it, for the user to click or not.
+  // -------------------------------------------------------------------------
+
+  function showBackLink(url) {
+    if (document.getElementById('ebs-back')) return;
+    const host = el('div');
+    host.id = 'ebs-back';
+    host.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483000;';
+    const root = host.attachShadow({ mode: 'closed' });
+    const style = el('style');
+    style.textContent = `
+      :host { all: initial; }
+      .box { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 10px; background: #fff; color: #30395f; font: 13px Ubuntu, system-ui, sans-serif; box-shadow: 0 8px 24px rgba(20, 26, 48, .18), 0 0 0 1px rgba(20, 26, 48, .08); }
+      a { color: #30395f; font-weight: 700; }
+      button { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: #5d6584; font: inherit; cursor: pointer; }
+      button:hover { background: #f3f5fa; }
+      a:focus-visible, button:focus-visible { outline: 2px solid #30395f; outline-offset: 2px; }
+    `;
+    const box = el('div', 'box');
+    box.setAttribute('role', 'status');
+    const link = el('a', '', 'Terug naar vorige pagina');
+    link.href = url;
+    link.target = '_self';
+    const close = el('button', '', '✕');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Sluiten');
+    close.addEventListener('click', () => host.remove());
+    box.append(el('span', '', 'Je bent weer ingelogd.'), link, close);
+    root.append(style, box);
+    document.documentElement.append(host);
   }
 
   // -------------------------------------------------------------------------

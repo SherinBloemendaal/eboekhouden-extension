@@ -15,6 +15,13 @@ const main = { tab: TAB, frameId: 3 };
 
 const page = (url, kind, sender = main) => fake.dispatch({ type: 'main:page', url, kind }, sender);
 const host = (active) => fake.dispatch({ type: 'login:host', active }, top);
+// A login answer in the breakout iframe: the page reports itself, and once it
+// has loaded and settled the frame sends login:done (content.js, login-breakout.js).
+const landing = async (url) => {
+  const first = await page(url, 'app');
+  const done = await fake.dispatch({ type: 'login:done', url }, main);
+  return { first, done };
+};
 
 beforeEach(() => {
   fake.reset();
@@ -33,10 +40,12 @@ test('in breakout mode the login iframe is not asked to swap again', async () =>
   assert.deepEqual(fake.sent, []);
 });
 
-test('the first app page in the login iframe opens the app through the hybrid route', async () => {
+test('the first app page in the login iframe waits to settle, then opens the app through the hybrid route', async () => {
   await host(true);
-  const response = await page(`${ORIGIN}/bh/welkom.asp`, 'app');
-  assert.deepEqual(response, { navigating: true });
+  const response = await page(`${V2}/boekhouden/overzicht`, 'app');
+  assert.deepEqual(response, { settleLogin: true }, 'a landing reported at document_start does not navigate yet');
+  assert.deepEqual(fake.updates, []);
+  assert.deepEqual(await fake.dispatch({ type: 'login:done', url: `${V2}/boekhouden/overzicht` }, main), { navigating: true });
   assert.deepEqual(fake.updates, [{ tabId: 7, url: APP }]);
 });
 
@@ -65,7 +74,7 @@ test('the re-login return survives the breakout and is honoured in the restored 
   const dialog = await page(`${ORIGIN}/bh/inloggen.asp`, 'login');
   assert.equal(dialog.relogin, true, 'the dialog shows in the breakout iframe');
 
-  await page(`${ORIGIN}/bh/inloggen.asp?LOGIN=1`, 'app');
+  await landing(`${ORIGIN}/bh/welkom.asp`);
   assert.equal(fake.updates.at(-1).url, `${ORIGIN}/bh?v2Url=${encodeURIComponent(inAppPage)}`);
 
   // The restored frameset reports its first app page: the return still applies.
@@ -80,7 +89,7 @@ test('a classic return page enters through the app start and is restored by the 
   await page(classic, 'app');
   await page(`${V2}/v1login`, 'login');
   await host(true);
-  await page(`${ORIGIN}/bh/inloggen.asp?LOGIN=1`, 'app');
+  await landing(`${ORIGIN}/bh/welkom.asp`);
   assert.equal(fake.updates.at(-1).url, APP, 'a secure.* page cannot be a v2Url');
   await host(false);
   const back = await page(`${V2}/`, 'app');
@@ -90,17 +99,31 @@ test('a classic return page enters through the app start and is restored by the 
 test('bouncing between login iframe and app entry stops after two rounds', async () => {
   for (let round = 0; round < 3; round += 1) {
     await host(true);
-    await page(`${ORIGIN}/bh/inloggen.asp?LOGIN=1`, 'app');
+    await landing(`${ORIGIN}/bh/welkom.asp`);
   }
   assert.equal(fake.updates.length, 2);
 });
 
-test('a fresh top load resets breakout mode and the loop counter', async () => {
+test('the loop guard holds over the real bounce: every round reloads the top frame', async () => {
+  for (let round = 0; round < 6; round += 1) {
+    await host(false); // the top load of /bh?v2Url=
+    await host(true); // the swap after login:swap
+    await fake.dispatch({ type: 'login:done', url: `${ORIGIN}/bh/inloggen.asp` }, main); // "reeds ingelogd"
+  }
+  assert.equal(fake.updates.length, 2, 'two app entries, then the tab is left alone');
+});
+
+test('a fresh top load ends breakout mode but keeps counting app entries for a while', async () => {
   await host(true);
-  await page(`${ORIGIN}/bh/inloggen.asp?LOGIN=1`, 'app');
-  await host(false);
+  await landing(`${ORIGIN}/bh/welkom.asp`);
   await host(false);
   const state = fake.storage.session.dump()['tab:7'];
   assert.equal(state.loginHost, false);
-  assert.deepEqual(state.loginDone, []);
+  assert.equal(state.loginDone.length, 1);
+  // Entries older than the window no longer count.
+  state.loginDone = [Date.now() - 60_000, Date.now() - 45_000];
+  await chrome.storage.session.set({ 'tab:7': state });
+  await host(true);
+  await landing(`${ORIGIN}/bh/welkom.asp`);
+  assert.equal(fake.updates.length, 2);
 });

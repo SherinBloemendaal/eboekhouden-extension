@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createFakeChrome } from './fake-chrome.mjs';
 
 const fake = createFakeChrome();
-await import('../src/background.js');
+const { isReadOnlyPage } = await import('../src/background.js');
 
 const ORIGIN = 'https://secure.e-boekhouden.nl';
 const APP = `${ORIGIN}/bh?v2Url=https%3A%2F%2Fsecure20.e-boekhouden.nl%2F`;
@@ -349,4 +349,79 @@ test('the login page learns when the re-login dialog takes its form', async () =
   assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, true);
   await fake.dispatch({ type: 'relogin:cancel' }, main);
   assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, false);
+});
+
+test('only plain page views count as safe to reopen', () => {
+  assert.equal(isReadOnlyPage('https://secure20.e-boekhouden.nl/boekhouden/importeren'), true);
+  assert.equal(isReadOnlyPage('https://secure20.e-boekhouden.nl/boekhouden/mutatie/0?imId=5&defBedrag=1.00'), true);
+  assert.equal(isReadOnlyPage(`${ORIGIN}/bh/facturen.asp`), true);
+  assert.equal(isReadOnlyPage(`${ORIGIN}/bh/facturen.asp?ID=12&PAGE=2`), true);
+  assert.equal(isReadOnlyPage(`${ORIGIN}/bh/facturen.asp?ACTION=DELETE&ID=12`), false);
+  assert.equal(isReadOnlyPage(`${ORIGIN}/bh/relatie.asp?NIEUW=1`), false, 'an unknown parameter is not clearly a view');
+  assert.equal(isReadOnlyPage(`https://secure20.e-boekhouden.nl/v1page?url=${encodeURIComponent('/bh/x.asp?ACTION=DEL')}`), false);
+  assert.equal(isReadOnlyPage('https://www.e-boekhouden.nl/'), false);
+  assert.equal(isReadOnlyPage('not a url'), false);
+});
+
+test('after a re-login an action URL is offered as a link, not loaded again', async () => {
+  const action = `${ORIGIN}/bh/facturen.asp?ACTION=DELETE&ID=12`;
+  await fake.dispatch({ type: 'main:page', url: action, kind: 'app' }, main);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  const back = await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/', kind: 'app' }, main);
+  assert.deepEqual(back, { offerBack: action });
+});
+
+test('a username from a login that never finished does not stick to the next one', async () => {
+  await fake.dispatch({ type: 'login:username', username: 'user-b' }, inner);
+  fake.jar = [cookie('S', 'b')];
+  await fake.dispatch({ type: 'top:title', title: 'Beta B.V.' }, top);
+  await fake.dispatch({ type: 'header:identity', name: 'Beta B.V.', number: '2' }, main);
+  await fake.dispatch({ type: 'switcher:add', origin: ORIGIN }, main);
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, inner); // wrong password, no title follows
+  const [beta] = await slots();
+  await fake.dispatch({ type: 'switcher:switch', slotId: beta.id, origin: ORIGIN }, main);
+  await fake.dispatch({ type: 'top:title', title: 'Beta B.V.' }, top);
+  await fake.dispatch({ type: 'header:identity', name: 'Beta B.V.', number: '2' }, main);
+  assert.equal((await slots()).length, 1, 'no duplicate entry');
+  assert.equal((await view()).activeSlotId, beta.id);
+  assert.equal((await slots())[0].username, 'user-b');
+});
+
+test('entries with the same name: a switch lands on the entry switched to', async () => {
+  await chrome.storage.local.set({ slots: [
+    { id: 'A', name: 'Same B.V.', number: '1', username: 'owner', expired: false },
+    { id: 'B', name: 'Same B.V.', number: '1', username: 'accountant', expired: false },
+  ] });
+  await chrome.storage.session.set({ 'cookies:B': [cookie('S', 'session-of-B')] });
+  await fake.dispatch({ type: 'switcher:switch', slotId: 'B', origin: ORIGIN }, main);
+  await fake.dispatch({ type: 'top:title', title: 'Same B.V.' }, top);
+  assert.equal((await view()).activeSlotId, 'B');
+  assert.equal(fake.storage.session.dump()['cookies:A'], undefined, 'B\'s cookies are not stored on A');
+});
+
+test('maintenance and error titles never become an entry', async () => {
+  for (const title of ['Onderhoud', 'e-Boekhouden.nl', 'Fout', '503 Service Unavailable']) {
+    await fake.dispatch({ type: 'top:title', title }, top);
+  }
+  assert.deepEqual(await slots(), []);
+});
+
+test('a switch leaves the website and its analytics cookies alone', async () => {
+  const slot = await loginAs('Voorbeeld B.V.', [
+    cookie('ASPSESSIONIDAAA', 'demo-a'),
+    cookie('EBSRV', 'x', '.e-boekhouden.nl', { hostOnly: false }),
+    cookie('_ga', 'GA1', '.e-boekhouden.nl', { hostOnly: false }),
+    cookie('wwwpref', 'nl', 'www.e-boekhouden.nl'),
+  ]);
+  assert.deepEqual(fake.storage.session.dump()[`cookies:${slot.id}`].map((entry) => entry.name), ['ASPSESSIONIDAAA', 'EBSRV']);
+  fake.tabs = [TAB, { id: 9, url: 'https://www.e-boekhouden.nl/prijzen', active: false }];
+  await fake.dispatch({ type: 'switcher:add', origin: ORIGIN }, main);
+  assert.deepEqual(fake.updates.map((update) => update.tabId), [7], 'the website tab is not reloaded');
+  assert.deepEqual(fake.jar.map((entry) => entry.name).sort(), ['_ga', 'wwwpref']);
+});
+
+test('removing the active entry leaves no entry logged in', async () => {
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('S', 'a')]);
+  await fake.dispatch({ type: 'switcher:remove', slotId: slot.id }, main);
+  assert.deepEqual(await view(), { activeSlotId: null, loggedIn: false, ready: [] });
 });

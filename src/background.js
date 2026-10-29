@@ -121,8 +121,18 @@ chrome.runtime.onInstalled.addListener(() => {
 // Cookies
 // ---------------------------------------------------------------------------
 
+// Only the app's cookies: host cookies of secure*.e-boekhouden.nl and the
+// shared domain cookies, without the website's analytics and consent ones.
+const APP_HOST = /^secure\d*\.e-boekhouden\.nl$/;
+const NOT_APP_COOKIE = /^(_ga|_gid|_gat|_gcl|_fbp|_fbc|_hj|_clck|_clsk|__utm|_uet|cookieconsent|CookieConsent|cookielawinfo)/i;
+
+function isAppCookie(cookie) {
+  if (NOT_APP_COOKIE.test(cookie.name)) return false;
+  return cookie.hostOnly ? APP_HOST.test(cookie.domain) : true;
+}
+
 async function readCookies() {
-  return chrome.cookies.getAll({ domain: COOKIE_DOMAIN });
+  return (await chrome.cookies.getAll({ domain: COOKIE_DOMAIN })).filter(isAppCookie);
 }
 
 function cookieUrl(cookie) {
@@ -183,10 +193,16 @@ async function markExpired(slotId) {
   await chrome.storage.session.set({ loggedIn: false, pendingCheck: null });
 }
 
+// Titles of e-Boekhouden's own maintenance and error pages, never an
+// administration name.
+const NOT_A_NAME = /e-boekhouden|onderhoud|storing|niet beschikbaar|foutmelding|^fout\b|\berror\b|niet gevonden|\b(403|404|500|502|503)\b/i;
+// A username typed for a login that never finished is not used after this.
+const USERNAME_TTL_MS = 10 * 60 * 1000;
+
 async function onTopTitle(title) {
   const name = (title || '').trim();
   if (!name) return;
-  const { pendingCheck } = await getSessionState();
+  const { activeSlotId, loggedIn, pendingCheck } = await getSessionState();
 
   if (LOGIN_TITLE.test(name)) {
     // Plain /bh/ shows this title even while the session is valid, so on its
@@ -202,10 +218,19 @@ async function onTopTitle(title) {
   // Matching, part one: the title only gives the name, plus the username typed
   // at login. The administration number follows from the header (part two,
   // onHeaderIdentity), which merges the entry with the same number if needed.
-  const { pendingUsername } = await chrome.storage.session.get('pendingUsername');
+  if (NOT_A_NAME.test(name)) return;
+  const stored = await chrome.storage.session.get(['pendingUsername', 'pendingUsernameAt', 'pendingLoginFor']);
+  const pendingUsername = Date.now() - (stored.pendingUsernameAt ?? 0) < USERNAME_TTL_MS ? stored.pendingUsername : null;
   const slots = await getSlots();
   const sameName = slots.filter((candidate) => candidate.name === name);
-  let slot = sameName.find((candidate) => pendingUsername && candidate.username === pendingUsername)
+  // Entries can share a name (one administration, two users). The entry
+  // just switched to, the one picked on the login page, or the one already
+  // active wins over a guess.
+  const known = (id) => sameName.find((candidate) => candidate.id === id);
+  let slot = known(pendingCheck)
+    ?? (pendingUsername ? null : known(stored.pendingLoginFor))
+    ?? (loggedIn && !pendingUsername ? known(activeSlotId) : null)
+    ?? sameName.find((candidate) => pendingUsername && candidate.username === pendingUsername)
     ?? sameName.find((candidate) => !pendingUsername || !candidate.username)
     ?? null;
   if (!slot) {
@@ -216,7 +241,7 @@ async function onTopTitle(title) {
   slot.expired = false;
   await setSlots(slots);
   await chrome.storage.session.set({ activeSlotId: slot.id, loggedIn: true, pendingCheck: null, pendingLoginFor: null });
-  await chrome.storage.session.remove('pendingUsername');
+  await chrome.storage.session.remove(['pendingUsername', 'pendingUsernameAt']);
   await snapshotActiveSlot();
   await publishView();
 }
@@ -225,8 +250,8 @@ async function onTopTitle(title) {
 // sent. Only a key for matching; the password field is never read.
 async function onLoginUsername(username) {
   const clean = String(username ?? '').trim().slice(0, 100);
-  if (clean) await chrome.storage.session.set({ pendingUsername: clean });
-  else await chrome.storage.session.remove('pendingUsername');
+  if (clean) await chrome.storage.session.set({ pendingUsername: clean, pendingUsernameAt: Date.now() });
+  else await chrome.storage.session.remove(['pendingUsername', 'pendingUsernameAt']);
 }
 
 // Move the active session onto an existing entry (same administration number):
@@ -302,8 +327,16 @@ async function onLoginPage() {
 // Switching
 // ---------------------------------------------------------------------------
 
+// The app's tabs only: not the website on www.e-boekhouden.nl.
 async function ebTabs() {
-  return chrome.tabs.query({ url: EB_TAB_PATTERN });
+  const tabs = await chrome.tabs.query({ url: EB_TAB_PATTERN });
+  return tabs.filter((tab) => {
+    try {
+      return APP_HOST.test(new URL(tab.url).hostname);
+    } catch {
+      return false;
+    }
+  });
 }
 
 // Plain /bh/ always serves the login frameset, also with a valid session.
@@ -363,6 +396,8 @@ async function switchTo(slotId, originHint, confirmed, senderTab) {
     pendingCheck: cookies?.length ? slotId : null,
     pendingLoginFor: cookies?.length ? null : slotId,
   });
+  // A username typed for a login that was never finished belongs to no one.
+  await chrome.storage.session.remove(['pendingUsername', 'pendingUsernameAt']);
   await clearAllTabStates();
   await publishView();
   await reloadEbTabs(originHint, Boolean(cookies?.length));
@@ -376,6 +411,7 @@ async function addSession(originHint, confirmed, senderTab) {
   await snapshotActiveSlot();
   await removeAllCookies();
   await chrome.storage.session.set({ activeSlotId: null, loggedIn: false, pendingCheck: null, pendingLoginFor: null });
+  await chrome.storage.session.remove(['pendingUsername', 'pendingUsernameAt']);
   await clearAllTabStates();
   await publishView();
   await reloadEbTabs(originHint, false);
@@ -387,7 +423,8 @@ async function removeSlot(slotId) {
   await chrome.storage.session.remove(`cookies:${slotId}`);
   await chrome.storage.local.remove(`avatar:${slotId}`);
   const { activeSlotId } = await getSessionState();
-  if (activeSlotId === slotId) await chrome.storage.session.set({ activeSlotId: null });
+  // The session itself stays in the browser, but no entry is active now.
+  if (activeSlotId === slotId) await chrome.storage.session.set({ activeSlotId: null, loggedIn: false, pendingCheck: null });
   await publishView();
 }
 
@@ -422,8 +459,12 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   // of showing it inside the bare iframe. Outside breakout mode a secure20
   // login screen in mainframe (after logout or an expired session) asks the
   // top frame to swap the frameset for the breakout layout.
+  // A secure20 landing is reported as soon as it starts, before its own
+  // scripts have stored the session: the frame waits for its load plus a
+  // settle time and then sends login:done (content.js).
   if (tab.loginHost && kind === 'app' && !PUBLIC_V2.test(url)) {
-    return openAppAfterLogin(tabId, tab, topUrl);
+    await setTab(tabId, tab);
+    return { settleLogin: true };
   }
   if (!tab.loginHost && kind === 'login' && SECURE20_LOGIN.test(url)) {
     chrome.tabs.sendMessage(tabId, { type: 'login:swap' }, { frameId: 0 }).catch(() => {});
@@ -445,7 +486,15 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
     const target = tab.returnUrl;
     tab.relogin = false;
     tab.restoreInner = tab.innerFor === target ? tab.innerUrl : null;
-    if (url !== target) response.navigate = target;
+    // Loading the page again would repeat whatever its URL does: only plain
+    // page views are reopened; for anything else the user gets a link.
+    if (url !== target) {
+      if (isReadOnlyPage(target)) response.navigate = target;
+      else {
+        response.offerBack = target;
+        tab.restoreInner = null;
+      }
+    }
   } else {
     if (tab.returnUrl !== url) {
       tab.innerUrl = null;
@@ -481,7 +530,8 @@ async function onInnerPage(tabId, { url, kind }) {
     const target = tab.restoreInner;
     tab.restoreInner = null;
     await setTab(tabId, tab);
-    return url === target ? {} : { navigate: target };
+    if (url === target) return {};
+    return isReadOnlyPage(target) ? { navigate: target } : { offerBack: target };
   }
 
   tab.innerUrl = url;
@@ -493,6 +543,29 @@ async function onInnerPage(tabId, { url, kind }) {
 async function cancelRelogin(tabId) {
   const tab = await getTab(tabId);
   await setTab(tabId, { mainFrameId: tab.mainFrameId });
+}
+
+// Whether a page can be loaded again without doing anything: the secure20
+// app's own routes (Angular loads its data itself), and classic pages whose
+// query only holds known view parameters. A classic URL with any other
+// parameter (ACTION=..., a delete link) is not reopened by the extension.
+const VIEW_PARAMS = /^(id|nr|page|pagina|sort\w*|order\w*|jaar|maand|periode|view|tab|filter\w*|zoek\w*|search|q|v2rnd|scrollreset|ebm)$/i;
+const ACTION_WORDS = /(^|[^a-z])(action|actie|act|cmd|delete|del|verwijder\w*|remove|save|opslaan|submit|post|insert|update|verwerk\w*|wegboek\w*|send|verstuur\w*|bevestig\w*|confirm)([^a-z]|$)/i;
+
+function isReadOnlyPage(href) {
+  let url;
+  try {
+    url = new URL(href);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' || !APP_HOST.test(url.hostname)) return false;
+  const params = [...url.searchParams.entries()];
+  if (url.hostname === 'secure20.e-boekhouden.nl') {
+    // v1page carries the classic page in its query: the same words count there.
+    return !params.some(([key, value]) => ACTION_WORDS.test(key) || ACTION_WORDS.test(value));
+  }
+  return params.every(([key]) => VIEW_PARAMS.test(key));
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +597,9 @@ function topOriginOf(topUrl) {
 
 async function setLoginHost(tabId, active) {
   const tab = await getTab(tabId);
+  // loginDone is not reset here: a bounce reloads the top frame every round,
+  // and the guard has to count across those loads. It expires by time.
   tab.loginHost = Boolean(active);
-  if (!tab.loginHost) tab.loginDone = [];
   await setTab(tabId, tab);
   return {};
 }
@@ -547,7 +621,7 @@ async function openAppAfterLogin(tabId, tab, topUrl) {
   tab.loginDone.push(now);
   await setTab(tabId, tab);
 
-  const wanted = tab.relogin && tab.returnUrl ? tab.returnUrl : APP_START;
+  const wanted = tab.relogin && tab.returnUrl && isReadOnlyPage(tab.returnUrl) ? tab.returnUrl : APP_START;
   const v2 = wanted.startsWith(`${SECURE20_ORIGIN}/`) ? wanted : APP_START;
   await chrome.tabs.update(tabId, { url: `${topOriginOf(topUrl)}/bh?v2Url=${encodeURIComponent(v2)}` });
   return { navigating: true };
@@ -607,3 +681,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
   return true;
 });
+
+// For the tests.
+export { isReadOnlyPage };
