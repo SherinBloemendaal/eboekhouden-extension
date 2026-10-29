@@ -51,7 +51,13 @@ test('the subscription list: active ones, the next invoices and the open posts o
   assert.deepEqual(cards[2], ['€ 980,10', '1 relatie met open posten']);
   assert.equal(document.querySelector('.ebs-b-row.total').textContent, 'Totaal2.860,003.460,60');
   assert.equal(p.fetches.length, 1);
-  assert.equal([...document.querySelectorAll('button')].some((node) => /^(pauze|pauzeren|hervatten)/i.test(node.textContent.trim())), false, 'no pause button');
+  assert.equal([...document.querySelectorAll('button')].some((node) => /^(pauze|pauzeren|hervatten)/i.test(node.textContent.trim()) || /pauze/i.test(node.getAttribute('aria-label') ?? '')), false, 'no pause button');
+  // Verwijderen per row is e-Boekhouden's own (it asks in its own dialog).
+  let removed = 0;
+  document.querySelectorAll('app-grid-body tbody tr')[1].querySelector('[title="Verwijderen"]').addEventListener('click', () => { removed += 1; });
+  rows[1].querySelector('[data-role="remove"]').click();
+  assert.equal(removed, 1);
+  assert.equal(document.querySelectorAll('.ebs-dialog-backdrop').length, 0, 'no dialog of ours on top of e-Boekhouden\'s');
 
   const [active, paused] = document.querySelectorAll('.ebs-b-chip');
   paused.click();
@@ -99,6 +105,22 @@ test('the next invoice dates: periods, month ends, the end date and a pause', as
   assert.deepEqual(days(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: 'J', end: B.dayTime(2027, 12, 1) })), ['24-11-2026', '24-11-2027']);
   assert.equal(JSON.stringify(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: 'M', paused: true })), '{"dates":[],"reason":"paused"}');
   assert.equal(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: 'M', end: B.dayTime(2026, 11, 1) }).reason, 'ended');
+  // Every period of "Betaling per", over month ends, leap days and year ends.
+  const from = (y, m, d, per, extra = {}) => days(nextDates({ prolongation: B.dayTime(y, m, d), per, ...extra }));
+  assert.deepEqual(from(2026, 12, 28, 'W'), ['28-12-2026', '04-01-2027', '11-01-2027'], 'a week, over the year end');
+  assert.deepEqual(from(2027, 3, 22, '2W'), ['22-03-2027', '05-04-2027', '19-04-2027'], 'two weeks, over the summer time change');
+  assert.deepEqual(from(2026, 2, 1, '4W'), ['01-02-2026', '01-03-2026', '29-03-2026'], 'four weeks are 28 days, not a month');
+  assert.deepEqual(from(2026, 12, 31, '2M'), ['31-12-2026', '28-02-2027', '30-04-2027']);
+  assert.deepEqual(from(2027, 11, 30, 'K'), ['30-11-2027', '29-02-2028', '30-05-2028'], 'a quarter into a leap February');
+  assert.deepEqual(from(2027, 8, 31, 'H'), ['31-08-2027', '29-02-2028', '31-08-2028'], 'half a year from a month end');
+  assert.deepEqual(from(2028, 2, 29, 'J'), ['29-02-2028', '28-02-2029', '28-02-2030'], 'a leap day, a year on');
+  assert.deepEqual(from(2028, 2, 29, '2J'), ['29-02-2028', '28-02-2030', '29-02-2032'], 'two years, back on a leap day');
+  assert.deepEqual(from(2026, 11, 24, 'J', { end: B.dayTime(2027, 11, 24) }), ['24-11-2026', '24-11-2027'], 'the end date itself still counts');
+  assert.deepEqual(from(2026, 11, 24, 'M', { end: B.dayTime(2026, 11, 24) }), ['24-11-2026']);
+  assert.equal(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: 'M', end: B.dayTime(2026, 1, 1), paused: true }).reason, 'paused', 'a pause says so first');
+  assert.equal(nextDates({ prolongation: null, per: 'M' }).reason, 'unknown');
+  assert.equal(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: '' }).reason, 'unknown');
+  assert.equal(nextDates({ prolongation: B.dayTime(2026, 11, 24), per: 'X' }).reason, 'unknown');
   assert.deepEqual(['W', '2W', '4W', 'M', '2M', 'K', 'H', 'J', '2J'].map((code) => perOf(code)), ['W', '2W', '4W', 'M', '2M', 'K', 'H', 'J', '2J']);
   assert.equal(perOf('Kwartaal'), 'K');
   p.close();
@@ -127,6 +149,16 @@ test('the subscription form: period, the computed next invoices and what happens
   await p.settle();
   assert.equal(view.querySelector('.ebs-b-totals .ebs-b-section-title').textContent, 'Elk kwartaal');
   assert.equal(view.querySelector('.ebs-b-next > span').textContent, 'Volgende facturen (berekend): 31-01-2027, 30-04-2027, 31-07-2027');
+  // An end date before the prolongation date: no invoice comes.
+  const end = document.getElementById('eindDatum');
+  end.value = '01-01-2027';
+  end.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  await p.settle();
+  assert.equal(view.querySelector('.ebs-b-next > span').textContent, 'Volgende facturen (berekend): geen, de einddatum valt voor de prolongatiedatum');
+  end.value = '30-04-2027';
+  end.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  await p.settle();
+  assert.equal(view.querySelector('.ebs-b-next > span').textContent, 'Volgende facturen (berekend): 31-01-2027, 30-04-2027');
   assert.equal(p.fetches.length, 0, 'the form asks nothing');
   p.close();
 });

@@ -330,7 +330,10 @@
       const actions = el('span', 'ebs-b-row-actions');
       const edit = iconButton('pencil', 'Wijzigen', () => row.edit?.click(), { disabled: !row.edit });
       edit.dataset.role = 'edit';
-      actions.append(edit);
+      // e-Boekhouden's own Verwijderen: it asks in its own dialog first.
+      const remove = iconButton('trash', 'Verwijderen', () => row.remove?.click(), { title: 'Verwijderen (vraagt om bevestiging)', quiet: true, disabled: !row.remove });
+      remove.dataset.role = 'remove';
+      actions.append(edit, remove);
       node.append(actions);
       return node;
     },
@@ -596,7 +599,7 @@
       });
       let words;
       if (result.reason === 'paused') words = 'Volgende facturen (berekend): geen, Tijdelijk niet factureren staat aan';
-      else if (result.reason === 'ended') words = 'Volgende facturen (berekend): geen, de einddatum is voorbij';
+      else if (result.reason === 'ended') words = 'Volgende facturen (berekend): geen, de einddatum valt voor de prolongatiedatum';
       else if (result.reason === 'unknown') words = 'Volgende facturen (berekend): vul de prolongatiedatum en de periode in';
       else words = `Volgende facturen (berekend): ${result.dates.map(formatDay).join(', ')}`;
       if (view.nextText.textContent !== words) view.nextText.textContent = words;
