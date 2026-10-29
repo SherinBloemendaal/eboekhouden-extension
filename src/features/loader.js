@@ -36,7 +36,15 @@
 // When /bh/ hands over to /bh?v2Url= (a full navigation), the next document
 // continues the same loader through sessionStorage: same start time, so the
 // 3 and 8 seconds count from the first document, and a mark that is already
-// drawn instead of a second entry.
+// drawn instead of a second entry. The hand-over carries the mark's parts and
+// the administration's name, so the next document shows them from its first
+// frame instead of an empty loader until the logo is read again (a flicker).
+//
+// No flash before the loader either: the settings are only known after an
+// async read, and the page may paint before that. So the mode of the last
+// load is kept as a hint in the page's localStorage ('better' or 'classic',
+// nothing else), and a hint covers the page at document_start. The read then
+// confirms it, or fades the cover out when the setting changed.
 //
 // The logo is e-Boekhouden's own (/images/Logo-EB_blauwopwit.svg), fetched
 // with one bulk GET of EBS.request per page and split into its parts (disc,
@@ -61,6 +69,8 @@
   const HOST_TAG = 'ebs-loader';
   const LOGIN_HOST_ID = 'ebs-login-host';
   const HANDOFF_KEY = 'ebs-loader';
+  const HINT_KEY = 'ebs-loader-mode';
+  const MODES = ['better', 'classic'];
   const SLOW_MS = 3000;
   const CAP_MS = 8000;
   const CLASSIC_CAP_MS = 3000;
@@ -658,6 +668,7 @@
     .ebs-who.empty { visibility: hidden; }
     .ebs-avatar { width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%; border: 1px solid rgba(255,255,255,0.16); background: rgba(142,160,208,0.2); color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; display: flex; align-items: center; justify-content: center; overflow: hidden; }
     .ebs-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .ebs-avatar img.ebs-avatar-in { animation: ebsFadeIn 150ms ease-out both; }
     .ebs-name { font-size: 15px; font-weight: 500; color: #ffffff; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ebs-slow-slot { height: 64px; margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
     .ebs-slow { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: 0; transform: translateY(4px); }
@@ -720,7 +731,36 @@
     }
   }
 
-  // The hand-over from /bh/ to /bh?v2Url= (see the top comment).
+  // Mark parts as markFromSvg makes them, checked again because they come
+  // back from the page's own storage: a copy with only path data, matrices,
+  // plain colours and numbers, or null.
+  const PATH_DATA = /^[MmLlHhVvCcSsQqTtAaZz0-9eE+\-.,\s]+$/;
+  const MATRIX = /^matrix\([-+0-9.eE ]+\)$/;
+  const COLOUR = /^#[0-9a-f]{6}$/;
+  function cleanPart(part) {
+    if (!part || typeof part !== 'object') return null;
+    const { d, transform, fill, fillRule } = part;
+    if (typeof d !== 'string' || d.length > 100_000 || !PATH_DATA.test(d)) return null;
+    if (typeof transform !== 'string' || transform.length > 200 || !MATRIX.test(transform)) return null;
+    if (typeof fill !== 'string' || !COLOUR.test(fill) || !['nonzero', 'evenodd'].includes(fillRule)) return null;
+    return { d, transform, fill, fillRule };
+  }
+
+  function cleanMark(value) {
+    if (!value || typeof value !== 'object' || !Array.isArray(value.e) || !value.e.length || value.e.length > MAX_PARTS) return null;
+    const disc = cleanPart(value.disc);
+    const crescent = value.crescent === null ? null : cleanPart(value.crescent);
+    const e = value.e.map(cleanPart);
+    const box = value.eBox;
+    const numbers = ['x', 'y', 'w', 'h'].map((key) => Number(box?.[key]));
+    if (!disc || (value.crescent !== null && !crescent) || e.includes(null) || !numbers.every(Number.isFinite)) return null;
+    const [x, y, w, h] = numbers;
+    return { disc, crescent, e, eBox: { x, y, w, h } };
+  }
+
+  // The hand-over from /bh/ to /bh?v2Url= (see the top comment):
+  //   { at, mode, mark?: parts | null, name?: string | null, avatar?: boolean }
+  // mark undefined: not known yet in the first document (read it again).
   function takeHandoff() {
     try {
       const raw = window.sessionStorage.getItem(HANDOFF_KEY);
@@ -728,17 +768,40 @@
       window.sessionStorage.removeItem(HANDOFF_KEY);
       const value = JSON.parse(raw);
       const age = Date.now() - Number(value?.at);
-      if (!(age >= 0 && age < CAP_MS) || !['better', 'classic'].includes(value?.mode)) return null;
-      return { at: Number(value.at), mode: value.mode };
+      if (!(age >= 0 && age < CAP_MS) || !MODES.includes(value?.mode)) return null;
+      const handoff = { at: Number(value.at), mode: value.mode };
+      if (value.mode === 'better' && 'mark' in value) {
+        handoff.mark = value.mark === null ? null : cleanMark(value.mark) ?? undefined;
+        handoff.name = typeof value.name === 'string' && value.name.trim() ? value.name.trim().slice(0, 200) : null;
+        handoff.avatar = value.avatar === true;
+      }
+      return handoff;
     } catch {
       return null;
     }
   }
 
-  function giveHandoff(at, mode) {
+  function giveHandoff(value) {
     try {
-      window.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify({ at, mode }));
+      window.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(value));
     } catch { /* storage blocked: the next page starts its own loader */ }
+  }
+
+  // The mode of the last load, to cover the next one from its first frame.
+  function readHint() {
+    try {
+      const value = window.localStorage.getItem(HINT_KEY);
+      return MODES.includes(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeHint(mode) {
+    try {
+      if (MODES.includes(mode)) window.localStorage.setItem(HINT_KEY, mode);
+      else window.localStorage.removeItem(HINT_KEY);
+    } catch { /* storage blocked: the next load waits for the settings */ }
   }
 
   function runTop() {
@@ -863,15 +926,13 @@
       const who = el('div', `ebs-who${name ? '' : ' empty'}`);
       const avatarBox = el('span', 'ebs-avatar');
       avatarBox.setAttribute('aria-hidden', 'true');
-      if (avatar) {
-        const img = el('img');
-        img.alt = '';
-        img.src = avatar;
-        avatarBox.append(img);
-      } else {
-        avatarBox.textContent = EBS.initials(name);
-      }
-      who.append(avatarBox, el('span', 'ebs-name', name ?? ''));
+      // A continued loader whose picture is still being read keeps the
+      // circle empty until it is there (identify() below).
+      if (avatar) showAvatar(avatarBox, avatar, false);
+      else if (!state.identity.avatarPending) avatarBox.textContent = EBS.initials(name);
+      const nameNode = el('span', 'ebs-name', name ?? '');
+      who.append(avatarBox, nameNode);
+      state.who = { row: who, avatarBox, nameNode };
 
       const slot = el('div', 'ebs-slow-slot');
       const slowBox = el('div', 'ebs-slow');
@@ -889,6 +950,32 @@
       state.slowButton = button;
       state.slowBox = slowBox;
       if (elapsed() >= SLOW_MS) slow(true);
+    }
+
+    function showAvatar(box, src, fade) {
+      const img = el('img', fade ? 'ebs-avatar-in' : undefined);
+      img.alt = '';
+      img.src = src;
+      box.replaceChildren(img);
+    }
+
+    // The identity as read from the extension's storage. A loader that is
+    // already filled from the hand-over only takes what differs, in place.
+    function identify(identity) {
+      const handed = state.identity;
+      state.identity = identity;
+      if (!state.who) {
+        fill();
+        return;
+      }
+      const { row, avatarBox, nameNode } = state.who;
+      if (identity.name !== handed?.name) {
+        nameNode.textContent = identity.name ?? '';
+        row.classList.toggle('empty', !identity.name);
+        if (identity.name) state.box.setAttribute('aria-label', `Administratie ${identity.name} wordt geopend`);
+      }
+      if (identity.avatar) showAvatar(avatarBox, identity.avatar, true);
+      else if (handed?.avatarPending || identity.name !== handed?.name) avatarBox.textContent = EBS.initials(identity.name);
     }
 
     function slow(immediate = false) {
@@ -948,7 +1035,14 @@
     function onPageHide() {
       // Still covering the page while the tab moves on (the app entry after
       // "U bent reeds ingelogd"): the next /bh/ document carries on.
-      if (state.host && !state.leaving && !state.gone) giveHandoff(startedAt, state.mode);
+      if (!state.host || state.leaving || state.gone) return;
+      const value = { at: startedAt, mode: state.mode };
+      if (state.mode === 'better' && state.content) {
+        value.mark = state.mark ?? null;
+        value.name = state.identity?.name ?? null;
+        value.avatar = Boolean(state.identity?.avatar || state.identity?.avatarPending);
+      }
+      giveHandoff(value);
     }
 
     // Back from the back/forward cache: this document never handed over (its
@@ -961,12 +1055,27 @@
 
     // ---- deciding -------------------------------------------------------------
 
-    // Continuing a loader: cover at once, before the settings are read.
-    if (handoff) mount(handoff.mode);
+    // Cover at once, before the settings are read: a continued loader, or
+    // the mode of the last load. A continued Better design loader that
+    // carries its mark is filled in the same frame.
+    if (handoff) {
+      mount(handoff.mode);
+      if (handoff.mark !== undefined) {
+        state.mark = handoff.mark;
+        state.identity = { name: handoff.name, avatar: null, avatarPending: handoff.avatar };
+        fill();
+      }
+    } else {
+      const hint = readHint();
+      if (hint) mount(hint);
+    }
 
     EBS.watchSettings((settings, previous) => {
       state.onePassword = Boolean(settings.onePassword);
       if (!settingsKnown || !previous) return;
+      // The next load covers itself the new way (classic only knows once it
+      // reads the view state).
+      writeHint(settings.betterDesign ? 'better' : null);
       // Better design switched off while the loader shows: show the page.
       if (state.mode === 'better' && !settings.betterDesign) leave('app');
     });
@@ -986,18 +1095,17 @@
       if (all.betterDesign) mode = 'better';
       else if (view?.loggedIn || handoff?.mode === 'classic') mode = 'classic';
 
+      writeHint(mode);
+
       for (const report of early.splice(0)) handle(report);
-      // A report ended a continued loader already: let its exit run.
+      // A report ended a cover that was there before the read: let its exit run.
       if (state.leaving || state.gone) return;
 
       if (state.host && state.mode !== mode) {
-        // The setting changed between two documents.
-        state.host.remove();
-        state.host = null;
-        state.box = null;
-        state.mode = null;
-        for (const timer of state.timers) window.clearTimeout(timer);
-        state.timers = [];
+        // The setting changed since the last load: the cover fades instead
+        // of turning into another one.
+        leave('app');
+        return;
       }
       if (!mode || state.outcome) {
         finish();
@@ -1006,14 +1114,17 @@
       mount(mode);
       if (mode !== 'better') return;
 
-      const marked = fetchMark().then((mark) => {
+      // A continued loader that carries the mark needs no second request.
+      const marked = state.mark !== undefined ? Promise.resolve() : fetchMark().then((mark) => {
         if (state.mark === undefined) state.mark = mark;
         fill();
       });
-      state.timers.push(window.setTimeout(() => {
-        if (state.mark === undefined) state.mark = null;
-        fill();
-      }, LOGO_WAIT_MS));
+      if (state.mark === undefined) {
+        state.timers.push(window.setTimeout(() => {
+          if (state.mark === undefined) state.mark = null;
+          fill();
+        }, LOGO_WAIT_MS));
+      }
 
       const slot = Array.isArray(slots) ? slots.find((entry) => entry?.id === view?.activeSlotId) : null;
       let avatar = null;
@@ -1024,10 +1135,13 @@
           if (typeof value === 'string' && /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value)) avatar = value;
         } catch { /* no picture: initials */ }
       }
-      state.identity = { name: typeof slot?.name === 'string' && slot.name.trim() ? slot.name.trim() : null, avatar };
-      fill();
+      identify({ name: typeof slot?.name === 'string' && slot.name.trim() ? slot.name.trim() : null, avatar });
       await marked;
-    }, () => finish());
+    }, () => {
+      // No extension context: a cover that is up fades, nothing else happens.
+      if (state.host) leave('app');
+      else finish();
+    });
   }
 
   // ===========================================================================

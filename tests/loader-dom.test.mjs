@@ -322,17 +322,199 @@ test('a navigation while the loader shows hands over: the next /bh/ continues at
   assert.ok(Date.now() - stored.at < 2000);
   first.close();
 
+  assert.equal(stored.name, 'Demo Holding B.V.');
+  assert.equal(stored.mark.disc.fill, '#30395f', 'the mark\'s parts go along');
+
   const next = bh({ url: APP_ENTRY });
   next.window.sessionStorage.setItem('ebs-loader', JSON.stringify(stored));
   next.load(...SCRIPTS);
   assert.ok(next.host(), 'covered before the settings are read');
+  // Filled in the same frame: never an empty loader between the two documents.
+  assert.ok(next.shadow().querySelector('g.ebs-mark-cres > path'), 'e-Boekhouden\'s mark at once');
+  assert.equal(next.shadow().querySelector('.ebs-name').textContent, 'Demo Holding B.V.');
   assert.equal(next.window.sessionStorage.getItem('ebs-loader'), null, 'used once');
   await next.settle();
   assert.ok(next.box().classList.contains('is-settled'), 'no second entry');
   assert.ok(next.shadow().querySelector('.ebs-mark').classList.contains('is-settled'), 'the mark is complete and breathes on');
   assert.equal(next.shadow().querySelector('mask'), null);
-  assert.equal(next.fetched.length, 1);
+  assert.equal(next.shadow().querySelectorAll('.ebs-content').length, 1, 'filled once');
+  assert.equal(next.shadow().querySelector('.ebs-avatar').textContent, 'DH');
+  assert.deepEqual(next.fetched, [], 'no second logo request');
   next.close();
+});
+
+test('a hand-over made before the mark was known reads the logo as before', async () => {
+  const p = bh({ url: APP_ENTRY });
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better' }));
+  p.load(...SCRIPTS);
+  assert.equal(p.shadow().querySelector('.ebs-content'), null);
+  await p.settle();
+  assert.ok(p.shadow().querySelector('g.ebs-mark-cres > path'));
+  assert.equal(p.fetched.length, 1);
+  p.close();
+});
+
+test('a forged mark in the hand-over is not drawn: the logo is read again', async () => {
+  const good = (() => {
+    const q = page('<html><body></body></html>', { url: TOP });
+    q.load('shared.js', 'features/loader.js');
+    const value = plain(q.window.EBS.loader.markFromSvg(LOGO));
+    q.close();
+    return value;
+  })();
+  for (const mark of [
+    { ...good, disc: { ...good.disc, d: 'M0 0" onload="alert(1)' } },
+    { ...good, disc: { ...good.disc, fill: 'url(https://example.com/x)' } },
+    { ...good, e: [{ ...good.e[0], transform: 'translate(0 0)' }] },
+    { ...good, e: [] },
+    { ...good, eBox: { x: 'a', y: 0, w: 1, h: 1 } },
+    'nope',
+  ]) {
+    const p = bh({ url: APP_ENTRY });
+    p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better', mark, name: 'X', avatar: false }));
+    p.load(...SCRIPTS);
+    assert.equal(p.shadow().querySelector('.ebs-content'), null, JSON.stringify(mark).slice(0, 60));
+    await p.settle();
+    assert.equal(p.fetched.length, 1);
+    assert.ok(!p.shadow().innerHTML.includes('alert') && !p.shadow().innerHTML.includes('example.com'));
+    p.close();
+  }
+});
+
+test('a continued loader with a picture keeps the circle empty and fades the picture in', async () => {
+  const p = bh({ url: APP_ENTRY, store: { ...BETTER, 'avatar:s1': 'data:image/webp;base64,UklGRg==' } });
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better', mark: null, name: 'Demo Holding B.V.', avatar: true }));
+  p.load(...SCRIPTS);
+  assert.equal(p.shadow().querySelector('.ebs-avatar').textContent, '', 'no initials that the picture then replaces');
+  await p.settle();
+  const img = p.shadow().querySelector('.ebs-avatar img');
+  assert.equal(img?.getAttribute('src'), 'data:image/webp;base64,UklGRg==');
+  assert.ok(img.classList.contains('ebs-avatar-in'), 'faded in');
+  assert.match(p.shadow().querySelector('style').textContent, /\.ebs-avatar img\.ebs-avatar-in \{ animation: ebsFadeIn 150ms/);
+  p.close();
+});
+
+test('a hand-over whose name is not the real one is corrected in place', async () => {
+  const p = bh({ url: APP_ENTRY });
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better', mark: null, name: 'Iets anders', avatar: false }));
+  p.load(...SCRIPTS);
+  const name = p.shadow().querySelector('.ebs-name');
+  await p.settle();
+  assert.equal(p.shadow().querySelector('.ebs-name'), name, 'the same row');
+  assert.equal(name.textContent, 'Demo Holding B.V.');
+  assert.equal(p.shadow().querySelector('.ebs-avatar').textContent, 'DH');
+  p.close();
+});
+
+// ---------------------------------------------------------------------------
+// No flicker on reload: one cover from the first frame, shown once
+// ---------------------------------------------------------------------------
+
+// Every time the loader is put on or taken off <html>.
+function watchCover(p) {
+  const events = [];
+  new p.window.MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) if (node.localName === 'ebs-loader') events.push('show');
+      for (const node of record.removedNodes) if (node.localName === 'ebs-loader') events.push('hide');
+    }
+  }).observe(p.document.documentElement, { childList: true });
+  return events;
+}
+
+test('the mode of the last load covers a reload from its first frame, before the settings are read', async () => {
+  const first = bh();
+  first.load(...SCRIPTS);
+  await first.settle();
+  assert.equal(first.window.localStorage.getItem('ebs-loader-mode'), 'better', 'remembered for the next load');
+  first.close();
+
+  const p = bh({ url: APP_ENTRY });
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(p);
+  p.load(...SCRIPTS);
+  assert.ok(p.host(), 'covered at document_start');
+  await p.settle();
+  assert.ok(p.shadow().querySelector('.ebs-content'), 'filled once the settings are read');
+  message(p, 'app');
+  await sleep(320);
+  await p.settle();
+  assert.equal(p.host(), null);
+  assert.deepEqual(events, ['show', 'hide'], 'shown once, taken away once');
+  p.close();
+});
+
+for (const [label, setup, expected] of [
+  ['Better design, first load', (p) => p, ['show', 'hide']],
+  ['Better design, after a reload', (p) => p.window.localStorage.setItem('ebs-loader-mode', 'better'), ['show', 'hide']],
+  ['Better design, continued from /bh/', (p) => p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 200, mode: 'better', mark: null, name: 'Demo Holding B.V.', avatar: false })), ['show', 'hide']],
+  ['classic design, after a reload', (p) => p.window.localStorage.setItem('ebs-loader-mode', 'classic'), ['show', 'hide']],
+]) {
+  test(`no second show and hide cycle: ${label}`, async () => {
+    const classic = label.startsWith('classic');
+    const p = bh({ url: APP_ENTRY, store: classic ? { ...BETTER, settings: { betterDesign: false } } : BETTER });
+    setup(p);
+    const events = watchCover(p);
+    p.load(...SCRIPTS);
+    await p.settle();
+    await sleep(60);
+    assert.deepEqual(events, ['show'], 'one cover while waiting');
+    const box = p.box();
+    message(p, 'app');
+    await sleep(320);
+    await p.settle();
+    assert.deepEqual(events, expected);
+    assert.ok(box.classList.contains(classic ? 'ebs-out-plain' : 'ebs-out-app'), 'it faded');
+    p.close();
+  });
+}
+
+test('a hint that the settings no longer match fades out, without another cover after it', async () => {
+  const p = bh({ url: APP_ENTRY, store: { settings: { betterDesign: false }, view: { loggedIn: false } } });
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(p);
+  p.load(...SCRIPTS);
+  const box = p.box();
+  await p.settle();
+  assert.ok(box.classList.contains('leaving'), 'fades instead of vanishing');
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null, 'and is forgotten');
+  await sleep(320);
+  assert.deepEqual(events, ['show', 'hide']);
+  assert.deepEqual(p.fetched, []);
+  p.close();
+});
+
+test('Better design to classic while logged in: the dark cover fades, no light one flashes after it', async () => {
+  const p = bh({ url: APP_ENTRY, store: { ...BETTER, settings: { betterDesign: false } } });
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(p);
+  p.load(...SCRIPTS);
+  await p.settle();
+  await sleep(320);
+  assert.deepEqual(events, ['show', 'hide']);
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'classic');
+  p.close();
+});
+
+test('switching Better design in the popup updates the hint for the next load', async () => {
+  const p = bh();
+  p.load(...SCRIPTS);
+  await p.settle();
+  await p.window.chrome.storage.local.set({ settings: { betterDesign: false } });
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null);
+  await p.window.chrome.storage.local.set({ settings: { betterDesign: true } });
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'better');
+  p.close();
+});
+
+test('a hint is only a mode: anything else covers nothing', async () => {
+  for (const value of ['party', '<img>', '']) {
+    const p = bh({ store: { settings: { betterDesign: false }, view: { loggedIn: false } } });
+    p.window.localStorage.setItem('ebs-loader-mode', value);
+    p.load(...SCRIPTS);
+    assert.equal(p.host(), null, value);
+    p.close();
+  }
 });
 
 test('a continued loader that a frame ends before the settings are read stays gone, also when the design changed', async () => {
