@@ -390,7 +390,7 @@ test('a continued loader with a picture keeps the circle empty and fades the pic
   const img = p.shadow().querySelector('.ebs-avatar img');
   assert.equal(img?.getAttribute('src'), 'data:image/webp;base64,UklGRg==');
   assert.ok(img.classList.contains('ebs-avatar-in'), 'faded in');
-  assert.match(p.shadow().querySelector('style').textContent, /\.ebs-avatar img\.ebs-avatar-in \{ animation: ebsFadeIn 150ms/);
+  assert.match(p.shadow().querySelector('style').textContent, /\.ebs-avatar \.ebs-avatar-in \{ animation: ebsFadeIn 150ms/);
   p.close();
 });
 
@@ -402,8 +402,81 @@ test('a hand-over whose name is not the real one is corrected in place', async (
   await p.settle();
   assert.equal(p.shadow().querySelector('.ebs-name'), name, 'the same row');
   assert.equal(name.textContent, 'Demo Holding B.V.');
+  assert.ok(name.parentNode.classList.contains('ebs-who-in'), 'the corrected name fades in');
+  assert.ok(p.shadow().querySelector('.ebs-avatar .ebs-avatar-in'), 'and so do its initials');
   assert.equal(p.shadow().querySelector('.ebs-avatar').textContent, 'DH');
   p.close();
+});
+
+test('a picture that is gone by the read: its initials fade into the empty circle', async () => {
+  const p = bh({ url: APP_ENTRY });
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better', mark: null, name: 'Demo Holding B.V.', avatar: true }));
+  p.load(...SCRIPTS);
+  assert.equal(p.shadow().querySelector('.ebs-avatar').textContent, '');
+  await p.settle();
+  const initials = p.shadow().querySelector('.ebs-avatar .ebs-avatar-in');
+  assert.equal(initials?.textContent, 'DH');
+  assert.ok(!p.shadow().querySelector('.ebs-who').classList.contains('ebs-who-in'), 'the name stays as it was');
+  p.close();
+});
+
+// Chrome's animation API, for jsdom: every CSS animation of the loader as an object whose currentTime is recorded.
+function fakeAnimations(p) {
+  const seeks = [];
+  p.window.Element.prototype.getAnimations = function getAnimations() {
+    return [...this.querySelectorAll('*')].map((node) => ({ set currentTime(value) { seeks.push([node.getAttribute('class'), value]); } }));
+  };
+  return seeks;
+}
+
+test('a mark caught halfway through its entry draws on from there in the next document', async () => {
+  const first = bh();
+  fakeAnimations(first);
+  first.load(...SCRIPTS);
+  await first.settle();
+  await sleep(200);
+  first.window.dispatchEvent(new first.window.Event('pagehide'));
+  const stored = JSON.parse(first.window.sessionStorage.getItem('ebs-loader'));
+  first.close();
+  assert.ok(stored.shown >= stored.at && Date.now() - stored.shown >= 200, 'when the entry started goes along');
+
+  const next = bh({ url: APP_ENTRY });
+  const seeks = fakeAnimations(next);
+  next.window.sessionStorage.setItem('ebs-loader', JSON.stringify(stored));
+  next.load(...SCRIPTS);
+  const mark = next.shadow().querySelector('.ebs-mark');
+  assert.ok(!mark.classList.contains('is-settled') && !next.box().classList.contains('is-settled'), 'the entry, not the complete mark');
+  assert.ok(seeks.length > 5, 'every animation of the loader is seeked');
+  const ran = Date.now() - stored.shown;
+  assert.ok(seeks.every(([, value]) => value >= 200 && value <= ran), JSON.stringify(seeks.slice(0, 3)));
+  assert.ok(seeks.some(([name]) => name === 'ebs-who') && seeks.some(([name]) => name === 'ebs-brand'), 'the row and the brand line too');
+  assert.ok(next.shadow().querySelector('mask'), 'the e is still being drawn (its mask stays for the rest)');
+  await sleep(700);
+  assert.equal(next.shadow().querySelector('[mask]'), null, 'and goes when the e is drawn, counted from the first document');
+  next.close();
+});
+
+test('a mark the first document never showed plays its entry in the next one', async () => {
+  const p = bh({ url: APP_ENTRY });
+  fakeAnimations(p);
+  p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 400, mode: 'better' }));
+  p.load(...SCRIPTS);
+  await p.settle();
+  assert.ok(p.shadow().querySelector('.ebs-mark'));
+  assert.ok(!p.shadow().querySelector('.ebs-mark').classList.contains('is-settled'), 'no complete mark popping onto the empty cover');
+  p.close();
+});
+
+test('a forged start of the entry in the hand-over is ignored', async () => {
+  for (const shown of [Date.now() + 60_000, Date.now() - 60_000, 'x', null]) {
+    const p = bh({ url: APP_ENTRY });
+    const seeks = fakeAnimations(p);
+    p.window.sessionStorage.setItem('ebs-loader', JSON.stringify({ at: Date.now() - 100, mode: 'better', mark: null, name: 'Demo Holding B.V.', avatar: false, shown }));
+    p.load(...SCRIPTS);
+    assert.ok(p.shadow().querySelector('.ebs-mark'), String(shown));
+    assert.deepEqual(seeks, [], String(shown));
+    p.close();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -469,12 +542,42 @@ for (const [label, setup, expected] of [
   });
 }
 
-test('a hint that the settings no longer match fades out, without another cover after it', async () => {
+// The settings read takes this long: the cover has been on the screen by then.
+function slowRead(p, ms = 40) {
+  p.window.chrome.storage.local.get = ((get) => async (keys) => {
+    await sleep(ms);
+    return get(keys);
+  })(p.window.chrome.storage.local.get);
+}
+
+test('a hint that the settings no longer match, read before the first frame: the cover goes unseen', async () => {
+  for (const [hint, store] of [
+    ['better', { settings: { betterDesign: false }, view: { loggedIn: false } }],
+    ['classic', { settings: { betterDesign: false }, view: { loggedIn: false } }],
+  ]) {
+    const p = bh({ url: APP_ENTRY, store });
+    p.window.localStorage.setItem('ebs-loader-mode', hint);
+    const events = watchCover(p);
+    p.load(...SCRIPTS);
+    assert.ok(p.host(), hint);
+    await p.settle();
+    assert.equal(p.host(), null, `${hint}: no cover over the page any longer`);
+    assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null);
+    await sleep(20);
+    assert.deepEqual(events, ['show', 'hide']);
+    assert.deepEqual(p.fetched, []);
+    p.close();
+  }
+});
+
+test('a hint that the settings no longer match fades out once it was on the screen, without another cover after it', async () => {
   const p = bh({ url: APP_ENTRY, store: { settings: { betterDesign: false }, view: { loggedIn: false } } });
   p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  slowRead(p);
   const events = watchCover(p);
   p.load(...SCRIPTS);
   const box = p.box();
+  await sleep(60);
   await p.settle();
   assert.ok(box.classList.contains('leaving'), 'fades instead of vanishing');
   assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null, 'and is forgotten');
@@ -487,12 +590,42 @@ test('a hint that the settings no longer match fades out, without another cover 
 test('Better design to classic while logged in: the dark cover fades, no light one flashes after it', async () => {
   const p = bh({ url: APP_ENTRY, store: { ...BETTER, settings: { betterDesign: false } } });
   p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  slowRead(p);
   const events = watchCover(p);
   p.load(...SCRIPTS);
+  await sleep(60);
   await p.settle();
   await sleep(320);
   assert.deepEqual(events, ['show', 'hide']);
   assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'classic');
+  p.close();
+});
+
+test('Better design to classic, read before the first frame: the classic cover takes the dark one\'s place unseen', async () => {
+  const p = bh({ url: APP_ENTRY, store: { ...BETTER, settings: { betterDesign: false } } });
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(p);
+  p.load(...SCRIPTS);
+  await p.settle();
+  assert.ok(p.box().classList.contains('classic'));
+  assert.ok(!p.box().classList.contains('leaving'));
+  await sleep(20);
+  assert.deepEqual(events, ['show', 'hide', 'show'], 'swapped before anything was painted');
+  assert.deepEqual(p.fetched, [], 'no logo for the dark one');
+  const box = p.box();
+  message(p, 'app');
+  assert.ok(box.classList.contains('ebs-out-plain'), 'and it fades as the classic cover does');
+  p.close();
+});
+
+test('without an extension context a hint that was never painted goes at once', async () => {
+  const p = bh({ url: APP_ENTRY });
+  p.window.chrome.storage.local.get = async () => { throw new Error('Extension context invalidated.'); };
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  p.load(...SCRIPTS);
+  assert.ok(p.host());
+  await p.settle();
+  assert.equal(p.host(), null);
   p.close();
 });
 
@@ -501,9 +634,31 @@ test('switching Better design in the popup updates the hint for the next load', 
   p.load(...SCRIPTS);
   await p.settle();
   await p.window.chrome.storage.local.set({ settings: { betterDesign: false } });
-  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null);
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'classic', 'logged in: the classic cover next time');
   await p.window.chrome.storage.local.set({ settings: { betterDesign: true } });
   assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'better');
+  p.close();
+
+  const out = bh({ store: { ...BETTER, view: { loggedIn: false } } });
+  out.load(...SCRIPTS);
+  await out.settle();
+  await out.window.chrome.storage.local.set({ settings: { betterDesign: false } });
+  assert.equal(out.window.localStorage.getItem('ebs-loader-mode'), null, 'logged out: no cover next time');
+  out.close();
+});
+
+test('classic design: logging out or in while the page is open updates the hint for the next load', async () => {
+  const p = bh({ store: { ...BETTER, settings: { betterDesign: false } } });
+  p.load(...SCRIPTS);
+  await p.settle();
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'classic');
+  await p.window.chrome.storage.local.set({ view: { activeSlotId: 's1', loggedIn: false, ready: [] } });
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), null, 'no cover over the next login form');
+  await p.window.chrome.storage.local.set({ view: { activeSlotId: 's1', loggedIn: true, ready: [] } });
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'classic');
+  await p.window.chrome.storage.local.set({ settings: { betterDesign: true } });
+  await p.window.chrome.storage.local.set({ view: { activeSlotId: 's1', loggedIn: false, ready: [] } });
+  assert.equal(p.window.localStorage.getItem('ebs-loader-mode'), 'better', 'Better design covers every load');
   p.close();
 });
 

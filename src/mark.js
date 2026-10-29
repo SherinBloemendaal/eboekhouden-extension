@@ -28,6 +28,10 @@
 //            reads the logo; the dialogs live in the app's frames (another
 //            document, another origin), so they show the drawn mark and
 //            never request the logo themselves
+//   elapsed  how far the entry already ran, in ms (a loader that continues
+//            the mark of the previous document). The e's mask only stays
+//            for what is left of the drawing; the caller seeks the mark's
+//            CSS animations to the same point once it is in the page
 // done() lifts the mask that draws e-Boekhouden's e; it runs by itself once
 // the e is drawn.
 //
@@ -141,7 +145,7 @@
     return { node, done: () => layers.forEach((layer) => layer.removeAttribute('mask')) };
   }
 
-  function create({ size = 220, tone = 'dark', motion = 'entry', logo } = {}) {
+  function create({ size = 220, tone = 'dark', motion = 'entry', logo, elapsed = 0 } = {}) {
     serial += 1;
     const id = (name) => `ebs-mark-${serial}-${name}`;
     const ids = { halo: id('halo'), crescent: id('crescent'), disc: id('disc'), sheen: id('sheen'), clip: id('clip'), mask: id('e') };
@@ -158,9 +162,11 @@
     const badge = document.createElement('div');
     badge.className = 'ebs-mark-badge';
     badge.append(badgeSvg(parts, ids, box));
-    const e = eSvg(parts, ids, { size: box, light, masked: state === 'entry' && !reducedMotion() });
+    const ran = Math.max(0, Number(elapsed) || 0);
+    const drawing = state === 'entry' && ran < E_DRAWN_MS;
+    const e = eSvg(parts, ids, { size: box, light, masked: drawing && !reducedMotion() });
     node.append(badge, e.node);
-    if (parts && state === 'entry') setTimeout(e.done, E_DRAWN_MS);
+    if (parts && drawing) setTimeout(e.done, E_DRAWN_MS - ran);
     return { node, done: e.done };
   }
 
