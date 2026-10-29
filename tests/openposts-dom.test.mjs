@@ -436,3 +436,120 @@ test('pure helpers: dates, due texts, template names and steps', async () => {
   assert.equal(api.remindable({ factuur: 'A1', relatieId: 3 }), true);
   p.close();
 });
+
+test('before e-Boekhouden loaded its list, an action clicks Volgende and keeps the selection for the next click', async () => {
+  const p = await openPage({ grid: false, url: 'https://secure20.e-boekhouden.nl/boekhouden/openposten' });
+  const { document, window } = p;
+  const log = [];
+  document.querySelector('#filter form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    log.push('volgende');
+  });
+  rows(document)[0].click();
+  rows(document)[2].click();
+  await p.settle(1);
+  [...document.querySelectorAll('.ebs-op-bar button')].find((node) => node.textContent === 'Verrekenen').click();
+  assert.deepEqual(log, ['volgende']);
+  assert.equal(document.querySelector('.ebs-op-bar-note').textContent, 'e-Boekhouden laadt de lijst. Klik daarna nog een keer.');
+
+  // e-Boekhouden navigates to its list (zoeken=true) and shows the grid.
+  window.history.pushState({}, '', '/boekhouden/openposten?soort=Debiteur&zoeken=true');
+  document.querySelector('.grid-container').innerHTML = html().match(/<div class="grid-container">([\s\S]*)<\/div>\n<\/div><\/app-open-post-list>/)[1];
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await p.settle(4);
+  assert.ok(p.calls.length <= 2, 'one bulk request per screen, no more');
+  assert.deepEqual(rows(document).filter((row) => row.classList.contains('checked')).map((row) => row.querySelector('.ebs-op-invoice').textContent), ['2026-0371', '2026-0390'], 'the same selection, no stale extra');
+  assert.ok(document.querySelector('.ebs-op-bar').classList.contains('show'));
+
+  const done = [];
+  for (const li of document.querySelectorAll('app-grid-bulk-action li')) {
+    li.addEventListener('click', () => done.push([li.textContent.trim(), [...document.querySelectorAll('.grid-multi-check input')].filter((box) => box.checked).map((box) => box.dataset.f).join(',')]));
+  }
+  [...document.querySelectorAll('.ebs-op-bar button')].find((node) => node.textContent === 'Verrekenen').click();
+  assert.deepEqual(done, [['De geselecteerde facturen met elkaar verrekenen', '2026-0371,2026-0390']]);
+  assert.ok(!document.querySelector('.ebs-op-bar').classList.contains('has-note'), 'the note is gone once the action ran');
+  p.close();
+});
+
+test('stale native ticks are cleared, and a tick e-Boekhouden refuses stops the action', async () => {
+  const p = await openPage();
+  const { document, window } = p;
+  const log = [];
+  for (const li of document.querySelectorAll('app-grid-bulk-action li')) {
+    li.addEventListener('click', () => log.push([...document.querySelectorAll('.grid-multi-check input')].filter((box) => box.checked).map((box) => box.dataset.f).join(',')));
+  }
+  const boxes = [...document.querySelectorAll('.grid-multi-check input')];
+  // Ticked earlier in e-Boekhouden itself: not part of this selection.
+  boxes[3].checked = true;
+  rows(document)[0].click();
+  await p.settle(1);
+  [...document.querySelectorAll('.ebs-op-bar button')].find((node) => node.textContent === 'Afboeken').click();
+  assert.deepEqual(log, ['2026-0371'], 'only the selected invoice, the stale tick is gone');
+
+  // canUnselectFn: e-Boekhouden keeps a post ticked (preventDefault on its click).
+  boxes[0].addEventListener('click', (event) => event.preventDefault());
+  rows(document)[0].click();
+  rows(document)[1].click();
+  await p.settle(1);
+  [...document.querySelectorAll('.ebs-op-bar button')].find((node) => node.textContent === 'Afboeken').click();
+  assert.equal(log.length, 1, 'no action with a selection that is not the user\'s');
+  assert.match(document.querySelector('.ebs-op-bar-note').textContent, /nam de selectie niet over/);
+  assert.equal(window.__ebsOpenposts.perIso('2026-10-29'), '2026-10-29');
+  p.close();
+});
+
+test('after a native action the next change of e-Boekhouden\'s list loads ours once more', async () => {
+  // A stand-in for the request layer: the real one answers a repeat on the
+  // same screen from its cache until a trusted click, which jsdom cannot make.
+  const asked = [];
+  const p = await openPage({
+    before(page) {
+      page.load('shared.js');
+      page.window.EBS.define('request', Object.freeze({
+        bulk: async (key, url) => {
+          asked.push(url);
+          return gridAnswer(POSTS);
+        },
+        item: async () => null,
+        clear() {},
+      }));
+    },
+  });
+  const { document } = p;
+  assert.equal(asked.length, 1);
+  rows(document)[0].click();
+  await p.settle(1);
+  [...document.querySelector('.ebs-op-bar').querySelectorAll('button')].find((node) => node.textContent === 'Selectie wissen').click();
+  document.getElementById('clock').textContent = '2';
+  document.querySelector('app-grid-body tbody tr td:nth-child(7)').textContent = 'x';
+  await p.settle(4);
+  assert.equal(asked.length, 1, 'a click on our own bar changes nothing in the list');
+  rows(document)[0].click();
+  await p.settle(1);
+  [...document.querySelectorAll('.ebs-op-bar button')].find((node) => node.textContent === 'Afboeken').click();
+  document.querySelector('app-grid-body tbody tr').remove();
+  await p.settle(4);
+  assert.equal(asked.length, 2, 'the native action changed the list: once more');
+  document.querySelector('app-grid-body tbody tr').remove();
+  await p.settle(4);
+  assert.equal(asked.length, 2, 'not again without a new action');
+  p.close();
+});
+
+test('the reminder query: the invoice numbers exactly as e-Boekhouden has them, the date as it sends it', async () => {
+  const posts = [{ ...POSTS[3], mutFactuur: ' 2026-0402 ' }, { ...POSTS[4], mutFactuur: 'A,1' }, POSTS[5]];
+  const p = await openPage({
+    url: 'https://secure20.e-boekhouden.nl/boekhouden/openposten?soort=Debiteur&zoeken=true&per=2026-10-29',
+    reply: () => ({ body: gridAnswer(posts) }),
+  });
+  const { document } = p;
+  assert.equal(new URL(p.calls[0]).searchParams.get('per'), '2026-10-29', 'yyyy-mm-dd like e-Boekhouden, no time zone shift');
+  for (const row of rows(document)) row.click();
+  await p.settle(1);
+  document.querySelector('.ebs-op-bar .primary').click();
+  await p.settle(2);
+  const src = new URL(document.querySelector('.ebs-rm-dialog iframe').src);
+  assert.equal(src.searchParams.get('selected'), ' 2026-0402 |13,2026-0340|15', 'the raw number; A,1 cannot be in the query');
+  assert.equal(src.searchParams.get('datumTot'), '2026-10-29');
+  p.close();
+});

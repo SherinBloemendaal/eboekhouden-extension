@@ -33,6 +33,8 @@
   const LIST_KEY = 'openposts:list';
   const LIMIT = 1000;
   const DAY_MS = 86_400_000;
+  // How long a selection waits for the list our click on Volgende loads.
+  const CARRY_MS = 30_000;
   // The four steps of the ladder, in order.
   const STEPS = [
     { label: '1e herinnering', hint: 'Vriendelijk, na de vervaldatum' },
@@ -173,6 +175,8 @@
       const relatieId = /^\d{1,12}$/.test(string(record.relatieid)) ? Number(record.relatieid) : null;
       return finishRow({
         factuur: string(record.mutfactuur),
+        // The number exactly as e-Boekhouden has it, for its own query.
+        ref: record.mutfactuur === null || record.mutfactuur === undefined ? '' : String(record.mutfactuur),
         relatieId,
         relatieCode: string(record.relatiecode),
         relation: string(record.bedrijf) || string(record.relatiecode),
@@ -310,21 +314,25 @@
     query.set('soort', soort);
     query.set('proefAanmaning', String(Boolean(proef)));
     query.set('returnUrl', returnUrl);
-    query.set('selected', rows.map((row) => `${row.factuur}|${row.relatieId}`).join(','));
+    query.set('selected', rows.map((row) => `${row.ref || row.factuur}|${row.relatieId}`).join(','));
     return `/boekhouden/openposten/aanmaning?${query}`;
   }
 
   // A row e-Boekhouden's form can take: a number and a relation, and no "," or "|".
   function remindable(row) {
-    return Boolean(row.factuur) && Number.isInteger(row.relatieId) && !/[|,]/.test(row.factuur);
+    const number = row.ref || row.factuur;
+    return Boolean(row.factuur) && Number.isInteger(row.relatieId) && !/[|,]/.test(number);
   }
 
-  // The page's own "per" (dd-mm-yyyy) as the ISO time e-Boekhouden sends.
+  // A date of the page's own query ("per", "vanaf": yyyy-mm-dd, or
+  // dd-mm-yyyy) as e-Boekhouden sends it: its date type's toISOString(),
+  // which is yyyy-mm-dd. No time zone: a local midnight as UTC would be the
+  // day before.
   function perIso(value) {
     const date = toDate(value);
     if (!date) return '';
-    const [day, month, year] = date.text.split('-').map(Number);
-    return new Date(year, month - 1, day).toISOString();
+    const [day, month, year] = date.text.split('-');
+    return `${year.padStart(4, '0')}-${month}-${day}`;
   }
 
   window.__ebsOpenposts = Object.freeze({
@@ -434,6 +442,9 @@
     ladder: null, // { steps: [ { id, name, soort } | null ] } or null
     store: null,
     userActed: false,
+    // The selection to keep over the reload that our own click on Volgende
+    // causes (an action before e-Boekhouden loaded its list): { soort, keys, step }.
+    carry: null,
     nativeSignature: '',
   };
 
@@ -480,13 +491,21 @@
   async function load({ again = false } = {}) {
     const screen = location.href;
     state.screen = screen;
+    const carry = !again && state.carry?.soort === currentSoort() && Date.now() - state.carry.at < CARRY_MS ? state.carry : null;
+    state.carry = null;
     if (again) EBS.request.clear(LIST_KEY);
-    if (!again) {
+    if (carry) {
+      // The same list, now also on e-Boekhouden's page: the rows and the
+      // selection stay while it loads; posts that are gone drop out of it.
+      state.selected = new Set(carry.keys);
+      state.step = carry.step;
+    } else if (!again) {
       state.status = 'loading';
       state.rows = [];
       state.selected.clear();
       state.anchor = null;
       state.step = null;
+      state.message = '';
       view.draw();
     }
     state.userActed = false;
@@ -559,6 +578,7 @@
     }
     select.value = soort;
     select.dispatchEvent(new Event('change', { bubbles: true }));
+    state.userActed = true;
     submit.click();
   }
 
@@ -568,11 +588,13 @@
   function runNative(label) {
     const grid = findGrid();
     if (!grid) {
-      // The list is not loaded yet: Volgende loads it, the action comes after.
+      // The list is not loaded yet: Volgende loads it, the action comes
+      // after, on the next click of the user. The selection stays for it.
       const submit = [...(filterForm()?.querySelectorAll('button') ?? [])].find((button) => /Volgende/.test(button.textContent));
       if (submit) {
-        submit.click();
+        state.carry = { soort: currentSoort(), keys: [...state.selected], step: state.step, at: Date.now() };
         view.notice('e-Boekhouden laadt de lijst. Klik daarna nog een keer.');
+        submit.click();
       } else view.notice('Deze actie staat niet op de pagina. Gebruik de klassieke weergave.');
       return;
     }
@@ -589,9 +611,22 @@
       return;
     }
     const want = new Set(chosen.map((row) => native.find(row)));
+    if (want.size !== chosen.length) {
+      view.notice('Twee geselecteerde posten horen bij dezelfde regel van e-Boekhouden. Gebruik de klassieke weergave.');
+      return;
+    }
     for (const one of native.list) {
       if (one.checkbox.checked !== want.has(one)) one.checkbox.click();
     }
+    // e-Boekhouden may refuse a tick (a post it will not let go of): then
+    // its selection is not this one, and the action is not clicked.
+    const off = native.list.filter((one) => !one.checkbox.isConnected || one.checkbox.checked !== want.has(one));
+    if (off.length) {
+      view.notice('e-Boekhouden nam de selectie niet over. Er is niets gedaan; gebruik de klassieke weergave.');
+      return;
+    }
+    view.notice('');
+    state.userActed = true;
     target.click();
   }
 
@@ -1189,7 +1224,10 @@
       this.note.setAttribute('role', 'alert');
       this.host.append(summary, el('span', 'ebs-op-bar-divider'), this.buttons, this.note);
       document.body.append(this.host);
-      window.addEventListener('resize', () => this.place(), { passive: true });
+      if (!this.listening) {
+        this.listening = true;
+        window.addEventListener('resize', () => this.place(), { passive: true });
+      }
     },
 
     hide(remove = false) {
@@ -1364,6 +1402,8 @@
     if (!list || !useBetter()) {
       view.unmount();
       state.screen = null;
+      // Away from the screen: nothing waits for its list any more.
+      if (!useBetter()) state.carry = null;
       if (list && settings.betterDesign && settingsLoaded) backToBetter.mount(list);
       else backToBetter.unmount();
       return;
@@ -1585,8 +1625,10 @@
     }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
     // A click of the user on the page may change the list (an action, a
     // filter): the next native change loads our list again, once.
+    // Our own view, bar and dialogs change nothing in the list; our clicks
+    // on native controls say so themselves (runNative, switchSoort).
     document.addEventListener('click', (event) => {
-      if (event.isTrusted && !event.target.closest?.('.ebs-op')) state.userActed = true;
+      if (event.isTrusted && !event.target.closest?.(OURS)) state.userActed = true;
     }, true);
     let lastHref = location.href;
     const watch = setInterval(() => {
