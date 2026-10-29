@@ -1,8 +1,7 @@
 // The toolbar popup: administrations with their status, switching, logging in
 // again, profile pictures and the feature switches. Reads the same mirrored
 // state as the pages (chrome.storage.local); actions go to the service worker.
-
-const CAMERA_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>';
+// Icons are Lucide, through EBS.icon (src/icons.js, loaded by popup.html).
 
 const SETTINGS = [
   ['betterDesign', 'Better design', 'Nieuwe inlogpagina en importweergave, en straks meer schermen'],
@@ -108,7 +107,7 @@ function row(slot) {
   camera.type = 'button';
   camera.title = state.avatars[slot.id] ? 'Profielfoto wijzigen' : 'Profielfoto kiezen';
   camera.setAttribute('aria-label', camera.title);
-  camera.innerHTML = CAMERA_ICON;
+  camera.append(EBS.icon('camera'));
   // A file dialog closes the toolbar popup, so the picker opens in its own window.
   camera.addEventListener('click', () => {
     chrome.windows.create({ url: chrome.runtime.getURL(`src/popup/popup.html?pick=${encodeURIComponent(slot.id)}`), type: 'popup', width: 420, height: 320 });
@@ -215,6 +214,7 @@ async function runPicker(slotId) {
   });
 }
 
+document.querySelector('#add .add-icon').append(EBS.icon('plus', { size: 18 }));
 document.getElementById('add').addEventListener('click', () => act('switcher:add'));
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') load();

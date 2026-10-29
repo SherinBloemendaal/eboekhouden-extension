@@ -9,7 +9,9 @@
 //   shift-select   (setting shiftSelect)  Gmail-style ranges on the checkboxes
 //   action bar     (setting actionBar)    count, total, Wegboeken, Verwijderen
 //   Better design  (setting betterDesign) a new view over the same rows: search,
-//                  filters, groups, hiding, tooltips, the mutation dialog
+//                  filters, groups, hiding, tooltips, the mutation dialog, and
+//                  totals over every line of the import (one bulk request when
+//                  the grid has pages)
 //
 // Grid markup (from the shell's templates):
 //   app-grid > app-grid-header .grid-header-title
@@ -51,6 +53,21 @@
   function signedAmount(row) {
     if (!Number.isFinite(row.amount)) return row.amountText;
     return `${row.amount > 0 ? '+' : '−'} ${EBS.formatMoney(Math.abs(row.amount))}`;
+  }
+
+  // "28-09-2026" -> "28 sep", as the board shows dates; with the year when
+  // it is not this year.
+  const SHORT_MONTHS = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec'];
+  function shortDate(text) {
+    const date = EBS.parseDate(text);
+    if (!date) return text;
+    const year = date.year !== new Date().getFullYear() ? ` ${date.year}` : '';
+    return `${date.day} ${SHORT_MONTHS[date.month - 1]}${year}`;
+  }
+
+  // "€ 3.500,00", "€ −0,05": a total, with the sign at the number.
+  function signedEuro(value) {
+    return `€ ${value < 0 ? '−' : ''}${EBS.formatMoney(Math.abs(value))}`;
   }
 
   // -------------------------------------------------------------------------
@@ -123,8 +140,6 @@
       const cells = [...tr.children];
       const text = (key) => (columns[key] >= 0 ? cells[columns[key]]?.textContent.replace(/\s+/g, ' ').trim() ?? '' : '');
       const amountText = text('amount');
-      const description = text('description');
-      const parsed = EBS.counterparty(description);
       rows.push({
         tr, checkbox,
         index: rows.length,
@@ -133,12 +148,9 @@
         bookDate: text('bookDate'),
         amountText,
         amount: EBS.parseAmount(amountText),
-        description,
+        description: text('description'),
         failure: text('failure'),
         note: text('note'),
-        party: parsed.party,
-        partyIban: parsed.iban,
-        rest: parsed.rest,
         edit: tr.querySelector('[title="Handmatig invoeren"]'),
         remove: tr.querySelector('[title="Verwijderen"]'),
         attach: tr.querySelector('[title="Bestand koppelen"]'),
@@ -150,6 +162,66 @@
   // More than one page of lines (e-Boekhouden shows 100 per page by default).
   function paginated(grid) {
     return [...grid.querySelectorAll('app-pagination .pagination li')].filter((li) => /^\s*\d+\s*$/.test(li.textContent)).length > 1;
+  }
+
+  // The number of lines in the grid's title: "Niet verwerkte afschriftregels (120 regels)".
+  function headerCount(grid) {
+    const count = /\((\d+) regels?\)/.exec(grid.querySelector('.grid-header-title')?.textContent ?? '')?.[1];
+    return count === undefined ? null : Number(count);
+  }
+
+  // -------------------------------------------------------------------------
+  // Every line of the import, for the cards, when the grid shows one page.
+  //
+  // The grid loads its page from e-Boekhouden's own endpoint (the import
+  // list in the shell's bundle: loadGrid() calls gridRequest.getQuery() on
+  // `${apiUrl}import/gridtable`, apiUrl being https://secure20.<domain>/v1/api/).
+  // The same GET with offset 0 and a large limit returns every line in one
+  // answer: { data: [{ datum, rekening, mutDatum, mutBedrag, mutOmschrijving,
+  // ... }], rowCount }. One EBS.request.bulk call per screen; never a request
+  // per page or per line.
+  // -------------------------------------------------------------------------
+
+  const ALL_LINES_KEY = 'import:all-lines';
+  const ALL_LINES_LIMIT = 10000;
+
+  function allLinesUrl() {
+    return `${location.origin}/v1/api/import/gridtable?offset=0&limit=${ALL_LINES_LIMIT}&orderBy=&sortDirection=`;
+  }
+
+  // The grid shows dates with Angular's date pipe as dd-MM-yyyy, in local time.
+  function apiDate(value) {
+    const text = String(value ?? '');
+    const plain = /^(\d{4})-(\d{2})-(\d{2})(?:T[\d:.]*)?$/.exec(text);
+    if (plain) return `${plain[3]}-${plain[2]}-${plain[1]}`;
+    const date = new Date(text);
+    if (!text || Number.isNaN(date.getTime())) return '';
+    return [date.getDate(), date.getMonth() + 1].map((part) => String(part).padStart(2, '0')).join('-') + `-${date.getFullYear()}`;
+  }
+
+  // An answer line in the shape readRows() gives a row of the grid, so both
+  // get the same signature (rowSignature) and the same sums (summarize).
+  function apiRow(line) {
+    const amount = Math.round(Number(line?.mutBedrag) * 100) / 100;
+    return {
+      importDate: apiDate(line?.datum),
+      account: String(line?.rekening ?? '').replace(/\s+/g, ' ').trim(),
+      bookDate: apiDate(line?.mutDatum),
+      amount: Number.isFinite(amount) ? amount : Number.NaN,
+      description: String(line?.mutOmschrijving ?? '').replace(/\s+/g, ' ').trim(),
+    };
+  }
+
+  // The lines of an answer, or null when it is not every line of the import
+  // (another shape, fewer lines than e-Boekhouden counts, or a count that
+  // differs from the grid's title).
+  function allLinesOf(answer, expected) {
+    const lines = Array.isArray(answer?.data) ? answer.data : null;
+    if (!lines) return null;
+    const count = Number.isInteger(answer.rowCount) && answer.rowCount > 0 ? answer.rowCount : lines.length;
+    if (lines.length !== count) return null;
+    if (expected !== null && expected !== count) return null;
+    return EBS.signRows(lines.map(apiRow));
   }
 
   // e-Boekhouden's own labels, matched whole: "verwijderen" alone would also
@@ -301,11 +373,14 @@
       this.host = el('div', 'ebs-bar');
       this.host.setAttribute('role', 'toolbar');
       this.host.setAttribute('aria-label', 'Acties voor geselecteerde regels');
+      // Better design starts with "Selectie wissen" as an icon; the lead
+      // has no box of its own, so it adds no gap while empty.
+      this.lead = el('span', 'ebs-bar-lead');
       const summary = el('span', 'ebs-bar-summary');
       this.count = el('span', 'ebs-bar-count');
       this.total = el('span', 'ebs-bar-total');
       summary.append(this.count, this.total);
-      this.host.append(summary, el('span', 'ebs-bar-divider'));
+      this.host.append(this.lead, summary, el('span', 'ebs-bar-divider'));
       this.buttons = el('span', 'ebs-bar-buttons');
       this.host.append(this.buttons);
       document.body.append(this.host);
@@ -358,25 +433,24 @@
         this.closeGroupMenu(true);
         this.buttons.dataset.mode = mode;
         this.buttons.replaceChildren();
-        const button = (label, className, onClick, parent = this.buttons) => {
-          const node = el('button', `ebs-bar-button ${className}`, label);
+        this.lead.replaceChildren();
+        // label: the text, or with iconOnly the accessible name and tooltip.
+        const button = (label, className, onClick, { parent = this.buttons, icon = null, iconOnly = false, trailing = null } = {}) => {
+          const node = el('button', `ebs-bar-button ${className}${iconOnly ? ' icon-only' : ''}`);
           node.type = 'button';
+          if (icon) node.append(EBS.icon(icon, { size: 18 }));
+          if (iconOnly) {
+            node.setAttribute('aria-label', label);
+            node.title = label;
+          } else {
+            node.append(document.createTextNode(label));
+          }
+          if (trailing) node.append(EBS.icon(trailing, { size: 14 }));
           node.addEventListener('click', onClick);
           parent.append(node);
           return node;
         };
-        this.native.wegboeken = button('Wegboeken', 'primary', () => runBulkAction('wegboeken'));
-        if (mode === 'better') {
-          // The menu opens from the button itself, as in the design.
-          const wrap = el('span', 'ebs-group-wrap');
-          this.buttons.append(wrap);
-          const groupButton = button('Aan groep toevoegen ▾', 'ghost', (event) => this.toggleGroupMenu(groupButton, event.detail === 0), wrap);
-          groupButton.setAttribute('aria-haspopup', 'menu');
-          groupButton.setAttribute('aria-expanded', 'false');
-          button('Verbergen', 'ghost', () => better.hideRows(readRows(findGrid()).filter((row) => row.checkbox.checked)));
-        }
-        this.native.verwijderen = button('Verwijderen', 'ghost', () => runBulkAction('verwijderen'));
-        button('Selectie wissen', 'quiet', () => {
+        const clearSelection = () => {
           clickingRange = true;
           try {
             for (const row of readRows(findGrid())) if (row.checkbox.checked) row.checkbox.click();
@@ -386,7 +460,26 @@
           anchor = null;
           better.anchor = null;
           schedule();
-        });
+        };
+        if (mode === 'better') {
+          button('Selectie wissen', 'clear', clearSelection, { parent: this.lead, icon: 'x', iconOnly: true });
+          this.native.wegboeken = button('Wegboeken', 'primary', () => runBulkAction('wegboeken'), { icon: 'check' });
+          // The menu opens from the button itself, as in the design.
+          const wrap = el('span', 'ebs-group-wrap');
+          this.buttons.append(wrap);
+          const groupButton = button('Groep', 'ghost', (event) => this.toggleGroupMenu(groupButton, event.detail === 0), { parent: wrap, icon: 'folder-plus', trailing: 'chevron-down' });
+          groupButton.title = 'Aan groep toevoegen';
+          groupButton.setAttribute('aria-label', 'Aan groep toevoegen');
+          groupButton.setAttribute('aria-haspopup', 'menu');
+          groupButton.setAttribute('aria-expanded', 'false');
+          button('Verbergen', 'ghost', () => better.hideRows(readRows(findGrid()).filter((row) => row.checkbox.checked)), { icon: 'eye-off', iconOnly: true });
+          this.native.verwijderen = button('Verwijderen', 'ghost', () => runBulkAction('verwijderen'), { icon: 'trash-2', iconOnly: true });
+        } else {
+          // The classic screen keeps the bar of the Import board: words only.
+          this.native.wegboeken = button('Wegboeken', 'primary', () => runBulkAction('wegboeken'));
+          this.native.verwijderen = button('Verwijderen', 'ghost', () => runBulkAction('verwijderen'));
+          button('Selectie wissen', 'quiet', clearSelection);
+        }
       }
       // e-Boekhouden blocks its bulk actions while it is busy: so do these.
       for (const word of ['wegboeken', 'verwijderen']) {
@@ -509,6 +602,68 @@
       this.prefsStore?.set('prefs', this.prefs).catch((error) => console.warn('EB Sessions: import view not saved', error?.message ?? error));
     },
 
+    // The cards: every line of the import, counted once per state of the
+    // import, apart from what the list shows (search, Bij/Af, Periode,
+    // Bedrag, groups and hidden lines never change them).
+    //   scope 'all'      every line: the grid itself, or one bulk request
+    //                    when the grid has pages
+    //   scope 'loading'  that request is on its way
+    //   scope 'page'     the request failed or came back short: the cards
+    //                    count this page, and say so
+    // key: what the totals belong to (pages or not, and the grid's count), so
+    // a booking or a delete that changes the import counts again.
+    totals: null,
+
+    computeTotals() {
+      const paged = paginated(this.grid);
+      const expected = headerCount(this.grid);
+      if (!paged) {
+        this.totals = { key: 'single', scope: 'all', rows: this.rows };
+        return;
+      }
+      const key = `paged|${expected ?? ''}`;
+      if (this.totals?.key === key) return;
+      const again = Boolean(this.totals?.key?.startsWith('paged|'));
+      this.totals = { key, scope: 'loading', rows: [] };
+      this.loadAllLines(key, expected, again);
+    },
+
+    async loadAllLines(key, expected, again) {
+      let rows = null;
+      try {
+        // The import changed on this screen: the answer of before is not it.
+        if (again) EBS.request.clear(ALL_LINES_KEY);
+        rows = allLinesOf(await EBS.request.bulk(ALL_LINES_KEY, allLinesUrl()), expected);
+      } catch (error) {
+        // An abort means the screen was left: nothing to say.
+        if (error?.code !== 'abort') console.warn('EB Sessions: the import lines could not be read in one go', error?.code ?? error?.message ?? error);
+      }
+      if (this.totals?.key !== key) return;
+      this.totals = rows
+        ? { key, scope: 'all', rows, signatures: rows.map((row) => EBS.rowSignature(row)), keySet: null, warned: false }
+        : { key, scope: 'page', rows: [] };
+      if (this.root) this.draw();
+    },
+
+    // The lines the cards count.
+    countedRows() {
+      return this.totals?.scope === 'all' ? this.totals.rows : this.rows;
+    },
+
+    // Whether the bulk lines carry the grid's signatures: every line of this
+    // page is among them.
+    bulkMatches(pageSignatures) {
+      const totals = this.totals;
+      if (totals?.scope !== 'all' || !totals.signatures) return false;
+      totals.keySet ??= new Set(totals.signatures);
+      const matches = pageSignatures.every((signature) => totals.keySet.has(signature));
+      if (!matches && !totals.warned) {
+        totals.warned = true;
+        console.warn('EB Sessions: the import lines read in one go do not match the grid; hidden lines and groups count this page only');
+      }
+      return matches;
+    },
+
     mount(grid, rows) {
       this.grid = grid;
       this.rows = rows;
@@ -519,6 +674,7 @@
         grid.before(this.root);
         this.build();
       }
+      this.computeTotals();
       this.draw();
     },
 
@@ -526,6 +682,12 @@
       this.root?.remove();
       this.root = null;
       dialog.close();
+      // Leaving the import screen: what was read belongs to that visit, and a
+      // request still on its way is not needed any more.
+      if (!onImportPage() && this.totals) {
+        this.totals = null;
+        EBS.request.abort(ALL_LINES_KEY);
+      }
     },
 
     build() {
@@ -539,7 +701,13 @@
       classic.addEventListener('click', () => setClassic(true));
       head.append(titles, classic);
 
+      // Three cards, built once and filled in place.
       this.cards = el('div', 'ebs-cards');
+      this.cardIn = this.card('in');
+      this.cardOut = this.card();
+      this.cardOldest = this.card();
+      this.cards.append(this.cardIn.node, this.cardOut.node, this.cardOldest.node);
+      this.cardsNote = el('span', 'ebs-cards-note');
 
       const panel = el('div', 'ebs-panel');
       this.tabs = el('div', 'ebs-tabs');
@@ -552,7 +720,7 @@
 
       const filters = el('div', 'ebs-filters');
       const search = el('label', 'ebs-search');
-      search.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg>';
+      search.append(EBS.icon('search'));
       this.searchInput = el('input');
       this.searchInput.type = 'search';
       this.searchInput.placeholder = 'Zoek in alle kolommen: tegenpartij, rekening, omschrijving, datum, bedrag';
@@ -564,7 +732,9 @@
       search.append(this.searchInput);
       this.directionChips = el('span', 'ebs-chips');
       this.periodSelect = this.select('Periode', (value) => { this.ui.period = value; });
-      this.sizeSelect = this.select('Bedrag', (value) => { this.ui.size = value; }, [['all', 'Alle bedragen'], ['small', 'Onder € 10'], ['large', 'Vanaf € 100']]);
+      this.sizeSelect = this.select('Bedrag', (value) => { this.ui.size = value; }, [
+        ['all', 'Alle bedragen'], ['small', 'Onder € 10'], ['large', 'Vanaf € 100'], ['tiny', 'Bedragen onder € 0,10'],
+      ]);
       this.hiddenToggle = el('button', 'ebs-hidden-toggle');
       this.hiddenToggle.type = 'button';
       this.hiddenToggle.addEventListener('click', () => {
@@ -574,14 +744,21 @@
       filters.append(search, this.directionChips, this.periodSelect.label, this.sizeSelect.label, this.hiddenToggle);
 
       const headRow = el('div', 'ebs-row ebs-row-head');
-      for (const text of ['', 'Boekdatum', 'Tegenpartij', 'Omschrijving', 'Bedrag', '']) headRow.append(el('span', '', text));
+      for (const text of ['', 'Boekdatum', 'Omschrijving', 'Bedrag', '']) headRow.append(el('span', '', text));
       this.body = el('div', 'ebs-body');
       this.body.addEventListener('mousemove', (event) => this.previewRange(event), { passive: true });
       this.body.addEventListener('mouseleave', () => this.previewRange(null));
+      // The footer: the totals line, and below it the lines in view while a
+      // search or filter is active. That second line is always there, so
+      // nothing shifts when it fills; it fades in.
       this.footer = el('div', 'ebs-footer');
+      this.footerTotal = el('span', 'ebs-footer-total');
+      this.footerFiltered = el('span', 'ebs-footer-filtered');
+      this.footerFiltered.setAttribute('aria-live', 'polite');
+      this.footer.append(this.footerTotal, this.footerFiltered);
 
       panel.append(this.tabs, filters, headRow, this.body, this.footer);
-      this.root.append(head, this.cards, panel);
+      this.root.append(head, this.cards, this.cardsNote, panel);
     },
 
     select(label, onChange, options = []) {
@@ -599,12 +776,23 @@
     },
 
     visibleRows() {
-      return EBS.filterRows(this.rows, {
+      // "Bedragen onder € 0,10" is this view's own preset (EBS.filterRows
+      // knows 'small' and 'large'): Bij and Af alike, the tiny lines such as
+      // − 0,05 that you clear in one go.
+      const tiny = this.ui.size === 'tiny';
+      const rows = EBS.filterRows(this.rows, {
         ...this.ui,
+        size: tiny ? 'all' : this.ui.size,
         hidden: this.prefs.hidden,
         group: this.ui.group,
         groupOf: this.prefs.groupOf,
       });
+      return tiny ? rows.filter((row) => Math.abs(row.amount) < 0.10) : rows;
+    },
+
+    filterActive() {
+      const { query, direction, period, size, group } = this.ui;
+      return Boolean(query.trim()) || direction !== 'all' || period !== 'all' || size !== 'all' || group !== null;
     },
 
     draw({ flip = false } = {}) {
@@ -613,31 +801,41 @@
       const focusKey = this.root.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
       const all = this.rows;
       const visible = this.visibleRows();
-      const summary = EBS.summarize(visible);
-      const hiddenCount = all.filter((row) => this.prefs.hidden.includes(EBS.rowSignature(row))).length;
-      const total = /\((\d+) regels?\)/.exec(this.grid.querySelector('.grid-header-title')?.textContent ?? '')?.[1];
-      const account = [...new Set(all.map((row) => row.account).filter(Boolean))];
-      // With pages, search, filters and totals only see this page: say so.
       const paged = paginated(this.grid);
-      const scope = paged ? 'op deze pagina' : 'in beeld';
+      const scope = this.totals?.scope ?? 'all';
+      const counted = this.countedRows();
+      const expected = headerCount(this.grid);
+      const total = expected ?? (scope === 'all' ? counted.length : all.length);
+      const pageSignatures = all.map((row) => EBS.rowSignature(row));
+      // Hidden lines and groups are stored under the grid's own signatures.
+      // The lines of the bulk request stand for them only when they carry the
+      // same ones, so every line of this page must be among them; otherwise
+      // (a date or an amount in another format) only this page counts for
+      // them, and nothing is pruned. The cards count the amounts either way.
+      const sameKeys = counted === all || this.bulkMatches(pageSignatures);
+      // Every line is known: from the grid without pages, or from the bulk request.
+      const everyLine = scope === 'all' && sameKeys;
+      const signatures = everyLine ? (counted === all ? pageSignatures : this.totals.signatures) : pageSignatures;
+      const hiddenSet = new Set(this.prefs.hidden);
+      const hiddenCount = signatures.filter((signature) => hiddenSet.has(signature)).length;
+      const account = [...new Set(counted.map((row) => row.account).filter(Boolean))];
+      // With pages, search and filters only see this page: say so.
       this.searchInput.placeholder = paged
         ? 'Zoek op deze pagina: tegenpartij, rekening, omschrijving, datum, bedrag'
         : 'Zoek in alle kolommen: tegenpartij, rekening, omschrijving, datum, bedrag';
-      const signatures = all.map((row) => EBS.rowSignature(row));
-      if (!paged && all.length && Number(total) === all.length) {
+      // Pruning drops what the user stored, so only against a count that the
+      // grid's title states: while the grid loads, its title says "(...)" and
+      // its body is empty, which must never read as an empty import.
+      if (everyLine && expected !== null && expected > 0 && counted.length === expected) {
         const pruned = EBS.prunePrefs(this.prefs, signatures);
         if (pruned.changed) {
           this.prefs = pruned.prefs;
           this.savePrefs();
         }
       }
-      this.subtitle.textContent = `${total ?? all.length} regels uit de import${account.length === 1 ? ` · rekening ${account[0]}` : ''}`;
+      this.subtitle.textContent = `${total} ${total === 1 ? 'regel' : 'regels'} uit de import${account.length === 1 ? ` · rekening ${account[0]}` : ''}`;
 
-      this.cards.replaceChildren(
-        this.card(`Binnengekomen (${scope})`, `€ ${EBS.formatMoney(summary.inTotal)}`, `${summary.inCount} ${summary.inCount === 1 ? 'regel' : 'regels'}`, 'in'),
-        this.card(`Uitgegaan (${scope})`, `€ ${summary.outTotal < 0 ? '−' : ''}${EBS.formatMoney(Math.abs(summary.outTotal))}`, `${summary.outCount} ${summary.outCount === 1 ? 'regel' : 'regels'}`),
-        this.card(paged ? 'Oudste regel (op deze pagina)' : 'Oudste regel', summary.oldest ? `${summary.oldest.day} ${EBS.monthLabel(summary.oldest.key)}` : 'Geen', summary.oldest ? `${Math.max(0, Math.floor((Date.now() - summary.oldest.time) / 86400000))} dagen niet verwerkt` : ''),
-      );
+      this.drawCards(scope, counted);
 
       // Group tabs. Rebuilt only when they change: draw() also runs on every
       // native grid update, and a rebuild would take focus from the tabs.
@@ -704,13 +902,50 @@
       if (focusKey && !this.root.contains(document.activeElement)) {
         this.root.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
       }
-      this.footer.textContent = `${visible.length} ${visible.length === 1 ? 'regel' : 'regels'} in beeld${paged ? ' op deze pagina' : ''} · ${hiddenCount} verborgen · ${total ?? all.length} in totaal`;
+
+      this.footerTotal.textContent = `${total} ${total === 1 ? 'regel' : 'regels'} in totaal · ${hiddenCount} verborgen`;
+      const filtering = this.filterActive();
+      this.footerFiltered.classList.toggle('on', filtering);
+      if (filtering) {
+        const sum = visible.reduce((value, row) => value + (Number.isFinite(row.amount) ? row.amount : 0), 0);
+        this.footerFiltered.textContent = `${visible.length} ${visible.length === 1 ? 'regel' : 'regels'} in beeld${paged ? ' op deze pagina' : ''} · ${signedEuro(sum)}`;
+      } else {
+        // Empty, but it keeps its line: see build().
+        this.footerFiltered.textContent = '';
+      }
     },
 
-    card(label, value, sub, tone) {
-      const card = el('div', 'ebs-card');
-      card.append(el('span', 'ebs-card-label', label), el('span', `ebs-card-value${tone ? ` ${tone}` : ''}`, value), el('span', 'ebs-card-sub', sub));
-      return card;
+    drawCards(scope, rows) {
+      const page = scope === 'page';
+      const loading = scope === 'loading';
+      const summary = EBS.summarize(rows);
+      const lines = (count) => `${count} ${count === 1 ? 'regel' : 'regels'}`;
+      const label = (text) => (page ? `${text} (deze pagina)` : text);
+      const fill = (card, title, value, sub) => {
+        card.label.textContent = title;
+        card.value.textContent = loading ? 'Bezig…' : value;
+        card.value.classList.toggle('loading', loading);
+        card.node.setAttribute('aria-busy', String(loading));
+        // An empty sub line keeps its height (min-height), so nothing shifts.
+        card.sub.textContent = loading ? '' : sub;
+      };
+      fill(this.cardIn, label('Binnengekomen'), `€ ${EBS.formatMoney(summary.inTotal)}`, lines(summary.inCount));
+      fill(this.cardOut, label('Uitgegaan'), signedEuro(summary.outTotal), lines(summary.outCount));
+      const oldest = summary.oldest;
+      fill(this.cardOldest, label('Oudste regel'), oldest ? `${oldest.day} ${SHORT_MONTHS[oldest.month - 1]} ${oldest.year}` : 'Geen',
+        oldest ? `${Math.max(0, Math.floor((Date.now() - oldest.time) / 86400000))} dagen niet verwerkt` : '');
+      this.cardsNote.textContent = page
+        ? 'De kaarten tellen alle regels op deze pagina, los van zoeken, filters, groepen en verborgen regels.'
+        : 'De kaarten tellen alle regels van de import, los van zoeken, filters, groepen en verborgen regels.';
+    },
+
+    card(tone) {
+      const node = el('div', 'ebs-card');
+      const label = el('span', 'ebs-card-label');
+      const value = el('span', `ebs-card-value${tone ? ` ${tone}` : ''}`);
+      const sub = el('span', 'ebs-card-sub');
+      node.append(label, value, sub);
+      return { node, label, value, sub };
     },
 
     // A redraw rebuilds the rows. Keyboard focus moves to the same control
@@ -776,7 +1011,7 @@
       box.setAttribute('role', 'checkbox');
       box.setAttribute('aria-checked', String(row.checkbox.checked));
       box.setAttribute('aria-label', 'Regel selecteren');
-      box.textContent = row.checkbox.checked ? '✓' : '';
+      if (row.checkbox.checked) box.append(EBS.icon('check', { size: 12 }));
       box.addEventListener('click', (event) => {
         event.stopPropagation();
         const position = visibleRows.indexOf(row);
@@ -798,28 +1033,33 @@
       });
 
       const date = el('span', 'ebs-date');
-      date.append(el('span', '', row.bookDate), el('span', 'ebs-muted', `geïmporteerd ${row.importDate}`));
+      date.append(el('span', '', shortDate(row.bookDate)), el('span', 'ebs-muted', `geïmporteerd ${shortDate(row.importDate)}`));
+      date.title = `Boekdatum ${row.bookDate}, geïmporteerd ${row.importDate}`;
 
-      const party = el('span', 'ebs-party');
-      const partyLine = el('span', 'ebs-party-line');
-      const partyName = el('span', 'ebs-party-name', row.party ?? row.description);
-      partyName.title = row.party ?? row.description;
-      partyLine.append(partyName);
-      if (group) partyLine.append(el('span', 'ebs-group-chip', group));
-      party.append(partyLine, el('span', 'ebs-muted', row.partyIban ?? row.account));
-
-      const description = el('span', 'ebs-description', row.party ? row.rest : (row.failure || row.note || ''));
-      description.title = row.description;
+      // e-Boekhouden's own description, in full: two lines, then an
+      // ellipsis, and the whole text (with a processing error or a note) in
+      // the tooltip. The account number and the group below it.
+      const text = el('span', 'ebs-text');
+      const description = el('span', 'ebs-description', row.description || row.failure || row.note);
+      description.title = [row.description, row.failure, row.note].filter(Boolean).join('\n');
+      text.append(description);
+      if (row.account || group) {
+        const meta = el('span', 'ebs-meta');
+        if (row.account) meta.append(el('span', 'ebs-account', row.account));
+        if (group) meta.append(el('span', 'ebs-group-chip', group));
+        text.append(meta);
+      }
 
       const amount = el('span', `ebs-amount${row.amount > 0 ? ' in' : ''}`, signedAmount(row));
 
       const actions = el('span', 'ebs-actions');
-      const action = (glyph, label, tip, className, onClick, enabled = true) => {
+      const action = (iconName, label, tip, className, onClick, enabled = true) => {
         const wrap = el('span', 'ebs-action-wrap');
-        const button = el('button', `ebs-action ${className}`, glyph);
+        const button = el('button', `ebs-action ${className}`);
         button.type = 'button';
         button.dataset.control = className;
         button.setAttribute('aria-label', label);
+        button.append(EBS.icon(iconName));
         button.disabled = !enabled;
         button.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -832,12 +1072,12 @@
         wrap.append(button);
         actions.append(wrap);
       };
-      action('✓', 'Wegboeken', 'Wegboeken: open het mutatiescherm', 'book', () => dialog.open(row, signature), Boolean(row.edit));
-      action('⇪', 'Bon uploaden', 'Bon of factuur koppelen aan deze regel', 'attach', () => row.attach?.click(), Boolean(row.attach));
-      action(isHidden ? '◉' : '◌', isHidden ? 'Weer tonen' : 'Verbergen', isHidden ? 'Weer tonen in de lijst' : 'Verbergen (alleen in jouw weergave, niet verwijderd)', 'hide', () => (isHidden ? this.unhide(row) : this.hideRows([row])));
-      action('✕', 'Verwijderen', 'Verwijderen uit e-Boekhouden (vraagt om bevestiging)', 'delete', () => row.remove?.click(), Boolean(row.remove));
+      action('check', 'Wegboeken', 'Wegboeken: open het mutatiescherm', 'book', () => dialog.open(row, signature), Boolean(row.edit));
+      action('upload', 'Bon uploaden', 'Bon of factuur uploaden bij deze regel', 'attach', () => row.attach?.click(), Boolean(row.attach));
+      action(isHidden ? 'eye' : 'eye-off', isHidden ? 'Weer tonen' : 'Verbergen', isHidden ? 'Weer tonen in de lijst' : 'Verbergen (alleen in jouw weergave, niet verwijderd)', 'hide', () => (isHidden ? this.unhide(row) : this.hideRows([row])));
+      action('trash-2', 'Verwijderen', 'Verwijderen uit e-Boekhouden (vraagt om bevestiging)', 'delete', () => row.remove?.click(), Boolean(row.remove));
 
-      node.append(box, date, party, description, amount, actions);
+      node.append(box, date, text, amount, actions);
       node.addEventListener('click', () => {
         if (row.edit) dialog.open(row, signature);
       });
@@ -886,7 +1126,8 @@
     // while it is open, so typing in it survives every redraw.
     buildGroupEditor() {
       const wrap = el('span', 'ebs-tab-new');
-      const start = el('button', 'ebs-tab-add', '+ Nieuwe groep');
+      const start = el('button', 'ebs-tab-add');
+      start.append(EBS.icon('plus'), document.createTextNode('Nieuwe groep'));
       start.type = 'button';
       start.addEventListener('click', () => this.openEditor('new'));
       const form = el('form', 'ebs-tab-form');
@@ -1079,7 +1320,7 @@
       };
       handle = EBS.dialog.open({
         title: 'Mutatie aanmaken',
-        subtitle: [row.party ?? row.description, amount, row.bookDate].filter(Boolean).join(' · '),
+        subtitle: [row.description, amount, row.bookDate].filter(Boolean).join(' · '),
         src: url,
         frameTitle: 'Mutatie aanmaken',
         // Covers the frame while it loads the list and opens the line, so the
@@ -1215,17 +1456,29 @@
   const IMPORT_CSS = `
     app-grid-body table.grid tbody tr.ebs-range { background: #f3f6fd !important; }
 
-    .ebs-bar { position: fixed; left: 50%; bottom: 24px; z-index: 2147483000; display: flex; align-items: center; gap: 14px; padding: 10px 10px 10px 20px; border-radius: 14px; background: #232c4f; color: #fff; font-family: Ubuntu, system-ui, sans-serif; box-shadow: 0 18px 44px rgba(20, 26, 48, .35); transform: translateX(-50%); visibility: hidden; }
+    .ebs-bar { position: fixed; left: 50%; bottom: 24px; z-index: 2147483000; display: flex; align-items: center; gap: 16px; padding: 10px 10px 10px 20px; border-radius: 14px; background: #232c4f; color: #fff; font-family: Ubuntu, system-ui, sans-serif; box-shadow: 0 18px 44px rgba(20, 26, 48, .35); transform: translateX(-50%); visibility: hidden; }
     .ebs-bar.show { visibility: visible; }
-    .ebs-bar-summary { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
+    .ebs-bar-summary { display: flex; flex-direction: column; gap: 2px; min-width: 170px; }
+    .ebs-bar-lead { display: contents; }
+    .ebs-bar.better { gap: 12px; }
+    .ebs-bar.better .ebs-bar-summary { min-width: 160px; }
     .ebs-bar-count { font-size: 14px; font-weight: 700; }
     .ebs-bar-total { font-size: 12px; color: #c4cae0; font-variant-numeric: tabular-nums; }
     .ebs-bar-divider { width: 1px; height: 32px; background: rgba(255, 255, 255, .2); }
-    .ebs-bar-buttons { display: flex; align-items: center; gap: 8px; position: relative; }
-    .ebs-bar-button { height: 40px; padding: 0 14px; border-radius: 9px; font: 500 14px Ubuntu, system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+    .ebs-bar-buttons { display: flex; align-items: center; gap: 16px; position: relative; }
+    .ebs-bar.better .ebs-bar-buttons { gap: 12px; }
+    .ebs-bar-button { height: 40px; padding: 0 16px; border-radius: 9px; font: 500 14px Ubuntu, system-ui, sans-serif; white-space: nowrap; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+    .ebs-bar-button svg { flex: none; }
+    .ebs-bar.better .ebs-bar-button.ghost { padding: 0 14px; }
+    .ebs-bar.better .ebs-bar-button.icon-only { width: 40px; padding: 0; justify-content: center; }
+    .ebs-bar.better .ebs-bar-button.clear { width: 36px; height: 36px; margin-left: -10px; padding: 0; justify-content: center; border: 0; background: rgba(255, 255, 255, .1); color: #fff; }
+    .ebs-bar-button.clear:hover { background: rgba(255, 255, 255, .2); }
+    .ebs-bar-button.primary:hover { background: #4f8a2c; }
+    .ebs-bar-button.ghost:hover { background: rgba(255, 255, 255, .1); }
+    .ebs-bar-button.quiet:hover { color: #fff; }
     .ebs-bar-button.primary { border: 0; background: #5d9e35; color: #fff; font-weight: 700; }
     .ebs-bar-button.ghost { border: 1px solid rgba(255, 255, 255, .35); background: transparent; color: #fff; }
-    .ebs-bar-button.quiet { border: 0; background: transparent; color: #c4cae0; }
+    .ebs-bar-button.quiet { padding: 0 12px; border: 0; background: transparent; color: #c4cae0; font-weight: 400; }
     .ebs-bar-button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .ebs-group-wrap { position: relative; display: flex; }
     .ebs-bar-button:disabled { opacity: .5; cursor: default; }
@@ -1256,8 +1509,11 @@
     .ebs-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     .ebs-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 12px; background: #fff; }
     .ebs-card-label, .ebs-card-sub { font-size: 12px; color: #5d6584; }
+    .ebs-card-sub { min-height: 1.2em; }
     .ebs-card-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .ebs-card-value.in { color: #2f6f1a; }
+    .ebs-card-value.loading { color: #8c93ab; }
+    .ebs-cards-note { margin-top: -4px; font-size: 12px; color: #5d6584; }
     .ebs-panel { background: #fff; border-radius: 12px; }
     .ebs-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid #e6e9f1; }
     .ebs-tab { height: 36px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
@@ -1266,7 +1522,7 @@
     .ebs-tab-action { height: 30px; margin-left: 4px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: #8c93ab; font-size: 12px; cursor: pointer; }
     .ebs-tab-action:hover, .ebs-tab-action:focus-visible { color: #232c4f; background: #f3f5fa; }
     .ebs-tab-new { display: inline-flex; align-items: center; }
-    .ebs-tab-add { height: 36px; padding: 0 12px; border: 0; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; }
+    .ebs-tab-add { height: 36px; padding: 0 12px; border: 0; background: transparent; color: #5d6584; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
     .ebs-tab-add:hover, .ebs-tab-add:focus-visible { color: #232c4f; }
     .ebs-tab-form { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 4px 4px; }
     .ebs-tab-form[hidden], .ebs-tab-add[hidden] { display: none; }
@@ -1277,6 +1533,7 @@
     .ebs-tab-error { font-size: 12px; color: #b42318; }
     .ebs-tab-error:empty { display: none; }
     .ebs-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #e6e9f1; }
+    .ebs-search svg { flex: none; }
     .ebs-search { flex: 1 1 260px; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 9px; color: #5d6584; }
     .ebs-search input { flex: 1; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
     .ebs-chips { display: flex; gap: 6px; }
@@ -1287,7 +1544,7 @@
     .ebs-select select { border: 0; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
     .ebs-hidden-toggle { height: 36px; padding: 0 14px; border: 1px dashed #b9c0d4; border-radius: 18px; background: #fff; color: #3a4677; font-size: 13px; cursor: pointer; }
     .ebs-hidden-toggle.on { background: #eef1f8; }
-    .ebs-row { display: grid; grid-template-columns: 44px 150px minmax(0, 1.2fr) minmax(0, 1.6fr) 130px 170px; align-items: center; min-height: 54px; padding: 0 14px; border-bottom: 1px solid #eef0f5; background: #fff; cursor: pointer; }
+    .ebs-row { display: grid; grid-template-columns: 44px 110px minmax(0, 1fr) 130px 170px; align-items: center; min-height: 54px; padding: 0 14px; border-bottom: 1px solid #eef0f5; background: #fff; cursor: pointer; }
     .ebs-row, .ebs-row-head, .ebs-tab, .ebs-tab-action, .ebs-tab-add, .ebs-group-item, .ebs-action, .ebs-chip, .ebs-hidden-toggle, .ebs-link, .ebs-bar-button { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
     .ebs-row:hover { background: #fafbfd; }
     .ebs-row.checked { background: #e8eefb; }
@@ -1296,28 +1553,32 @@
     .ebs-row.anchor { box-shadow: inset 3px 0 0 #232c4f; }
     .ebs-row-head { min-height: 38px; font-size: 12px; color: #5d6584; background: #f7f8fb; cursor: default; }
     .ebs-row-head:hover { background: #f7f8fb; }
-    .ebs-row-head span:nth-child(5) { text-align: right; }
-    .ebs-check { width: 18px; height: 18px; padding: 0; border: 1.5px solid #8c93ab; border-radius: 4px; background: #fff; color: #fff; font-size: 12px; line-height: 14px; cursor: pointer; }
+    .ebs-row-head span:nth-child(4) { text-align: right; }
+    .ebs-check { width: 18px; height: 18px; padding: 0; border: 1.5px solid #8c93ab; border-radius: 4px; background: #fff; color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease; }
     .ebs-row.checked .ebs-check { border-color: #232c4f; background: #232c4f; }
     .ebs-check:focus-visible, .ebs-action:focus-visible, .ebs-chip:focus-visible, .ebs-tab:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
-    .ebs-date, .ebs-party { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
-    .ebs-date .ebs-muted, .ebs-party .ebs-muted { font-size: 11px; color: #6b7290; white-space: nowrap; }
-    .ebs-party-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-    .ebs-party-name { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ebs-group-chip { flex: none; padding: 2px 8px; border-radius: 10px; background: #eef1f8; font-size: 11px; color: #3a4677; }
-    .ebs-description { padding-right: 16px; font-size: 13px; color: #4a5272; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ebs-date { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; }
+    .ebs-date .ebs-muted { font-size: 11px; color: #6b7290; white-space: nowrap; }
+    .ebs-group-chip { flex: none; align-self: flex-start; padding: 2px 8px; border-radius: 10px; background: #eef1f8; font-size: 11px; color: #3a4677; }
+    .ebs-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 16px 8px 0; }
+    .ebs-description { font-size: 13px; line-height: 18px; color: #232c4f; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+    .ebs-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .ebs-account { font-size: 11px; color: #6b7290; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ebs-amount { text-align: right; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .ebs-amount.in { color: #2f6f1a; }
     .ebs-actions { display: flex; justify-content: flex-end; gap: 4px; }
     .ebs-action-wrap { position: relative; display: flex; }
-    .ebs-action { width: 34px; height: 34px; border: 0; border-radius: 7px; background: #f3f5fa; color: #232c4f; font-size: 15px; cursor: pointer; }
+    .ebs-action { width: 34px; height: 34px; padding: 0; border: 0; border-radius: 7px; background: #f3f5fa; color: #232c4f; display: flex; align-items: center; justify-content: center; cursor: pointer; }
     .ebs-action.book { background: #f1f7ec; color: #2f6f1a; }
+    .ebs-action.hide { color: #5d6584; }
     .ebs-action.delete { background: transparent; color: #8c93ab; }
     .ebs-action:disabled { opacity: .35; cursor: default; }
     .ebs-tooltip { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 3; padding: 6px 10px; border-radius: 6px; background: #1b2240; color: #fff; font-size: 12px; white-space: nowrap; box-shadow: 0 4px 12px rgba(20, 26, 48, .25); pointer-events: none; animation: ebs-tip 120ms ease-out; }
     .ebs-tooltip.instant { animation: none; }
     .ebs-empty { padding: 24px 14px; font-size: 13px; color: #5d6584; }
-    .ebs-footer { padding: 12px 14px; border-top: 1px solid #e6e9f1; font-size: 13px; color: #5d6584; }
+    .ebs-footer { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-top: 1px solid #e6e9f1; font-size: 13px; color: #5d6584; }
+    .ebs-footer-filtered { min-height: 16px; font-size: 12px; font-weight: 500; color: #232c4f; opacity: 0; transform: translateY(2px); transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-footer-filtered.on { opacity: 1; transform: none; }
 
     /* Better design motion (the approved list). */
     .ebs-bar.better { opacity: 0; transform: translate(-50%, 16px); transition: opacity 150ms ease-in, transform 150ms ease-in, visibility 0s linear 150ms; }
@@ -1336,6 +1597,7 @@
       .ebs-bar.better .ebs-group-menu { animation: ebs-fade 120ms ease-out; }
       .ebs-bar.better .ebs-group-menu.closing { transform: none; }
       .ebs-row.leaving { transform: none; }
+      .ebs-footer-filtered { transform: none; }
       .ebs-bar.better .ebs-bar-button:active { transform: none; }
     }
   `;
