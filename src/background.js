@@ -149,12 +149,21 @@ async function ebTabs() {
   return chrome.tabs.query({ url: EB_TAB_PATTERN });
 }
 
-async function reloadEbTabs(originHint) {
+// Plain /bh/ always serves the login frameset, also with a valid session.
+// e-Boekhouden itself enters the app through /bh?v2Url=<secure20 page> (its
+// "hybrid route"), so a switch to a stored session goes there.
+const APP_START = 'https://secure20.e-boekhouden.nl/';
+
+function ebUrl(origin, loggedIn) {
+  return loggedIn ? `${origin}/bh?v2Url=${encodeURIComponent(APP_START)}` : `${origin}/bh/`;
+}
+
+async function reloadEbTabs(originHint, loggedIn) {
   const tabs = await ebTabs();
   await Promise.all(tabs.map((tab) => {
     const origin = tab.url ? new URL(tab.url).origin : originHint;
-    const loginOrigin = /^https:\/\/secure\d*\.e-boekhouden\.nl$/.test(origin) && !origin.includes('secure20') ? origin : originHint;
-    return chrome.tabs.update(tab.id, { url: `${loginOrigin}/bh/` });
+    const aspOrigin = /^https:\/\/secure\d*\.e-boekhouden\.nl$/.test(origin) && !origin.includes('secure20') ? origin : originHint;
+    return chrome.tabs.update(tab.id, { url: ebUrl(aspOrigin, loggedIn) });
   }));
 }
 
@@ -168,7 +177,7 @@ async function switchTo(slotId, originHint) {
   // loggedIn is confirmed again by the title of the reloaded page.
   await chrome.storage.session.set({ activeSlotId: slotId, loggedIn: false });
   await clearAllTabStates();
-  await reloadEbTabs(originHint);
+  await reloadEbTabs(originHint, Boolean(cookies?.length));
 }
 
 async function addSession(originHint) {
@@ -176,7 +185,7 @@ async function addSession(originHint) {
   await removeAllCookies();
   await chrome.storage.session.set({ activeSlotId: null, loggedIn: false });
   await clearAllTabStates();
-  await reloadEbTabs(originHint);
+  await reloadEbTabs(originHint, false);
 }
 
 async function renameSlot(slotId, label) {
@@ -268,18 +277,14 @@ async function onMainPage(tabId, frameId, { url, kind }) {
   return response;
 }
 
-async function onInnerPage(tabId, { url, kind, loginUrl }) {
+async function onInnerPage(tabId, { url, kind }) {
   const tab = await getTab(tabId);
 
   if (kind === 'login' || kind === 'expired') {
-    // A login form nested inside the secure20 frame is exactly the layout that
-    // breaks 1Password. Move it to mainframe, where it shares the frameset's origin.
+    // The login form of secure20/v1login lives in this inner frame.
     if (tab.returnUrl) tab.relogin = true;
     await setTab(tabId, tab);
-    if (tab.mainFrameId !== undefined) {
-      await chrome.tabs.sendMessage(tabId, { type: 'main:navigate', url: loginUrl }, { frameId: tab.mainFrameId }).catch(() => {});
-    }
-    return {};
+    return { relogin: Boolean(tab.relogin) };
   }
 
   if (tab.restoreInner) {

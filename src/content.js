@@ -5,6 +5,7 @@
 //   topframe   /bh/top.asp                header strip (logo, menu items)
 //   mainframe  secure20.../v1page|v1login  Angular shell around an <iframe> with the classic ASP page
 //              or /bh/*.asp                classic pages loaded directly
+//   inner      iframe inside mainframe     the classic ASP page, including the login form /bh/inloggen.asp
 //
 // Each frame picks its role below and talks to the service worker. Cookie
 // values never reach this script.
@@ -14,6 +15,7 @@
   window.__ebSessionsLoaded = true;
 
   const SECURE20 = 'secure20.e-boekhouden.nl';
+  const SECURE20_LOGIN = `https://${SECURE20}/v1login`;
   const ASP_ORIGIN = /^https:\/\/secure\d*\.e-boekhouden\.nl$/;
 
   const isTop = window === window.top;
@@ -46,12 +48,12 @@
     return 'app';
   }
 
-  // The classic login page on the same origin as the frameset (secure.e-boekhouden.nl).
-  function aspLoginUrl(search = '') {
+  // The origin of the classic app and its frameset (secure.e-boekhouden.nl).
+  function aspOrigin() {
     const origins = location.ancestorOrigins;
     const topOrigin = origins.length ? origins[origins.length - 1] : location.origin;
-    if (!ASP_ORIGIN.test(topOrigin) || new URL(topOrigin).hostname === SECURE20) return null;
-    return `${topOrigin}/bh/inloggen.asp${search}`;
+    if (!ASP_ORIGIN.test(topOrigin) || new URL(topOrigin).hostname === SECURE20) return 'https://secure.e-boekhouden.nl';
+    return topOrigin;
   }
 
   function role() {
@@ -66,10 +68,9 @@
   }
 
   // -------------------------------------------------------------------------
-  // 1Password: label the login fields for what they are. The real fix for the
-  // closing inline menu is moving the form out of the cross-origin secure20
-  // frame (see main and inner roles); these attributes help 1Password match
-  // and save the right fields.
+  // 1Password: label the login fields for what they are, so password managers
+  // match and save the right fields. This does not fix the inline menu that
+  // closes on e-Boekhouden; see the README for what is known about that.
   // -------------------------------------------------------------------------
 
   function labelLoginFields() {
@@ -102,9 +103,12 @@
 
   function runInner() {
     const kind = classify(location.href);
-    const loginUrl = kind === 'app' ? null : aspLoginUrl();
-    send({ type: 'inner:page', url: location.href, kind, loginUrl }).then((response) => {
-      if (response?.navigate) location.replace(response.navigate);
+    send({ type: 'inner:page', url: location.href, kind }).then((response) => {
+      if (response?.navigate) {
+        location.replace(response.navigate);
+        return;
+      }
+      if (kind === 'login' && response?.relogin) onReady(showReloginDialog);
     });
   }
 
@@ -116,21 +120,11 @@
       lastHref = location.href;
       const kind = classify(location.href);
 
-      // The secure20 login and "session expired" screens wrap the ASP login form
-      // in a cross-origin frame. Load the ASP login form directly instead.
-      if ((kind === 'login' || kind === 'expired') && location.hostname === SECURE20) {
-        const target = aspLoginUrl(kind === 'login' ? location.search : '');
-        if (target) {
-          location.replace(target);
-          return;
-        }
-      }
-      if (kind === 'expired' && location.pathname.toLowerCase() === '/bh/jwterror.asp') {
-        const target = aspLoginUrl();
-        if (target) {
-          location.replace(target);
-          return;
-        }
+      // "Session expired" screens only offer a link to the login page. Go
+      // straight to e-Boekhouden's own login screen, where the dialog shows.
+      if (kind === 'expired') {
+        send({ type: 'main:page', url: location.href, kind }).then(() => location.replace(SECURE20_LOGIN));
+        return;
       }
 
       send({ type: 'main:page', url: location.href, kind }).then((response) => {
@@ -148,7 +142,6 @@
     if (location.hostname === SECURE20) setInterval(handle, 500);
 
     chrome.runtime.onMessage.addListener((message) => {
-      if (message?.type === 'main:navigate' && message.url) location.replace(message.url);
       if (message?.type === 'switcher:toggle') onReady(() => panel.toggle(message.anchorRight, message.view));
       if (message?.type === 'state:changed') {
         panel.update(message.view);
@@ -314,14 +307,18 @@
       .find((item) => /\bsupport\b/i.test(item.textContent));
     if (!identity && !supportItem) return false;
 
-    const host = document.createElement(identity ? 'div' : 'li');
-    host.id = 'ebs-header-item';
-    host.style.cssText = 'display:flex;align-items:center;list-style:none;margin:0 6px;';
+    // <li> cannot host a shadow root, so the button always lives in a <span>.
+    const host = document.createElement('span');
+    host.style.cssText = 'display:flex;align-items:center;margin:0 6px;';
     const button = switcherButton(host, 'header');
+    const slot = document.createElement(identity ? 'div' : 'li');
+    slot.id = 'ebs-header-item';
+    slot.style.cssText = 'display:flex;align-items:center;list-style:none;';
+    slot.append(host);
     if (identity) {
-      identity.insertBefore(host, identity.querySelector('.logout'));
+      identity.insertBefore(slot, identity.querySelector('.logout'));
     } else {
-      supportItem.before(host);
+      supportItem.before(slot);
     }
     send({ type: 'state:get' }).then((view) => setButtonLabel(button, view));
     floating.buttons.add(button);
@@ -431,7 +428,7 @@
     },
 
     action(type, extra = {}) {
-      return send({ type, origin: aspLoginUrl()?.replace(/\/bh\/inloggen\.asp$/, '') ?? 'https://secure.e-boekhouden.nl', ...extra });
+      return send({ type, origin: aspOrigin(), ...extra });
     },
 
     choose(slot) {

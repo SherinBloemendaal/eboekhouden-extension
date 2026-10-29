@@ -138,12 +138,26 @@ test('cancelling the dialog drops the return page', async () => {
   assert.equal(start.navigate, undefined);
 });
 
-test('a login form nested inside the secure20 frame is moved to mainframe', async () => {
+test('the login form inside the secure20 frame gets the re-login dialog', async () => {
   await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1page?url=bh/demo.asp', kind: 'app' }, main);
-  await fake.dispatch({ type: 'inner:page', url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', kind: 'login', loginUrl: 'https://secure.e-boekhouden.nl/bh/inloggen.asp' }, inner);
-  const sent = fake.sent.at(-1);
-  assert.equal(sent.message.type, 'main:navigate');
-  assert.equal(sent.options.frameId, main.frameId);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1login', kind: 'login' }, main);
+  const login = await fake.dispatch({ type: 'inner:page', url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', kind: 'login' }, inner);
+  assert.equal(login.relogin, true);
+  assert.deepEqual(fake.sent, [], 'the form stays where e-Boekhouden put it');
+});
+
+test('switching to a stored session enters the app, not the login frameset', async () => {
+  fake.jar = [cookie('ASPSESSIONIDAAA', 'demo-a')];
+  await fake.dispatch({ type: 'top:title', title: 'Voorbeeld B.V.' }, top);
+  const [slot] = (await chrome.storage.local.get('slots')).slots;
+  await fake.dispatch({ type: 'switcher:switch', slotId: slot.id, origin: 'https://secure.e-boekhouden.nl' }, main);
+  assert.equal(fake.updates.at(-1).url, 'https://secure.e-boekhouden.nl/bh?v2Url=https%3A%2F%2Fsecure20.e-boekhouden.nl%2F');
+});
+
+test('switching to a session without stored cookies opens the login screen', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'x', title: 'Studio Noord', label: 'Studio Noord' }] });
+  await fake.dispatch({ type: 'switcher:switch', slotId: 'x', origin: 'https://secure.e-boekhouden.nl' }, main);
+  assert.equal(fake.updates.at(-1).url, 'https://secure.e-boekhouden.nl/bh/');
 });
 
 test('switching clears pending re-login returns so the new administration starts fresh', async () => {
