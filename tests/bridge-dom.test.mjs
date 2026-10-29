@@ -433,3 +433,26 @@ test('off and on again after the page wrapped submit: one question per submit', 
   assert.deepEqual(p.log.submitted, ['_blank', '_blank']);
   p.close();
 });
+
+test('a capability used by two features stays on until both let go, and observe merges their URL lists', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  const observed = [];
+  p.bridge.on('observed', (response) => observed.push(response.url));
+  p.bridge.enable('observe', { urls: ['/api/factuur/grid'], owner: 'invoices' });
+  p.bridge.enable('observe', { urls: ['/api/folder/'], owner: 'archive' });
+  await p.window.fetch('/api/factuur/grid?page=1');
+  await p.window.fetch('/api/folder/1/filelist');
+  await tick();
+  assert.deepEqual(observed.map((url) => new URL(url).pathname), ['/api/factuur/grid', '/api/folder/1/filelist'], 'both lists apply at once');
+  p.bridge.disable('observe', 'archive');
+  assert.equal(p.bridge.isEnabled('observe'), true, 'still on for invoices');
+  await p.window.fetch('/api/folder/2/filelist');
+  await p.window.fetch('/api/factuur/grid?page=2');
+  await tick();
+  assert.equal(observed.length, 3, 'the archive URL is no longer observed, the invoice one still is');
+  p.bridge.disable('observe', 'invoices');
+  assert.equal(p.bridge.isEnabled('observe'), false);
+  untouched(p);
+  p.close();
+});

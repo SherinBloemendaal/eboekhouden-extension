@@ -276,6 +276,21 @@
     post(on ? { type: 'enable', capability, options } : { type: 'disable', capability });
   }
 
+  const owners = new Map();
+  function applyOwners(capability) {
+    const users = [...(owners.get(capability)?.values() ?? [])];
+    if (!users.length) {
+      if (enabled.has(capability)) setCapability(capability, false);
+      return;
+    }
+    let options = users[users.length - 1];
+    if (capability === 'observe') {
+      const urls = [...new Set(users.flatMap((user) => (Array.isArray(user.urls) ? user.urls : [])))].slice(0, 50);
+      options = { ...options, urls };
+    }
+    setCapability(capability, true, options);
+  }
+
   function publicCapability(capability) {
     if (!CAPABILITIES.has(capability)) throw new Error(`EBS.bridge: unknown capability "${capability}"`);
     if (capability === 'request') throw new Error('EBS.bridge: the request hook belongs to request.js');
@@ -305,13 +320,20 @@
         readyWaiters.push(done);
       });
     },
+    // Several features may use one capability: each enables it under its own
+    // `owner`, and it stays on until the last owner disables it. For observe,
+    // the URL lists of all owners are merged.
     enable(capability, options = {}) {
       publicCapability(capability);
-      setCapability(capability, true, options);
+      const owner = String(options.owner ?? '');
+      if (!owners.has(capability)) owners.set(capability, new Map());
+      owners.get(capability).set(owner, options);
+      applyOwners(capability);
     },
-    disable(capability) {
+    disable(capability, owner = '') {
       publicCapability(capability);
-      setCapability(capability, false);
+      owners.get(capability)?.delete(String(owner ?? ''));
+      applyOwners(capability);
     },
     isEnabled(capability) {
       return enabled.has(capability);
