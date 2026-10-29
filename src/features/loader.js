@@ -36,7 +36,19 @@
 // When /bh/ hands over to /bh?v2Url= (a full navigation), the next document
 // continues the same loader through sessionStorage: same start time, so the
 // 3 and 8 seconds count from the first document, and a mark that is already
-// drawn instead of a second entry.
+// drawn instead of a second entry. The hand-over carries the mark's parts,
+// the administration's name and when the mark's entry started, so the next
+// document shows them from its first frame instead of an empty loader until
+// the logo is read again (a flicker), and a mark caught halfway through its
+// entry draws on from that point instead of jumping to complete.
+//
+// No flash before the loader either: the settings are only known after an
+// async read, and the page may paint before that. So the mode of the last
+// load is kept as a hint in the page's localStorage ('better' or 'classic',
+// nothing else), and a hint covers the page at document_start. The read then
+// confirms it, or, when the setting changed, takes the cover away: at once
+// when it never reached the screen (the read came before the first frame),
+// else with a fade.
 //
 // The logo is e-Boekhouden's own (/images/Logo-EB_blauwopwit.svg), fetched
 // with one bulk GET of EBS.request per page and split into its parts (disc,
@@ -61,9 +73,13 @@
   const HOST_TAG = 'ebs-loader';
   const LOGIN_HOST_ID = 'ebs-login-host';
   const HANDOFF_KEY = 'ebs-loader';
+  const HINT_KEY = 'ebs-loader-mode';
+  const MODES = ['better', 'classic'];
   const SLOW_MS = 3000;
   const CAP_MS = 8000;
   const CLASSIC_CAP_MS = 3000;
+  // The mark's entry (EBS.mark): complete and breathing after this.
+  const ENTRY_MS = 1250;
   // The mark waits this long for e-Boekhouden's logo before it uses its own.
   const LOGO_WAIT_MS = 300;
   // A login form reported from inside the secure20 shell while the 1Password
@@ -658,6 +674,7 @@
     .ebs-who.empty { visibility: hidden; }
     .ebs-avatar { width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%; border: 1px solid rgba(255,255,255,0.16); background: rgba(142,160,208,0.2); color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; display: flex; align-items: center; justify-content: center; overflow: hidden; }
     .ebs-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .ebs-avatar .ebs-avatar-in { animation: ebsFadeIn 150ms ease-out both; }
     .ebs-name { font-size: 15px; font-weight: 500; color: #ffffff; max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ebs-slow-slot { height: 64px; margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
     .ebs-slow { display: flex; flex-direction: column; align-items: center; gap: 4px; opacity: 0; transform: translateY(4px); }
@@ -680,6 +697,8 @@
 
     /* A loader that continues from the previous document: the mark is complete and breathes on (EBS.mark 'settled'). */
     .is-settled .ebs-who, .is-settled .ebs-brand { animation: none; }
+    /* A name that the read corrected after the hand-over fades in. */
+    .ebs-loader .ebs-who.ebs-who-in { animation: ebsFadeIn 150ms ease-out both; }
 
     /* Slow: after 3 s. */
     .is-slow .ebs-slow { animation: ebsRiseSmall 240ms cubic-bezier(0.23,1,0.32,1) 120ms both; }
@@ -720,7 +739,37 @@
     }
   }
 
-  // The hand-over from /bh/ to /bh?v2Url= (see the top comment).
+  // Mark parts as markFromSvg makes them, checked again because they come
+  // back from the page's own storage: a copy with only path data, matrices,
+  // plain colours and numbers, or null.
+  const PATH_DATA = /^[MmLlHhVvCcSsQqTtAaZz0-9eE+\-.,\s]+$/;
+  const MATRIX = /^matrix\([-+0-9.eE ]+\)$/;
+  const COLOUR = /^#[0-9a-f]{6}$/;
+  function cleanPart(part) {
+    if (!part || typeof part !== 'object') return null;
+    const { d, transform, fill, fillRule } = part;
+    if (typeof d !== 'string' || d.length > 100_000 || !PATH_DATA.test(d)) return null;
+    if (typeof transform !== 'string' || transform.length > 200 || !MATRIX.test(transform)) return null;
+    if (typeof fill !== 'string' || !COLOUR.test(fill) || !['nonzero', 'evenodd'].includes(fillRule)) return null;
+    return { d, transform, fill, fillRule };
+  }
+
+  function cleanMark(value) {
+    if (!value || typeof value !== 'object' || !Array.isArray(value.e) || !value.e.length || value.e.length > MAX_PARTS) return null;
+    const disc = cleanPart(value.disc);
+    const crescent = value.crescent === null ? null : cleanPart(value.crescent);
+    const e = value.e.map(cleanPart);
+    const box = value.eBox;
+    const numbers = ['x', 'y', 'w', 'h'].map((key) => Number(box?.[key]));
+    if (!disc || (value.crescent !== null && !crescent) || e.includes(null) || !numbers.every(Number.isFinite)) return null;
+    const [x, y, w, h] = numbers;
+    return { disc, crescent, e, eBox: { x, y, w, h } };
+  }
+
+  // The hand-over from /bh/ to /bh?v2Url= (see the top comment):
+  //   { at, mode, mark?: parts | null, name?: string | null, avatar?: boolean, shown?: number }
+  // mark undefined: not known yet in the first document (read it again).
+  // shown: when the mark's entry started (Date.now()), between at and now.
   function takeHandoff() {
     try {
       const raw = window.sessionStorage.getItem(HANDOFF_KEY);
@@ -728,17 +777,42 @@
       window.sessionStorage.removeItem(HANDOFF_KEY);
       const value = JSON.parse(raw);
       const age = Date.now() - Number(value?.at);
-      if (!(age >= 0 && age < CAP_MS) || !['better', 'classic'].includes(value?.mode)) return null;
-      return { at: Number(value.at), mode: value.mode };
+      if (!(age >= 0 && age < CAP_MS) || !MODES.includes(value?.mode)) return null;
+      const handoff = { at: Number(value.at), mode: value.mode };
+      if (value.mode === 'better' && 'mark' in value) {
+        handoff.mark = value.mark === null ? null : cleanMark(value.mark) ?? undefined;
+        handoff.name = typeof value.name === 'string' && value.name.trim() ? value.name.trim().slice(0, 200) : null;
+        handoff.avatar = value.avatar === true;
+        const shown = Number(value.shown);
+        if (handoff.mark !== undefined && Number.isFinite(shown) && shown >= handoff.at - ENTRY_MS && shown <= Date.now()) handoff.shown = shown;
+      }
+      return handoff;
     } catch {
       return null;
     }
   }
 
-  function giveHandoff(at, mode) {
+  function giveHandoff(value) {
     try {
-      window.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify({ at, mode }));
+      window.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(value));
     } catch { /* storage blocked: the next page starts its own loader */ }
+  }
+
+  // The mode of the last load, to cover the next one from its first frame.
+  function readHint() {
+    try {
+      const value = window.localStorage.getItem(HINT_KEY);
+      return MODES.includes(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeHint(mode) {
+    try {
+      if (MODES.includes(mode)) window.localStorage.setItem(HINT_KEY, mode);
+      else window.localStorage.removeItem(HINT_KEY);
+    } catch { /* storage blocked: the next load waits for the settings */ }
   }
 
   function runTop() {
@@ -762,6 +836,10 @@
       timers: [],
       mark: undefined,
       identity: null,
+      shownAt: undefined, // when the mark's entry started, in this or the previous document
+      onScreen: false, // a frame was painted since the cover went on
+      loggedIn: false, // the view state, for the hint
+      betterDesign: false,
     };
 
     // ---- messages from the frames -------------------------------------------
@@ -838,6 +916,16 @@
       parent.append(host);
       state.host = host;
       state.box = box;
+      // rAF callbacks run before a frame paints: until the first one, the
+      // cover has not been on the screen (a hidden tab paints nothing).
+      state.onScreen = false;
+      try {
+        window.requestAnimationFrame(() => {
+          if (state.host === host) state.onScreen = true;
+        });
+      } catch {
+        state.onScreen = true;
+      }
 
       const cap = mode === 'classic' ? CLASSIC_CAP_MS : CAP_MS;
       state.timers.push(window.setTimeout(() => leave('app'), Math.max(0, cap - elapsed())));
@@ -851,27 +939,31 @@
     function fill() {
       if (!state.box || state.mode !== 'better' || state.content || state.mark === undefined || !state.identity || state.leaving) return;
       const { name, avatar } = state.identity;
-      const settled = continuing || elapsed() >= SLOW_MS;
+      // A mark the previous document already showed goes on from where it
+      // was (its entry seeked to the same point); without the animation API
+      // it shows complete. One that only fills after 3 s shows complete too.
+      const ran = state.shownAt === undefined ? null : Math.max(0, Date.now() - state.shownAt);
+      const seek = ran !== null && typeof state.box.getAnimations === 'function';
+      const settled = !seek && (ran !== null || elapsed() >= SLOW_MS);
+      if (state.shownAt === undefined) state.shownAt = Date.now() - (settled ? ENTRY_MS : 0);
       if (settled) state.box.classList.add('is-settled');
       if (name) state.box.setAttribute('aria-label', `Administratie ${name} wordt geopend`);
 
       const content = el('div', 'ebs-content');
       // The board's mark at full size, with e-Boekhouden's own parts when
       // the logo was read (EBS.mark lifts the mask of its e once it is drawn).
-      const { node: wrap } = EBS.mark.create({ size: 220, tone: 'dark', motion: settled ? 'settled' : 'entry', logo: state.mark });
+      const { node: wrap } = EBS.mark.create({ size: 220, tone: 'dark', motion: settled ? 'settled' : 'entry', logo: state.mark, elapsed: seek ? ran : 0 });
 
       const who = el('div', `ebs-who${name ? '' : ' empty'}`);
       const avatarBox = el('span', 'ebs-avatar');
       avatarBox.setAttribute('aria-hidden', 'true');
-      if (avatar) {
-        const img = el('img');
-        img.alt = '';
-        img.src = avatar;
-        avatarBox.append(img);
-      } else {
-        avatarBox.textContent = EBS.initials(name);
-      }
-      who.append(avatarBox, el('span', 'ebs-name', name ?? ''));
+      // A continued loader whose picture is still being read keeps the
+      // circle empty until it is there (identify() below).
+      if (avatar) showAvatar(avatarBox, avatar, false);
+      else if (!state.identity.avatarPending) avatarBox.textContent = EBS.initials(name);
+      const nameNode = el('span', 'ebs-name', name ?? '');
+      who.append(avatarBox, nameNode);
+      state.who = { row: who, avatarBox, nameNode };
 
       const slot = el('div', 'ebs-slow-slot');
       const slowBox = el('div', 'ebs-slow');
@@ -885,10 +977,51 @@
 
       content.append(wrap, who, slot);
       state.box.append(content, el('span', 'ebs-brand', 'EB Sessions'));
+      if (seek) {
+        try {
+          for (const animation of state.box.getAnimations({ subtree: true })) animation.currentTime = ran;
+        } catch { /* it plays from the start */ }
+      }
       state.content = content;
       state.slowButton = button;
       state.slowBox = slowBox;
       if (elapsed() >= SLOW_MS) slow(true);
+    }
+
+    function showAvatar(box, src, fade) {
+      const img = el('img', fade ? 'ebs-avatar-in' : undefined);
+      img.alt = '';
+      img.src = src;
+      box.replaceChildren(img);
+    }
+
+    // The identity as read from the extension's storage. A loader that is
+    // already filled from the hand-over only takes what differs, in place.
+    function identify(identity) {
+      const handed = state.identity;
+      state.identity = identity;
+      if (!state.who) {
+        fill();
+        return;
+      }
+      const { row, avatarBox, nameNode } = state.who;
+      if (identity.name !== handed?.name) {
+        nameNode.textContent = identity.name ?? '';
+        row.classList.toggle('empty', !identity.name);
+        row.classList.add('ebs-who-in');
+        if (identity.name) state.box.setAttribute('aria-label', `Administratie ${identity.name} wordt geopend`);
+      }
+      if (identity.avatar) showAvatar(avatarBox, identity.avatar, true);
+      else if (handed?.avatarPending || identity.name !== handed?.name) avatarBox.replaceChildren(el('span', 'ebs-avatar-in', EBS.initials(identity.name)));
+    }
+
+    // A cover that never reached the screen goes without a fade: there is
+    // nothing to fade from, and the right one can take its place.
+    function unmount() {
+      for (const timer of state.timers) window.clearTimeout(timer);
+      state.timers = [];
+      state.host.remove();
+      Object.assign(state, { host: null, box: null, content: null, who: null, mode: null, onScreen: false, slowShown: false });
     }
 
     function slow(immediate = false) {
@@ -948,7 +1081,15 @@
     function onPageHide() {
       // Still covering the page while the tab moves on (the app entry after
       // "U bent reeds ingelogd"): the next /bh/ document carries on.
-      if (state.host && !state.leaving && !state.gone) giveHandoff(startedAt, state.mode);
+      if (!state.host || state.leaving || state.gone) return;
+      const value = { at: startedAt, mode: state.mode };
+      if (state.mode === 'better' && state.content) {
+        value.mark = state.mark ?? null;
+        value.name = state.identity?.name ?? null;
+        value.avatar = Boolean(state.identity?.avatar || state.identity?.avatarPending);
+        value.shown = state.shownAt;
+      }
+      giveHandoff(value);
     }
 
     // Back from the back/forward cache: this document never handed over (its
@@ -961,15 +1102,43 @@
 
     // ---- deciding -------------------------------------------------------------
 
-    // Continuing a loader: cover at once, before the settings are read.
-    if (handoff) mount(handoff.mode);
+    // Cover at once, before the settings are read: a continued loader, or
+    // the mode of the last load. A continued Better design loader that
+    // carries its mark is filled in the same frame.
+    if (handoff) {
+      mount(handoff.mode);
+      if (handoff.mark !== undefined) {
+        state.mark = handoff.mark;
+        state.identity = { name: handoff.name, avatar: null, avatarPending: handoff.avatar };
+        state.shownAt = handoff.shown;
+        fill();
+      }
+    } else {
+      const hint = readHint();
+      if (hint) mount(hint);
+    }
 
     EBS.watchSettings((settings, previous) => {
       state.onePassword = Boolean(settings.onePassword);
       if (!settingsKnown || !previous) return;
+      state.betterDesign = Boolean(settings.betterDesign);
+      // The next load covers itself the new way (classic only while the
+      // view state, as read on this load, says a session is logged in).
+      writeHint(settings.betterDesign ? 'better' : state.loggedIn ? 'classic' : null);
       // Better design switched off while the loader shows: show the page.
       if (state.mode === 'better' && !settings.betterDesign) leave('app');
     });
+
+    // A session that logs in or out while this page is open: in classic
+    // design the next load covers itself, or not, as the view state says
+    // then (a stale classic hint would cover a login form).
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local' || !changes.view || !settingsKnown) return;
+        state.loggedIn = Boolean(changes.view.newValue?.loggedIn);
+        if (!state.betterDesign) writeHint(state.loggedIn ? 'classic' : null);
+      });
+    } catch { /* no extension context: the read below fails as well */ }
 
     const read = (() => {
       try {
@@ -982,23 +1151,26 @@
       settingsKnown = true;
       const all = EBS.settingsWithDefaults(settings);
       state.onePassword = Boolean(all.onePassword);
+      state.betterDesign = Boolean(all.betterDesign);
       let mode = null;
       if (all.betterDesign) mode = 'better';
       else if (view?.loggedIn || handoff?.mode === 'classic') mode = 'classic';
+      state.loggedIn = Boolean(view?.loggedIn);
+
+      writeHint(mode);
+
+      if (state.host && state.mode !== mode && !state.leaving && !state.gone) {
+        // The setting changed since the last load. A cover that was on the
+        // screen fades instead of turning into another one; one that was
+        // not goes, and the right one (if any) takes its place unseen.
+        if (state.onScreen) leave('app');
+        else unmount();
+      }
 
       for (const report of early.splice(0)) handle(report);
-      // A report ended a continued loader already: let its exit run.
+      // A report ended a cover that was there before the read: let its exit run.
       if (state.leaving || state.gone) return;
 
-      if (state.host && state.mode !== mode) {
-        // The setting changed between two documents.
-        state.host.remove();
-        state.host = null;
-        state.box = null;
-        state.mode = null;
-        for (const timer of state.timers) window.clearTimeout(timer);
-        state.timers = [];
-      }
       if (!mode || state.outcome) {
         finish();
         return;
@@ -1006,14 +1178,17 @@
       mount(mode);
       if (mode !== 'better') return;
 
-      const marked = fetchMark().then((mark) => {
+      // A continued loader that carries the mark needs no second request.
+      const marked = state.mark !== undefined ? Promise.resolve() : fetchMark().then((mark) => {
         if (state.mark === undefined) state.mark = mark;
         fill();
       });
-      state.timers.push(window.setTimeout(() => {
-        if (state.mark === undefined) state.mark = null;
-        fill();
-      }, LOGO_WAIT_MS));
+      if (state.mark === undefined) {
+        state.timers.push(window.setTimeout(() => {
+          if (state.mark === undefined) state.mark = null;
+          fill();
+        }, LOGO_WAIT_MS));
+      }
 
       const slot = Array.isArray(slots) ? slots.find((entry) => entry?.id === view?.activeSlotId) : null;
       let avatar = null;
@@ -1024,10 +1199,14 @@
           if (typeof value === 'string' && /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value)) avatar = value;
         } catch { /* no picture: initials */ }
       }
-      state.identity = { name: typeof slot?.name === 'string' && slot.name.trim() ? slot.name.trim() : null, avatar };
-      fill();
+      identify({ name: typeof slot?.name === 'string' && slot.name.trim() ? slot.name.trim() : null, avatar });
       await marked;
-    }, () => finish());
+    }, () => {
+      // No extension context: a cover on the screen fades, one that never
+      // got there goes; nothing else happens.
+      if (state.host && state.onScreen) leave('app');
+      else if (!state.leaving) finish();
+    });
   }
 
   // ===========================================================================
