@@ -17,7 +17,7 @@ test('the login host gets one header, also when the swap and DOMContentLoaded ra
   const p = page('<html><head><title>Inloggen | e-Boekhouden.nl</title></head><body id="ebs-login-host"><iframe id="mainframe" name="mainframe"></iframe></body></html>', {
     url: 'https://secure.e-boekhouden.nl/bh/', answerDelay: 30,
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   p.document.dispatchEvent(new p.window.CustomEvent('ebs-login-host'));
   await p.settle();
   await new Promise((resolve) => setTimeout(resolve, 80));
@@ -28,7 +28,7 @@ test('the login header steps aside while the login iframe shows the app, so ther
   const p = page('<html><head><title>Inloggen | e-Boekhouden.nl</title></head><body id="ebs-login-host"><iframe id="mainframe" name="mainframe"></iframe></body></html>', {
     url: 'https://secure.e-boekhouden.nl/bh/',
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   p.document.dispatchEvent(new p.window.CustomEvent('ebs-login-host'));
   await p.settle();
   const header = p.document.getElementById('ebs-login-header');
@@ -47,7 +47,7 @@ test('with the re-login dialog on, the login page leaves the form to it', async 
       store: { settings: { betterDesign }, slots, view: { ready: ['a'] } },
       answer: (message) => (message.type === 'login:context' ? { pendingLoginFor: null, relogin: true } : {}),
     });
-    p.load('shared.js', 'login-page.js');
+    p.load('shared.js', 'icons.js', 'login-page.js');
     await p.settle();
     assert.equal(p.document.getElementById('ebs-better'), null, `no Better design layout (betterDesign ${betterDesign})`);
     assert.equal(p.document.getElementById('ebs-sessions'), null, 'no sessions block inside the dialog');
@@ -60,7 +60,7 @@ test('without the dialog the classic page lists the sessions above the form', as
     store: { settings: {}, slots, view: { ready: ['a'] } },
     answer: (message) => (message.type === 'login:context' ? { pendingLoginFor: null, relogin: false } : {}),
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   await p.settle();
   const block = p.document.getElementById('ebs-sessions');
   assert.ok(block);
@@ -72,7 +72,7 @@ test('only the username is sent, also when the form is sent from script', async 
   const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
     url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/', store: { settings: {} },
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   await p.settle();
   p.document.getElementById('txtEmail').value = 'demo@example.org';
   p.document.getElementById('txtWachtwoord').value = 'not-read';
@@ -114,24 +114,148 @@ test('login fields are labelled on the login page only, and never moved', async 
   assert.equal(fresh.document.getElementById('n').getAttribute('autocomplete'), null, 'a new password is not a login password');
 });
 
-test('with many sessions the search filters the list and keeps its field', async () => {
-  const many = Array.from({ length: 7 }, (_, i) => ({ id: `s${i}`, name: `Studio ${i}`, number: String(i + 1) }));
+// The Better design login page in its iframe, with these sessions.
+async function betterPage({ slots: list, view = {}, pendingLoginFor = null, answer } = {}) {
   const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
     url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/',
-    store: { settings: { betterDesign: true }, slots: many, view: { ready: many.map((slot) => slot.id) } },
-    answer: (message) => (message.type === 'login:context' ? { pendingLoginFor: null, relogin: false } : {}),
+    store: { settings: { betterDesign: true }, slots: list, view },
+    answer: answer ?? ((message) => (message.type === 'login:context' ? { pendingLoginFor, relogin: false } : {})),
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   await p.settle();
-  const search = p.document.querySelector('.ebs-search');
-  assert.equal(p.document.querySelectorAll('.ebs-list-row').length, 7);
+  return p;
+}
+
+test('with many sessions the search filters the list and keeps its field', async () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ id: `s${i}`, name: `Studio ${i}`, number: String(i + 1) }));
+  const p = await betterPage({ slots: many, view: { ready: many.map((slot) => slot.id) } });
+  const search = p.document.querySelector('.ebs-search input');
+  assert.equal(p.document.querySelectorAll('.ebs-list .ebs-row').length, 7);
   search.focus();
   search.value = 'Studio 3';
   search.dispatchEvent(new p.window.Event('input'));
   await p.settle();
-  assert.equal(p.document.querySelectorAll('.ebs-list-row').length, 1, 'only the match is listed');
-  assert.equal(p.document.querySelector('.ebs-search'), search, 'the same field, so the caret stays');
+  assert.equal(p.document.querySelectorAll('.ebs-list .ebs-row').length, 1, 'only the match is listed');
+  assert.equal(p.document.querySelector('.ebs-more-text').textContent, '1 van 7 getoond');
+  assert.equal(p.document.querySelector('.ebs-search input'), search, 'the same field, so the caret stays');
   assert.equal(p.document.activeElement, search);
+  search.value = 'Nergens';
+  search.dispatchEvent(new p.window.Event('input'));
+  await p.settle();
+  assert.equal(p.document.querySelector('.ebs-no-match').textContent, 'Geen administratie gevonden voor "Nergens".');
+});
+
+for (const count of [1, 2, 3, 100]) {
+  test(`${count} ${count === 1 ? 'session is' : 'sessions are'} always the list with search, never cards`, async () => {
+    const list = Array.from({ length: count }, (_, i) => ({ id: `s${i}`, name: `Administratie ${i}`, number: String(1000001 + i) }));
+    const p = await betterPage({ slots: list, view: { ready: list.map((slot) => slot.id) } });
+    const { document } = p;
+    assert.equal(document.querySelector('.ebs-card, .ebs-cards'), null, 'no card variant');
+    assert.ok(document.querySelector('.ebs-left > .ebs-search input'), 'the search box is there');
+    assert.equal(document.querySelectorAll('.ebs-list .ebs-row').length, count);
+    assert.ok(document.querySelector('.ebs-left > .ebs-fade'), 'the fade under the list');
+    assert.equal(document.querySelector('.ebs-more-text').textContent, `${count} ${count === 1 ? 'administratie' : 'administraties'}`);
+    assert.equal(document.querySelector('.ebs-sub').textContent, count === 1 ? '1 administratie is nog ingelogd.' : `${count} administraties zijn nog ingelogd.`);
+    const first = document.querySelector('.ebs-list .ebs-row');
+    assert.equal(first.querySelector('.ebs-row-action').textContent, 'Openen');
+    assert.ok(first.querySelector('.ebs-row-action svg.lucide-arrow-right'), 'a Lucide arrow, not a glyph');
+  });
+}
+
+test('expired and logged-out sessions are rows with a pill, and a click puts their name above the form', async () => {
+  const list = [
+    { id: 'a', name: 'Voorbeeld B.V.', number: '1000001' },
+    { id: 'b', name: 'Studio Noord', number: '1000002' },
+    { id: 'c', name: 'Demo Holding B.V.', number: '1000003', expired: true },
+    { id: 'd', name: 'Atelier Zuid', number: '1000004' },
+  ];
+  let pending = null;
+  const p = await betterPage({
+    slots: list, view: { ready: ['a', 'b'] },
+    answer: (message) => {
+      if (message.type === 'login:for') pending = message.slotId;
+      return message.type === 'login:context' ? { pendingLoginFor: pending, relogin: false } : {};
+    },
+  });
+  const { document } = p;
+  assert.equal(document.querySelector('.ebs-sub').textContent, '2 van 4 administraties zijn nog ingelogd. Klik om direct verder te gaan.');
+  const rows = [...document.querySelectorAll('.ebs-list .ebs-row')];
+  assert.deepEqual(rows.map((row) => row.querySelector('.ebs-pill')?.textContent ?? ''), ['', '', 'Verlopen', 'Niet ingelogd']);
+  assert.deepEqual(rows.map((row) => row.querySelector('.ebs-row-action').textContent), ['Openen', 'Openen', 'Inloggen', 'Inloggen']);
+  assert.equal(document.querySelector('.ebs-others'), null, 'no separate block for the others');
+  assert.equal(document.querySelector('.ebs-for').textContent, 'Kies links een administratie of log direct in.');
+  rows[2].click();
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-for').textContent, 'voor Demo Holding B.V. · 1000003');
+  assert.ok(document.querySelector('.ebs-for').classList.contains('picked'));
+  const picked = document.querySelector('.ebs-row[data-slot="c"]');
+  assert.ok(picked.classList.contains('picked'));
+  assert.equal(picked.getAttribute('aria-pressed'), 'true');
+  assert.equal(document.activeElement, document.getElementById('txtEmail'), 'on to the username field');
+});
+
+test('opening a session waits visibly until the answer is there', async () => {
+  const list = [{ id: 'a', name: 'Voorbeeld B.V.', number: '1' }, { id: 'b', name: 'Studio Noord', number: '2' }];
+  let release;
+  const p = await betterPage({
+    slots: list, view: { ready: ['a', 'b'] },
+    answer: (message) => {
+      if (message.type === 'switcher:switch') return new Promise((resolve) => { release = () => resolve({ error: 'nee' }); });
+      return message.type === 'login:context' ? { pendingLoginFor: null, relogin: false } : {};
+    },
+  });
+  const { document } = p;
+  document.querySelector('.ebs-row[data-slot="b"]').click();
+  await p.settle(1);
+  const busy = document.querySelector('.ebs-row[data-slot="b"]');
+  assert.equal(busy.querySelector('.ebs-row-action').textContent, 'Bezig…');
+  assert.equal(busy.disabled, true);
+  assert.equal(busy.getAttribute('aria-busy'), 'true');
+  assert.ok(busy.classList.contains('opening'));
+  assert.equal(document.querySelector('.ebs-sub').textContent, 'Studio Noord wordt geopend…');
+  release();
+  await p.settle();
+  const back = document.querySelector('.ebs-row[data-slot="b"]');
+  assert.equal(back.disabled, false);
+  assert.equal(back.querySelector('.ebs-row-action').textContent, 'Openen');
+  assert.equal(document.querySelector('.ebs-sub').textContent, 'Openen lukte niet. Probeer het opnieuw.');
+});
+
+test('a long list says how far you scrolled, fades its last rows and can show everything', async () => {
+  const list = Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, name: `Administratie ${i}`, number: String(i) }));
+  const p = await betterPage({ slots: list, view: { ready: list.map((slot) => slot.id) } });
+  const { document, window } = p;
+  const box = document.querySelector('.ebs-list');
+  // jsdom does no layout: rows of 60 px in a list of 400 px.
+  Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => (box.classList.contains('all') ? 6000 : 400) });
+  Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 6000 });
+  [...box.querySelectorAll('.ebs-row')].forEach((row, i) => Object.defineProperty(row, 'offsetTop', { configurable: true, get: () => i * 60 }));
+  box.dispatchEvent(new window.Event('scroll'));
+  await p.settle(2);
+  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 7 van 100 getoond');
+  assert.ok(document.querySelector('.ebs-more-text svg.lucide-arrow-down'));
+  assert.ok(document.querySelector('.ebs-fade').classList.contains('on'));
+  assert.ok(box.classList.contains('scrolls'), 'room for the thin scrollbar');
+  box.scrollTop = 600;
+  box.dispatchEvent(new window.Event('scroll'));
+  await p.settle(2);
+  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 17 van 100 getoond');
+  const all = [...document.querySelectorAll('.ebs-more .ebs-link')].find((button) => button.textContent === 'Alles tonen');
+  all.click();
+  await p.settle(1);
+  assert.ok(box.classList.contains('all'));
+  assert.equal(document.querySelector('.ebs-more-text').textContent, '100 administraties');
+  assert.ok(!document.querySelector('.ebs-fade').classList.contains('on'));
+});
+
+test('without any session the left panel shows the empty state, without a search', async () => {
+  const p = await betterPage({ slots: [] });
+  const { document } = p;
+  assert.equal(document.querySelector('.ebs-sub').textContent, 'Er staat nog niets open.');
+  assert.ok(document.querySelector('.ebs-empty .ebs-empty-icon svg.lucide-lock'));
+  assert.equal(document.querySelector('.ebs-empty strong').textContent, 'Geen actieve sessies');
+  assert.equal(document.querySelector('.ebs-left .ebs-search'), null);
+  assert.equal(document.querySelector('.ebs-left .ebs-list'), null);
 });
 
 test('the login swap waits for the whole frameset and keeps e-Boekhouden\'s other frames alive under their names', async () => {
@@ -167,7 +291,7 @@ test('the Inloggen button waits visibly after a submit, and only after the form 
   const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
     url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/', store: { settings: {} },
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   await p.settle();
   const form = p.document.getElementById('frm');
   const button = p.document.getElementById('submit1');
@@ -186,7 +310,7 @@ test('a submit that e-Boekhouden cancels (empty field) leaves the button as it i
   const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
     url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/', store: { settings: {} },
   });
-  p.load('shared.js', 'login-page.js');
+  p.load('shared.js', 'icons.js', 'login-page.js');
   await p.settle();
   const form = p.document.getElementById('frm');
   form.addEventListener('submit', (event) => event.preventDefault(), { capture: true });

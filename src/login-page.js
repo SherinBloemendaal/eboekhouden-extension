@@ -44,6 +44,26 @@
     return node;
   }
 
+  // EBS.icon (Lucide), plus the two icons of the login boards that icons.js
+  // does not have yet. Shared change requested: add 'arrow-right' and
+  // 'arrow-down' (lucide-static 1.63.0) to src/icons.js; EXTRA_ICONS then
+  // goes. They take the frame and attributes of an EBS.icon.
+  const EXTRA_ICONS = {
+    'arrow-right': ['M5 12h14', 'm12 5 7 7-7 7'],
+    'arrow-down': ['M12 5v14', 'm19 12-7 7-7-7'],
+  };
+  function icon(name, options = {}) {
+    if (EBS.icon.has(name) || !EXTRA_ICONS[name]) return EBS.icon(name, options);
+    const svg = EBS.icon('minus', options);
+    svg.replaceChildren(...EXTRA_ICONS[name].map((d) => {
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      return path;
+    }));
+    svg.setAttribute('class', svg.getAttribute('class').replace('lucide-minus', `lucide-${name}`));
+    return svg;
+  }
+
   async function loadState() {
     const all = await chrome.storage.local.get(null);
     const context = await send({ type: 'login:context' });
@@ -191,7 +211,8 @@
   async function openSession(slot, onConfirm) {
     if (switching) return;
     switching = true;
-    const origin = location.ancestorOrigins.length ? location.ancestorOrigins[location.ancestorOrigins.length - 1] : location.origin;
+    const ancestors = location.ancestorOrigins ?? [];
+    const origin = ancestors.length ? ancestors[ancestors.length - 1] : location.origin;
     const response = await send({ type: 'switcher:switch', slotId: slot.id, origin, confirmed: onConfirm?.confirmed });
     switching = false;
     if (response?.needsConfirm) onConfirm?.ask(response.tabCount);
@@ -257,7 +278,7 @@
       #ebs-sessions .text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
       #ebs-sessions .name { font-size: 14px; font-weight: 700; }
       #ebs-sessions .number { font-size: 11px; color: #6b6b6b; }
-      #ebs-sessions .open { font-size: 13px; font-weight: 700; color: #3f7f22; }
+      #ebs-sessions .open { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: #3f7f22; }
       #ebs-sessions .none { padding: 10px 12px; font-size: 13px; color: #6b6b6b; border-top: 1px solid #ececec; }
       #ebs-sessions .others { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px 12px; border-top: 1px solid #ececec; }
       #ebs-sessions .others-label { font-size: 11px; color: #6b6b6b; margin-right: 2px; }
@@ -310,7 +331,9 @@
           const text = el('span', 'text');
           text.append(el('span', 'name', slot.name));
           if (slot.number) text.append(el('span', 'number', slot.number));
-          row.append(text, el('span', 'open', 'Openen →'));
+          const open = el('span', 'open', 'Openen');
+          open.append(icon('arrow-right', { size: 14 }));
+          row.append(text, open);
           row.addEventListener('click', () => {
             opening = slot;
             failed = false;
@@ -348,6 +371,13 @@
 
   // -------------------------------------------------------------------------
   // Better design: two joined panels, sessions on the left, the form on the right.
+  //
+  // The left panel is always one searchable list, for 1 session or 100 (the
+  // boards LoginRedesign and LoginRedesign-gh7e): every administration in the
+  // order of the switcher, with its status. A row that is still logged in
+  // opens straight away; an expired or logged-out one puts its name above the
+  // form ("voor ..."), so you know which login 1Password should fill. With no
+  // administration at all the panel shows the empty state of LoginRedesign-pxam.
   // -------------------------------------------------------------------------
 
   function betterLayout(form, user) {
@@ -401,92 +431,183 @@
     user.focus();
 
     let opening = null;
+    // The row whose switch is on its way: "Bezig…", disabled, aria-busy.
+    let busyId = null;
     let confirmFor = null;
     let failed = false;
     let query = '';
     let showAll = false;
     let lastFor = null;
-    const LIST_AFTER = 4;
-    const LIST_PAGE = 9;
+    let current = null;
+    let shown = [];
 
-    // The heading and the search field stay in place across redraws, so
-    // typing in the search keeps its caret and its input method.
+    // Everything on the left is built once and stays in place across
+    // redraws: typing in the search keeps its caret and input method, and
+    // the list keeps its scroll position.
     const top = el('div', 'ebs-left-head');
     const heading = el('h2', '', 'Actieve sessies');
     heading.id = 'ebs-active-title';
     const sub = el('span', 'ebs-sub');
     top.append(heading, sub);
-    const search = el('input', 'ebs-search');
-    search.type = 'search';
-    search.placeholder = 'Zoek op naam of nummer, bijvoorbeeld "Studio"';
-    search.setAttribute('aria-label', 'Zoek in actieve sessies');
-    const content = el('div', 'ebs-left-content');
-    left.append(top, search, content);
-    let current = null;
-    // The listener is a plain function, not a method: it reaches the view
-    // through this variable.
-    let view = null;
-    search.addEventListener('input', () => {
-      query = search.value;
+    const search = el('label', 'ebs-search');
+    const searchInput = el('input');
+    searchInput.type = 'search';
+    searchInput.placeholder = 'Zoek op naam of nummer';
+    searchInput.setAttribute('aria-label', 'Zoek een administratie');
+    search.append(icon('search'), searchInput);
+    const list = el('div', 'ebs-list');
+    // The fade over the last rows while there is more to scroll to; it
+    // takes no room of its own (see .ebs-fade).
+    const fade = el('div', 'ebs-fade');
+    fade.setAttribute('aria-hidden', 'true');
+    fade.append(el('span'));
+    const more = el('div', 'ebs-more');
+    const moreText = el('span', 'ebs-more-text');
+    const allButton = el('button', 'ebs-link', 'Alles tonen');
+    allButton.type = 'button';
+    allButton.addEventListener('click', () => {
+      showAll = true;
+      view.render(current);
+      searchInput.focus();
+    });
+    more.append(moreText);
+    const empty = el('div', 'ebs-empty');
+    const lock = el('span', 'ebs-empty-icon');
+    lock.setAttribute('aria-hidden', 'true');
+    lock.append(icon('lock', { size: 28 }));
+    empty.append(lock, el('strong', '', 'Geen actieve sessies'), el('span', '', 'Log rechts in bij e-Boekhouden. Daarna verschijnt je administratie hier en kun je er later direct naar terug.'));
+
+    searchInput.addEventListener('input', () => {
+      query = searchInput.value;
       if (current) view.render(current);
     });
+    let scrollFrame = 0;
+    list.addEventListener('scroll', () => {
+      if (scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0;
+        updateMore();
+      });
+    }, { passive: true });
 
-    view = {
+    function isReady(status) {
+      return status === 'ready' || status === 'active';
+    }
+
+    function subText(state) {
+      if (opening) return `${opening.name} wordt geopend…`;
+      if (failed) return 'Openen lukte niet. Probeer het opnieuw.';
+      const total = state.slots.length;
+      const ready = state.slots.filter((slot) => isReady(EBS.statusOf(slot, state.view))).length;
+      if (!total) return 'Er staat nog niets open.';
+      if (ready === total) return total === 1 ? '1 administratie is nog ingelogd.' : `${total} administraties zijn nog ingelogd.`;
+      if (!ready) return `Geen van de ${total} administraties is nog ingelogd. Kies er een om voor in te loggen.`;
+      return `${ready} van ${total} administraties ${ready === 1 ? 'is' : 'zijn'} nog ingelogd. Klik om direct verder te gaan.`;
+    }
+
+    // Below the list: how many there are, or, while the list scrolls, how
+    // far you are ("Scroll voor meer · 9 van 100 getoond").
+    function updateMore() {
+      if (!current) return;
+      const total = current.slots.length;
+      const overflow = !showAll && list.scrollHeight > list.clientHeight + 1;
+      const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
+      // The scroll styling (room for the thin scrollbar) follows the whole
+      // list, not a search, so the rows keep their width while you type.
+      if (!query.trim()) list.classList.toggle('scrolls', overflow);
+      fade.classList.toggle('on', overflow && !atEnd);
+      if (overflow && !atEnd) {
+        const bottom = list.scrollTop + list.clientHeight;
+        const seen = [...list.querySelectorAll('.ebs-row')].filter((row) => row.offsetTop < bottom).length;
+        const text = `Scroll voor meer · ${seen} van ${shown.length} getoond`;
+        if (moreText.dataset.text !== text) {
+          moreText.dataset.text = text;
+          moreText.className = 'ebs-more-text scroll';
+          moreText.replaceChildren(icon('arrow-down', { size: 14 }), document.createTextNode(text));
+        }
+        if (allButton.parentElement !== more) more.append(allButton);
+        return;
+      }
+      const text = query.trim()
+        ? `${shown.length} van ${total} getoond`
+        : `${total} ${total === 1 ? 'administratie' : 'administraties'}`;
+      if (moreText.dataset.text !== text) {
+        moreText.dataset.text = text;
+        moreText.className = 'ebs-more-text';
+        moreText.textContent = text;
+      }
+      allButton.remove();
+    }
+
+    function row(slot, state) {
+      const status = EBS.statusOf(slot, state.view);
+      const ready = isReady(status);
+      const isOpening = ready && opening?.id === slot.id;
+      const picked = !ready && state.pendingLoginFor === slot.id;
+      const button = el('button', `ebs-row${isOpening ? ' opening' : ''}${picked ? ' picked' : ''}`);
+      button.type = 'button';
+      button.dataset.slot = slot.id;
+      button.setAttribute('aria-pressed', String(isOpening || picked));
+      button.append(avatar(slot, ready ? 'ready' : status, 32, state), el('span', 'ebs-row-name', slot.name));
+      if (slot.number) button.append(el('span', 'ebs-row-number', slot.number));
+      if (!ready) button.append(el('span', `ebs-pill ${status}`, status === 'expired' ? 'Verlopen' : 'Niet ingelogd'));
+      const action = el('span', 'ebs-row-action', ready ? (isOpening ? 'Bezig…' : 'Openen') : 'Inloggen');
+      if (ready && !isOpening) action.append(icon('arrow-right'));
+      button.append(action);
+      if (busyId === slot.id) {
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+      }
+      button.addEventListener('click', () => (ready ? open(slot) : chooseForLogin(slot)));
+      if (confirmFor?.slot.id !== slot.id) return [button];
+      return [button, confirmBox(confirmFor.tabCount, () => requestSwitch(slot, true), () => {
+        confirmFor = null;
+        opening = null;
+        view.render(current);
+      })];
+    }
+
+    async function requestSwitch(slot, confirmed) {
+      busyId = slot.id;
+      view.render(current);
+      try {
+        await openSession(slot, {
+          confirmed,
+          ask: (tabCount) => { confirmFor = { slot, tabCount }; },
+          fail: () => { opening = null; confirmFor = null; failed = true; },
+        });
+      } finally {
+        busyId = null;
+        if (current) view.render(current);
+      }
+    }
+
+    function open(slot) {
+      if (busyId) return;
+      opening = slot;
+      failed = false;
+      confirmFor = null;
+      requestSwitch(slot, false);
+    }
+
+    const view = {
       render(state) {
         current = state;
-        const { active, other } = split(state);
-        content.replaceChildren();
-        sub.textContent = opening
-          ? `${opening.name} wordt geopend…`
-          : failed ? 'Openen lukte niet. Probeer het opnieuw.'
-          : active.length === 0 ? 'Er staat nog niets open.'
-          : active.length > LIST_AFTER ? `${active.length} administraties zijn nog ingelogd.`
-          : 'Deze administraties zijn nog ingelogd. Klik om direct verder te gaan.';
-        search.hidden = active.length <= LIST_AFTER;
+        sub.textContent = subText(state);
 
-        if (!active.length) {
-          const empty = el('div', 'ebs-empty');
-          empty.innerHTML = '<svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="30" fill="#eef1f8"/><rect x="20" y="30" width="24" height="16" rx="4" stroke="#6b7290" stroke-width="3"/><path d="M25 30v-5a7 7 0 0 1 14 0v5" stroke="#6b7290" stroke-width="3" stroke-linecap="round"/></svg>';
-          empty.append(el('strong', '', 'Geen actieve sessies'));
-          empty.append(el('span', '', 'Log rechts in bij e-Boekhouden. Daarna verschijnt je administratie hier en kun je er later direct naar terug.'));
-          content.append(empty);
-        } else if (active.length <= LIST_AFTER) {
-          const grid = el('div', 'ebs-cards');
-          for (const slot of active) grid.append(this.card(slot, state));
-          content.append(grid);
+        if (!state.slots.length) {
+          if (left.lastElementChild !== empty) left.replaceChildren(top, empty);
         } else {
-          // Many sessions: a searchable list instead of cards.
+          if (search.parentElement !== left) left.replaceChildren(top, search, list, fade, more);
           const needle = query.trim().toLowerCase();
-          const matches = active.filter((slot) => !needle || `${slot.name} ${slot.number ?? ''}`.toLowerCase().includes(needle));
-          const shown = showAll ? matches : matches.slice(0, LIST_PAGE);
-          const list = el('div', 'ebs-list');
-          for (const slot of shown) list.append(this.listRow(slot, state));
-          const more = el('div', 'ebs-more');
-          more.append(el('span', '', `${shown.length} van ${matches.length} getoond`));
-          if (!showAll && matches.length > shown.length) {
-            const all = el('button', 'ebs-link', 'Alles tonen');
-            all.type = 'button';
-            all.addEventListener('click', () => { showAll = true; this.render(state); });
-            more.append(all);
-          }
-          content.append(list, more);
-        }
-
-        if (other.length) {
-          const block = el('div', 'ebs-others');
-          block.append(el('span', 'ebs-others-title', 'Eerder gebruikt'));
-          for (const { slot, status } of other) {
-            const row = el('button', `ebs-other${state.pendingLoginFor === slot.id ? ' picked' : ''}`);
-            row.type = 'button';
-            row.setAttribute('aria-pressed', String(state.pendingLoginFor === slot.id));
-            row.append(avatar(slot, status, 30, state));
-            const name = el('span', 'ebs-other-name', slot.name);
-            if (slot.number) name.append(el('span', 'ebs-other-number', ` · ${slot.number}`));
-            row.append(name, el('span', `ebs-pill ${status}`, status === 'expired' ? 'Verlopen' : 'Niet ingelogd'), el('span', 'ebs-other-action', 'Inloggen'));
-            row.addEventListener('click', () => chooseForLogin(slot));
-            block.append(row);
-          }
-          content.append(block);
+          shown = state.slots.filter((slot) => !needle || `${slot.name} ${slot.number ?? ''}`.toLowerCase().includes(needle));
+          // Focus stays on the same row across a redraw (a storage change).
+          const focused = list.contains(document.activeElement) ? document.activeElement.dataset.slot : null;
+          list.classList.toggle('all', showAll);
+          list.replaceChildren(...shown.flatMap((slot) => row(slot, state)));
+          if (!shown.length) list.append(el('span', 'ebs-no-match', `Geen administratie gevonden voor "${query.trim()}".`));
+          if (focused) list.querySelector(`.ebs-row[data-slot="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+          updateMore();
         }
 
         const target = state.slots.find((slot) => slot.id === state.pendingLoginFor);
@@ -503,42 +624,6 @@
           lastFor = text;
         }
       },
-
-      card(slot, state) {
-        const card = el('button', `ebs-card${opening?.id === slot.id ? ' opening' : ''}`);
-        card.type = 'button';
-        const top = el('span', 'ebs-card-top');
-        top.append(avatar(slot, 'ready', 48, state));
-        const text = el('span', 'ebs-card-text');
-        text.append(el('span', 'ebs-card-name', slot.name));
-        if (slot.number) text.append(el('span', 'ebs-card-number', slot.number));
-        top.append(text);
-        const bottom = el('span', 'ebs-card-bottom');
-        bottom.append(el('span', 'ebs-pill ready', 'Ingelogd'), el('span', 'ebs-card-action', opening?.id === slot.id ? 'Bezig…' : 'Openen →'));
-        card.append(top, bottom);
-        card.addEventListener('click', () => this.open(slot, state));
-        if (confirmFor?.slot.id === slot.id) {
-          const wrap = el('div', 'ebs-card-wrap');
-          wrap.append(card, confirmBox(confirmFor.tabCount, () => openSession(slot, { confirmed: true }), () => { confirmFor = null; opening = null; this.render(state); }));
-          return wrap;
-        }
-        return card;
-      },
-
-      listRow(slot, state) {
-        const row = el('button', `ebs-list-row${opening?.id === slot.id ? ' opening' : ''}`);
-        row.type = 'button';
-        row.append(avatar(slot, 'ready', 32, state), el('span', 'ebs-list-name', slot.name), el('span', 'ebs-list-number', slot.number ?? ''), el('span', 'ebs-list-action', opening?.id === slot.id ? 'Bezig…' : 'Openen →'));
-        row.addEventListener('click', () => this.open(slot, state));
-        return row;
-      },
-
-      open(slot, state) {
-        opening = slot;
-        failed = false;
-        this.render(state);
-        openSession(slot, { ask: (tabCount) => { confirmFor = { slot, tabCount }; this.render(state); }, fail: () => { opening = null; failed = true; this.render(state); } });
-      },
     };
     return view;
   }
@@ -550,14 +635,12 @@
     html.ebs-better-login .ebs-better-hidden { display: none !important; }
     #ebs-better { font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; min-height: 100vh; display: flex; flex-direction: column; }
     #ebs-better .ebs-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 64px 40px 0; }
-    #ebs-better .ebs-left { width: 460px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 14px; background: #f7f8fb; border-radius: 16px 0 0 16px; box-shadow: 0 18px 48px rgba(20, 26, 48, .10); }
-    #ebs-better .ebs-right { width: 420px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 20px; background: #fff; border-left: 1px solid #e3e6ee; border-radius: 0 16px 16px 0; box-shadow: 0 1px 0 rgba(20, 26, 48, .04), 0 18px 48px rgba(20, 26, 48, .10); }
+    #ebs-better .ebs-left { position: relative; z-index: 0; width: 460px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 14px; background: #f7f8fb; border-radius: 16px 0 0 16px; box-shadow: 0 18px 48px rgba(20, 26, 48, .10); }
+    #ebs-better .ebs-right { position: relative; z-index: 1; width: 420px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 20px; background: #fff; border-left: 1px solid #e3e6ee; border-radius: 0 16px 16px 0; box-shadow: 0 1px 0 rgba(20, 26, 48, .04), 0 18px 48px rgba(20, 26, 48, .10); }
     #ebs-better h1 { margin: 0; font-size: 24px; font-weight: 700; color: #232c4f; }
     #ebs-better h2 { margin: 0; font-size: 22px; font-weight: 700; }
     #ebs-better .ebs-left-head { display: flex; flex-direction: column; gap: 4px; }
     #ebs-better .ebs-right-head { display: flex; flex-direction: column; gap: 6px; }
-    #ebs-better .ebs-left-content { display: flex; flex-direction: column; gap: 14px; }
-    #ebs-better .ebs-search[hidden] { display: none; }
     #ebs-better .ebs-sub { font-size: 13px; color: #5d6584; }
     #ebs-better .ebs-for { font-size: 14px; color: #5d6584; }
     #ebs-better .ebs-for.picked { color: #232c4f; font-weight: 500; }
@@ -571,72 +654,72 @@
     #ebs-better #formWrapper > tbody > tr:first-child { display: none; }
     #ebs-better #frm tr.TRNORM { margin-bottom: 16px !important; }
     #ebs-better #frm tr.TRNORM > td:first-child, #ebs-better #frm tr.TRNORM > td:first-child font { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #232c4f !important; }
-    #ebs-better #frm input.INPUTBOX { box-sizing: border-box; width: 100% !important; height: 46px; padding: 0 14px; border: 1.5px solid #cfd4e2; border-radius: 10px; font: 15px Ubuntu, system-ui, sans-serif; color: #232c4f; background: #fff; }
-    #ebs-better #frm input.INPUTBOX:focus { border-color: #232c4f; outline: 3px solid rgba(35, 44, 79, .12); }
+    #ebs-better #frm input.INPUTBOX { box-sizing: border-box; width: 100% !important; height: 46px; padding: 0 14px; border: 1.5px solid #cfd4e2; border-radius: 10px; font: 15px Ubuntu, system-ui, sans-serif; color: #232c4f; background: #fff; transition: border-color 150ms ease, outline-color 150ms ease; }
+    #ebs-better #frm input.INPUTBOX:focus { border-color: #232c4f; outline: 3px solid rgba(35, 44, 79, .12); outline-offset: 0; }
     #ebs-better #frm input.act-btn { box-sizing: border-box; width: 100%; height: 48px; margin-top: 4px; border: 0; border-radius: 10px; background: #232c4f; color: #fff; font: 700 15px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     #ebs-better #frm input.act-btn:active { transform: scale(0.98); }
     #ebs-better #frm input.act-btn.ebs-busy { background: #4a5272; cursor: wait; transform: none; }
     #ebs-better #frm input.act-btn:focus-visible { outline: 2px solid #5d9e35; outline-offset: 2px; }
-    #ebs-better .ebs-forgot { align-self: center; display: block !important; font-size: 13px; color: #232c4f; }
+    #ebs-better .ebs-forgot { align-self: center; display: block !important; font-size: 13px; color: #232c4f; transition: color 150ms ease; }
 
-    /* Sessions. */
+    /* Sessions: one list for any number of them. */
     #ebs-better button { font-family: inherit; color: inherit; cursor: pointer; }
-    #ebs-better .ebs-avatar { border-radius: 50%; box-sizing: border-box; flex: none; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; object-fit: cover; background: #dfe4f1; color: #232c4f; }
+    #ebs-better .ebs-avatar { border-radius: 50%; box-sizing: border-box; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; object-fit: cover; background: #dfe4f1; color: #232c4f; }
     #ebs-better .ebs-avatar.expired { background: #fbe9e9; color: #b42318; }
     #ebs-better .ebs-avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
-    #ebs-better .ebs-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    #ebs-better .ebs-card { display: flex; flex-direction: column; gap: 16px; padding: 18px; border: 1px solid #dfe3ec; border-radius: 14px; background: #fff; text-align: left; box-shadow: 0 8px 22px rgba(20, 26, 48, .08); transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
-    #ebs-better .ebs-card:active, #ebs-better .ebs-list-row:active, #ebs-better .ebs-other:active { transform: scale(0.98); }
-    #ebs-better .ebs-card.opening { border: 2px solid #5d9e35; }
-    #ebs-better .ebs-card:focus-visible, #ebs-better .ebs-list-row:focus-visible, #ebs-better .ebs-other:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
-    #ebs-better .ebs-card-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    #ebs-better .ebs-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-    #ebs-better .ebs-card-name { font-size: 15px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-    #ebs-better .ebs-card-number, #ebs-better .ebs-list-number { font-size: 12px; color: #5d6584; }
-    #ebs-better .ebs-card-bottom { display: flex; align-items: center; justify-content: space-between; }
-    #ebs-better .ebs-card-action { font-size: 14px; font-weight: 700; }
-    #ebs-better .ebs-list-action { font-size: 13px; font-weight: 700; }
-    #ebs-better .ebs-pill { padding: 3px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
-    #ebs-better .ebs-pill.ready { background: #eef6e7; color: #2f6f1a; }
+    #ebs-better .ebs-search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; box-sizing: border-box; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font-size: 13px; color: #5d6584; transition: border-color 150ms ease; }
+    #ebs-better .ebs-search:focus-within { border-color: #232c4f; }
+    #ebs-better .ebs-search svg { flex: none; }
+    #ebs-better .ebs-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
+    #ebs-better .ebs-list { position: relative; display: flex; flex-direction: column; gap: 6px; max-height: 400px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #9aa3bf #e3e6ee; }
+    #ebs-better .ebs-list.scrolls { padding-right: 8px; }
+    #ebs-better .ebs-list.all { max-height: none; overflow: visible; }
+    #ebs-better .ebs-row { flex: none; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e6ee; border-radius: 10px; background: #fff; text-align: left; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, color 150ms ease; }
+    /* A thicker border without a shift: the extra width is an inset shadow. */
+    #ebs-better .ebs-row.opening { border-color: #5d9e35; box-shadow: inset 0 0 0 1px #5d9e35; }
+    #ebs-better .ebs-row.picked { border-color: #232c4f; box-shadow: inset 0 0 0 .5px #232c4f; }
+    #ebs-better .ebs-row:active { transform: scale(0.98); }
+    #ebs-better .ebs-row:disabled { cursor: wait; transform: none; }
+    #ebs-better .ebs-row:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    #ebs-better .ebs-row-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #ebs-better .ebs-row-number { font-size: 12px; color: #5d6584; }
+    #ebs-better .ebs-row-action { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+    #ebs-better .ebs-row-action svg { flex: none; }
+    #ebs-better .ebs-pill { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; white-space: nowrap; }
     #ebs-better .ebs-pill.expired { background: #fbe9e9; color: #b42318; }
     #ebs-better .ebs-pill.login { background: #f1f3f8; color: #4a5272; }
-    #ebs-better .ebs-search { box-sizing: border-box; height: 40px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
-    #ebs-better .ebs-list { display: flex; flex-direction: column; gap: 6px; max-height: 400px; overflow: auto; padding-right: 4px; }
-    #ebs-better .ebs-list-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #e3e6ee; border-radius: 10px; background: #fff; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
-    #ebs-better .ebs-list-row.opening { border-color: #5d9e35; }
-    #ebs-better .ebs-list-name { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #ebs-better .ebs-more { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #5d6584; }
-    #ebs-better .ebs-link { border: 0; background: none; padding: 0; text-decoration: underline; font-size: 12px; }
+    #ebs-better .ebs-no-match { padding: 12px; font-size: 13px; color: #5d6584; }
+    #ebs-better .ebs-fade { position: relative; height: 0; margin-top: -14px; pointer-events: none; }
+    #ebs-better .ebs-fade span { position: absolute; left: 0; right: 14px; bottom: 0; height: 48px; border-radius: 0 0 10px 10px; background: linear-gradient(rgba(247, 248, 251, 0), #f7f8fb); opacity: 0; transition: opacity 150ms ease; }
+    #ebs-better .ebs-fade.on span { opacity: 1; }
+    #ebs-better .ebs-more { display: flex; justify-content: space-between; align-items: center; min-height: 16px; font-size: 12px; color: #5d6584; }
+    #ebs-better .ebs-more-text.scroll { display: inline-flex; align-items: center; gap: 4px; font-weight: 700; color: #232c4f; }
+    #ebs-better .ebs-link { border: 0; background: none; padding: 0; font: 12px Ubuntu, system-ui, sans-serif; color: #232c4f; text-decoration: underline; transition: color 150ms ease; }
     #ebs-better .ebs-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 24px; border: 1.5px dashed #c5cbdc; border-radius: 12px; background: #fff; text-align: center; }
-    #ebs-better .ebs-empty strong { font-size: 16px; }
-    #ebs-better .ebs-empty span { font-size: 13px; line-height: 19px; color: #5d6584; max-width: 300px; }
-    #ebs-better .ebs-others { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-    #ebs-better .ebs-others-title { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: #6b7290; }
-    #ebs-better .ebs-other { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+    #ebs-better .ebs-empty-icon { width: 64px; height: 64px; border-radius: 50%; background: #eef1f8; color: #6b7290; display: flex; align-items: center; justify-content: center; }
+    #ebs-better .ebs-empty strong { font-size: 16px; font-weight: 700; }
+    #ebs-better .ebs-empty > span:last-child { font-size: 13px; line-height: 19px; color: #5d6584; max-width: 300px; }
     @media (hover: hover) {
-      #ebs-better .ebs-card:hover { border-color: #c9cfdf; }
-      #ebs-better .ebs-list-row:hover { border-color: #c9cfdf; background: #fafbfd; }
-      #ebs-better .ebs-other:hover { background: #ffffff; }
+      #ebs-better .ebs-row:hover { border-color: #c9cfdf; background: #fafbfd; }
+      #ebs-better .ebs-row.opening:hover { border-color: #5d9e35; }
+      #ebs-better .ebs-row.picked:hover { border-color: #232c4f; }
       #ebs-better #frm input.act-btn:hover { background: #1b2240; }
+      #ebs-better .ebs-link:hover, #ebs-better .ebs-forgot:hover, #ebs-better .ebs-footer a:hover { color: #1b2240; }
     }
-    #ebs-better .ebs-other.picked { border: 1.5px solid #232c4f; background: #fff; }
-    #ebs-better .ebs-other-name { flex: 1; min-width: 0; font-size: 14px; }
-    #ebs-better .ebs-other-number { font-size: 12px; color: #6b7290; }
-    #ebs-better .ebs-other-action { font-size: 13px; color: #3a4677; }
-    #ebs-better .ebs-confirm { margin-top: 8px; padding: 10px 12px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
+    #ebs-better .ebs-confirm { padding: 10px 12px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
     #ebs-better .ebs-confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
-    #ebs-better .ebs-confirm button { padding: 6px 12px; border-radius: 6px; font-size: 12px; }
+    #ebs-better .ebs-confirm button { padding: 6px 12px; border-radius: 6px; font-size: 12px; transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
     #ebs-better .ebs-confirm-no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
     #ebs-better .ebs-confirm-yes { border: 0; background: #232c4f; color: #fff !important; }
     #ebs-better .ebs-footer { padding: 20px 40px; display: flex; justify-content: center; gap: 4px; font-size: 12px; color: #6b7290; }
-    #ebs-better .ebs-footer a { color: #4a5272; }
+    #ebs-better .ebs-footer a { color: #4a5272; transition: color 150ms ease; }
     @media (max-width: 920px) {
       #ebs-better .ebs-left { border-radius: 16px 16px 0 0; }
       #ebs-better .ebs-right { border-left: 0; border-top: 1px solid #e3e6ee; border-radius: 0 0 16px 16px; }
     }
     @media (prefers-reduced-motion: reduce) {
       #ebs-better .ebs-for.ebs-changed { animation: ebs-for-fade 160ms ease-out; }
-      #ebs-better .ebs-card:active, #ebs-better .ebs-list-row:active, #ebs-better .ebs-other:active, #ebs-better #frm input.act-btn:active { transform: none; }
+      #ebs-better .ebs-row:active, #ebs-better #frm input.act-btn:active { transform: none; }
     }
     @keyframes ebs-for-fade { from { opacity: 0; } to { opacity: 1; } }
   `;
