@@ -530,6 +530,38 @@ test('e-Boekhouden redrawing parts of the form: nothing doubles, nothing dead co
   p.close();
 });
 
+test('a route change out of the screen gives everything back, and in again draws anew', async () => {
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0');
+  const { document, window } = p;
+  assert.ok(document.querySelector('.ebs-b-edit'));
+  // Angular changes the URL first and drops the old screen a moment later.
+  window.history.pushState({}, '', '/facturen/factuur');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-b-edit'), null);
+  assert.equal(document.querySelectorAll('[data-ebs-native]').length, 0);
+  assert.ok(document.querySelector('app-factuur-form > div > app-form > form > .form-body #nummer'), 'rows home');
+  assert.equal(document.documentElement.classList.contains('ebs-billing'), false);
+  window.history.pushState({}, '', '/facturen/factuur/toevoegen/0');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await p.settle();
+  assert.equal(document.querySelectorAll('.ebs-b-edit').length, 1);
+  p.close();
+
+  // The list: its action bar lives on body and goes with the screen.
+  const list = await invoicePage();
+  rowsOf(list.document)[1].querySelector('.ebs-b-check').click();
+  await list.settle();
+  assert.ok(list.document.querySelector('.ebs-b-bar.show'));
+  list.window.history.pushState({}, '', '/facturen/factuur/toevoegen/0');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await list.settle();
+  assert.equal(list.document.querySelector('.ebs-b-bar'), null);
+  assert.equal(list.document.querySelector('.ebs-b-view'), null);
+  assert.ok(list.document.querySelector('#trefwoordRegels').closest('.middle-top-container'), 'the search form is home');
+  list.close();
+});
+
 test('the line window warns about preselected values and Overnemen picks the last choice for this relation', async () => {
   const store = { 'store:123/billing/last-line': { v: { 'DEMO Demo Klant B.V.': { vat: 'Btw hoog 21%', ledger: '8000 Omzet dienstverlening', at: 1 } }, at: 1, by: 'local' } };
   const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0', { store });
