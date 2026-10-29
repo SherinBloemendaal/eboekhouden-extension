@@ -791,9 +791,10 @@
       this.paste = button('ebs-ar-button', 'Plakken hier', () => this.toolbarAction(this.paste, 'paste'), 'clipboard-paste');
       this.uploadButton = button('ebs-ar-button primary', 'Bestanden uploaden', () => this.toolbarAction(this.uploadButton, 'upload'), 'upload');
       actions.append(classic, this.newFolder, this.paste, this.uploadButton);
-      head.append(titles, actions);
+      // Over the space under the buttons, so nothing moves when it shows.
       this.headMessage = el('span', 'ebs-ar-head-message');
       this.headMessage.setAttribute('role', 'alert');
+      head.append(titles, actions, this.headMessage);
 
       const grid = el('div', 'ebs-ar-grid');
 
@@ -872,7 +873,7 @@
       this.buildPreview();
 
       grid.append(this.nav, files, this.aside);
-      this.root.append(head, this.headMessage, grid);
+      this.root.append(head, grid);
     },
 
     buildPreview() {
@@ -920,7 +921,11 @@
         const transfer = new DataTransfer();
         for (const file of event.dataTransfer.files) transfer.items.add(file);
         if (!transfer.files.length) return;
-        if (!readNative()?.upload && clickToolbar('upload')) return;
+        const problem = readNative()?.upload ? '' : clickToolbar('upload');
+        if (problem) {
+          this.headMessage.textContent = problem;
+          return;
+        }
         const zone = await waitFor(() => document.querySelector('app-digitaal-archief-upload app-file-upload-list .file-container'));
         zone?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
       });
@@ -1576,15 +1581,15 @@
     .ebs-ar button, .ebs-ar input, .ebs-ar-bar button { font-family: Ubuntu, system-ui, sans-serif; }
     .ebs-ar [hidden], .ebs-ar-bar [hidden] { display: none !important; }
     .ebs-ar svg { flex: none; }
-    .ebs-ar-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+    .ebs-ar-head { position: relative; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
     .ebs-ar-titles { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
     .ebs-ar-titles h1 { margin: 0; font-size: 22px; font-weight: 700; line-height: 1.2; color: #232c4f; }
     .ebs-ar-subtitle { font-size: 13px; color: #5d6584; }
     .ebs-ar-head-actions { display: flex; gap: 8px; align-items: center; flex: none; }
     .ebs-ar-classic { font-size: 13px; margin-right: 8px; color: #232c4f; text-decoration: underline; cursor: pointer; transition: color 150ms ease; }
     .ebs-ar-classic:hover { color: #3a4677; }
-    .ebs-ar-head-message:empty { display: none; }
-    .ebs-ar-head-message { margin-top: -6px; font-size: 13px; color: #b42318; }
+    .ebs-ar-head-message { position: absolute; top: calc(100% + 4px); right: 0; z-index: 2; max-width: 520px; padding: 6px 10px; border-radius: 8px; background: #fdf0ef; box-shadow: 0 4px 14px rgba(20, 26, 48, .12); font-size: 13px; color: #b42318; transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-ar-head-message:empty { opacity: 0; transform: translateY(-4px); pointer-events: none; }
     .ebs-ar-button { height: 40px; padding: 0 14px; border: 1px solid #cfd4e2; border-radius: 9px; background: #ffffff; color: #232c4f; font-size: 14px; display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-ar-button:hover { background: #f3f5fa; border-color: #b9c0d4; }
     .ebs-ar-button:disabled { color: #8c93ab; background: #ffffff; border-color: #cfd4e2; cursor: default; }
@@ -1705,8 +1710,10 @@
     .ebs-ar-preview-foot { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid #eef0f5; }
     .ebs-ar-preview-links { font-size: 12px; color: #5d6584; }
     .ebs-ar-preview-note { font-size: 11px; color: #5d6584; }
-    .ebs-ar-preview-note:empty, .ebs-ar-message:empty { display: none; }
-    .ebs-ar-message { font-size: 12px; color: #b42318; }
+    .ebs-ar-preview-note:empty { display: none; }
+    /* Room kept for a message, so the buttons do not move when one shows. */
+    .ebs-ar-message { min-height: 16px; font-size: 12px; line-height: 16px; color: #b42318; transition: opacity 150ms ease; }
+    .ebs-ar-message:empty { opacity: 0; }
     .ebs-ar-preview-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
     .ebs-ar-pbutton { height: 34px; padding: 0 12px; border: 1px solid #cfd4e2; border-radius: 8px; background: #ffffff; color: #232c4f; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-ar-pbutton:hover { background: #f3f5fa; }
@@ -1732,8 +1739,9 @@
     .ebs-ar-bar-button:disabled { opacity: .5; cursor: default; }
     .ebs-ar-bar-button:active:not(:disabled) { transform: scale(0.97); }
     .ebs-ar-bar-button:focus-visible { outline: 2px solid #ffffff; outline-offset: 2px; }
-    .ebs-ar-bar-message { max-width: 240px; font-size: 12px; line-height: 16px; color: #ffd8d3; }
-    .ebs-ar-bar-message:empty { display: none; }
+    /* Above the bar, so the bar keeps its width and place when one shows. */
+    .ebs-ar-bar-message { position: absolute; right: 10px; bottom: calc(100% + 8px); max-width: 360px; padding: 8px 12px; border-radius: 10px; background: #232c4f; box-shadow: 0 8px 24px rgba(20, 26, 48, .3); font-size: 12px; line-height: 16px; color: #ffd8d3; transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-ar-bar-message:empty { opacity: 0; transform: translateY(4px); pointer-events: none; }
 
     .ebs-ar-in { animation: ebs-ar-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
     @keyframes ebs-ar-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
@@ -1745,6 +1753,7 @@
       .ebs-ar-bar, .ebs-ar-bar.show { transform: translate(-50%, 0); }
       .ebs-ar-bar.show { transition: opacity 150ms ease-out, visibility 0s; }
       .ebs-ar-progress-bar { transition: none; }
+      .ebs-ar-head-message:empty, .ebs-ar-bar-message:empty { transform: none; }
       .ebs-ar-button:active:not(:disabled), .ebs-ar-pbutton:active:not(:disabled), .ebs-ar-bar-button:active:not(:disabled) { transform: none; }
     }
   `;
