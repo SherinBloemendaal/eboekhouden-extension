@@ -439,3 +439,45 @@ test('a popup that is not one of a classic page leaves top its messages (jwterro
   assert.deepEqual(p.seen.inner.filter((data) => !data?.ebs), []);
   p.close();
 });
+
+test('top forwards only what an e-Boekhouden page in the popup frame sends, and only to the opener\'s origin', { timeout: T }, async () => {
+  const p = await nestedPage('?POPUP=1');
+  const posted = [];
+  const forward = p.inner.postMessage;
+  p.inner.postMessage = (data, origin) => {
+    posted.push(origin);
+    forward(data, origin);
+  };
+  p.popup.top.postMessage({ action: 'reload' }, '*');
+  await p.settle(1);
+  assert.deepEqual(posted, [CLASSIC], 'to the classic page\'s origin, not to any');
+  // The frame went to another site (it keeps its window): that site's
+  // messages are not passed on as if they came from e-Boekhouden.
+  p.window.dispatchEvent(new p.window.MessageEvent('message', { data: { action: 'reload' }, origin: 'https://bank.example', source: p.popup }));
+  await p.settle(1);
+  assert.equal(posted.length, 1);
+  assert.deepEqual(p.seen.top.at(-1), { action: 'reload' }, 'top gets it, as from any other frame');
+  p.close();
+});
+
+test('a frame named ebs-popup-* in a page of another site gets no opener and tells nothing', { timeout: T }, async () => {
+  const popupUrl = `${APP}/bh/herinnering.asp?POPUP=1`;
+  const p = page(`<!doctype html><html><head></head><body><iframe name="ebs-popup-0a1b2c3d4e5f" src="${popupUrl}"></iframe></body></html>`, {
+    url: 'https://evil.example/',
+    store: { settings: ON },
+    serve: { [popupUrl]: '<!doctype html><html><head><title>Herinnering</title></head><body></body></html>' },
+  });
+  const iframe = p.document.querySelector('iframe');
+  await loaded(iframe);
+  const heard = [];
+  p.window.addEventListener('message', (event) => heard.push(event.data));
+  const posted = [];
+  p.window.postMessage = (data, origin) => posted.push([data, origin]);
+  const popup = loadInFrame(p, iframe, { active: true });
+  popup.dispatchEvent(new popup.Event('load'));
+  await p.settle();
+  assert.equal(popup.opener ?? null, null, 'no window.opener to the other site');
+  assert.deepEqual(posted, [], 'no hello, ready or title with the page\'s address');
+  assert.deepEqual(heard, []);
+  p.close();
+});

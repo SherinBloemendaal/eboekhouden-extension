@@ -23,14 +23,18 @@
 // Roles, per frame (this file runs in every e-Boekhouden frame):
 //   opener       any frame: makes the dialogs for its own popups. On a classic
 //                page that is the content frame, so the dialog covers that.
-//   popup frame  a frame named ebs-popup-*: turns on popupFrame before the
-//                page's first script, and tells the opener (postMessage, kind
-//                hello/ready/title/escape/close) what goes on inside.
+//   popup frame  a frame named ebs-popup-* with only e-Boekhouden pages around
+//                it: turns on popupFrame before the page's first script, and
+//                tells the opener (postMessage, kind hello/ready/title/escape/
+//                close) what goes on inside.
 //   top          a secure20 page in a frame thinks it is embedded
 //                (hybridModeDetected: window !== top) and sends to top what it
 //                would send to window.opener in a popup of its own (POPUP=1).
-//                The top frame sends those on to the popup's opener; the rest
-//                (jwterror, settings) stays with top, as from any embedded page.
+//                For such a popup the top frame sends all of it on to the
+//                opener (jwterror and settings too, as from that window); from
+//                a popup without POPUP=1 it stays with top, as from any
+//                embedded page. Only messages of an e-Boekhouden page, and
+//                only to the opener's origin.
 //
 // The extension refreshes nothing itself: a page that is reloaded after a
 // popup closes is e-Boekhouden's own doing (opener.location.reload(), a
@@ -471,12 +475,16 @@
   // opener, as it would from a popup window.
   // -------------------------------------------------------------------------
 
-  // A popup frame's window (WindowProxy, also across origins) -> { v1 }.
+  // A popup frame's window (WindowProxy, also across origins) -> { v1,
+  // opener: the origin of the frame around it }.
   const popupFrames = new WeakMap();
 
+  // Only what an e-Boekhouden page in that frame sends: a frame keeps its
+  // window when it goes to another site, and that site's messages must not
+  // reach the opener as if they came from e-Boekhouden (top's origin).
   function forwardToOpener(event) {
     const known = popupFrames.get(event.source);
-    if (!known?.v1) return false;
+    if (!known?.v1 || !APP_ORIGIN.test(event.origin)) return false;
     let opener = null;
     try {
       opener = event.source.parent;
@@ -485,7 +493,7 @@
     }
     if (!opener || opener === window) return false;
     try {
-      opener.postMessage(event.data, '*');
+      opener.postMessage(event.data, known.opener);
     } catch {
       return false;
     }
@@ -499,7 +507,7 @@
     if (!source) return;
     if (data && typeof data === 'object' && data.ebs === 'popup' && APP_ORIGIN.test(event.origin)) {
       if (isTop && data.kind === 'frame') {
-        popupFrames.set(source, { v1: data.v1 === true });
+        if (typeof data.opener === 'string' && APP_ORIGIN.test(data.opener)) popupFrames.set(source, { v1: data.v1 === true, opener: data.opener });
         event.stopImmediatePropagation();
         return;
       }
@@ -517,21 +525,44 @@
   // Popup frame: the page inside a dialog.
   // -------------------------------------------------------------------------
 
+  // The origins of the frames around this one: [parent, ..., top]. Chrome
+  // has location.ancestorOrigins; elsewhere only same-origin ones are known.
+  function ancestorOrigins() {
+    if (location.ancestorOrigins) return [...location.ancestorOrigins];
+    const origins = [];
+    let win = window;
+    while (win !== win.parent) {
+      win = win.parent;
+      try {
+        origins.push(win.location.origin);
+      } catch {
+        origins.push('null');
+      }
+    }
+    return origins;
+  }
+
+  // Only to an e-Boekhouden page around this frame (see runPopupFrame).
   function tellOpener(kind, extra = {}) {
+    const origin = ancestorOrigins()[0];
+    if (!origin || !APP_ORIGIN.test(origin)) return;
     try {
-      const origin = location.ancestorOrigins?.[0] ?? '*';
       window.parent.postMessage({ ebs: 'popup', kind, ...extra }, origin);
     } catch { /* the opener is gone */ }
   }
 
   function runPopupFrame() {
+    // A frame of this name in a page of another site is no dialog of ours:
+    // its page gets no opener there, and that site hears nothing from here.
+    const origins = ancestorOrigins();
+    if (!origins.length || !origins.every((origin) => APP_ORIGIN.test(origin))) return;
     // Before the page's first script: window.opener and window.close().
     EBS.bridge.enable('popupFrame');
     tellOpener('hello');
     if (window.parent !== window.top) {
       const v1 = new URLSearchParams(location.search).get('POPUP') === '1';
       try {
-        window.top.postMessage({ ebs: 'popup', kind: 'frame', v1 }, '*');
+        window.top.postMessage({ ebs: 'popup', kind: 'frame', v1, opener: origins[0] }, origins.at(-1));
       } catch { /* no top to tell */ }
     }
     const pageTitle = () => (document.title ?? '').trim();
@@ -557,7 +588,7 @@
       if (event.key === 'Escape' && !event.isComposing && !event.defaultPrevented) tellOpener('escape');
     });
     window.addEventListener('message', (event) => {
-      if (event.source !== window.parent || event.data?.ebs !== 'popup') return;
+      if (event.source !== window.parent || event.data?.ebs !== 'popup' || !APP_ORIGIN.test(event.origin)) return;
       event.stopImmediatePropagation();
       if (event.data.kind === 'print') window.print();
     }, true);

@@ -222,8 +222,11 @@
         let popup = null;
         try {
           if (hook.on && userGesture()) {
-            const blank = url === undefined || url === '' || String(url) === 'about:blank';
-            const absolute = blank ? 'about:blank' : appUrl(url);
+            // Read the page's value once: an object's toString() could say
+            // something else the next time.
+            const href = url === undefined ? '' : String(url);
+            const blank = href === '' || href === 'about:blank';
+            const absolute = blank ? 'about:blank' : appUrl(href);
             if (absolute) {
               const answer = ask('windowOpen', { url: absolute, target: text(target, 200), features: text(features, 500) });
               claimed = own(answer, 'claim') === true;
