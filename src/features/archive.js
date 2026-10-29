@@ -253,10 +253,12 @@
     if (on && !observed.on) {
       observed.on = true;
       observed.unsubscribe ??= EBS.bridge.on('observed', onObserved);
-      EBS.bridge.enable('observe', { urls: OBSERVE });
+      // Named (owner), so a bridge that keeps one list per feature can tell
+      // this one apart; the current bridge ignores it.
+      EBS.bridge.enable('observe', { urls: OBSERVE, owner: SCREEN });
     } else if (!on && observed.on) {
       observed.on = false;
-      EBS.bridge.disable('observe');
+      EBS.bridge.disable('observe', SCREEN);
       observed.lists = [];
       observed.folderId = null;
       observed.error = null;
@@ -1424,7 +1426,6 @@
         host.append(summary, el('span', 'ebs-ar-bar-divider'), this.recognize, this.relation, this.cut, this.download, this.removeButton, clear, this.message);
         document.body.append(host);
         this.host = host;
-        window.addEventListener('resize', () => this.place(), { passive: true });
       },
 
       remove() {
@@ -1783,7 +1784,10 @@
       } catch {
         return;
       }
-      if (target.origin === location.origin && PAGE.test(target.pathname)) observe(true);
+      if (target.origin !== location.origin || !PAGE.test(target.pathname)) return;
+      observe(true);
+      // The page did not go to the archive after all: stop observing.
+      setTimeout(update, 5000);
     }, true);
 
     // Our own drawing must not wake the loop.
@@ -1799,6 +1803,7 @@
     document.addEventListener('keyup', (event) => {
       if (event.key === 'Shift') view.previewRange(null);
     });
+    window.addEventListener('resize', () => view.bar.place(), { passive: true });
     let lastPath = location.pathname;
     const watch = setInterval(() => {
       if (!chrome.runtime?.id) {
@@ -1807,6 +1812,8 @@
       }
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
+      // A next visit to the archive is a new screen load: one new count.
+      ui.inboxAsked = null;
       ui.anchorKey = null;
       ui.query = '';
       ui.quick = 'all';
