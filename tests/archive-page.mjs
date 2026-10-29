@@ -95,7 +95,10 @@ export const rowNames = (p) => p.$$('.ebs-ar-body .ebs-ar-item').map((node) => n
 export const rowNode = (p, name) => p.$$('.ebs-ar-body .ebs-ar-item').find((node) => node.querySelector('.ebs-ar-name').textContent === name);
 export const nativeLog = (p) => [...p.window.__archive.log];
 export const folderButton = (p, label) => p.$$('.ebs-ar-folder').find((node) => node.textContent === label || node.textContent.startsWith(`${label} (`));
-export const click = (p, node, init = {}) => node.dispatchEvent(new p.window.MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
+// A click of the user (trusted, see below); scriptClick is one a page script
+// makes, which the view's controls ignore.
+export const click = (p, node, init = {}) => trusted(p, node, 'click', init);
+export const scriptClick = (p, node, init = {}) => node.dispatchEvent(new p.window.MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
 
 // An event as the browser sends it for the user (event.isTrusted). jsdom only
 // makes untrusted events, and dispatchEvent() clears the flag, so this goes

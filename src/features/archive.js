@@ -129,12 +129,16 @@
     return node;
   }
 
+  // Our buttons click e-Boekhouden's own controls, so they answer only a
+  // click of the user (or a key on the focused button), never a script.
   function button(className, label, onClick, iconName) {
     const node = el('button', className);
     node.type = 'button';
     if (iconName) node.append(EBS.icon(iconName));
     node.append(el('span', 'ebs-ar-label', label));
-    node.addEventListener('click', onClick);
+    node.addEventListener('click', (event) => {
+      if (event.isTrusted) onClick(event);
+    });
     return node;
   }
 
@@ -1183,7 +1187,9 @@
       this.allCheck.setAttribute('role', 'checkbox');
       this.allCheck.setAttribute('aria-label', 'Alles in beeld selecteren');
       this.allCheck.append(EBS.icon('check', { size: 14 }));
-      this.allCheck.addEventListener('click', () => this.toggleAll());
+      this.allCheck.addEventListener('click', (event) => {
+        if (event.isTrusted) this.toggleAll();
+      });
       this.sortButton = el('button', 'ebs-ar-sort');
       this.sortButton.type = 'button';
       this.sortButton.addEventListener('click', () => {
@@ -1221,9 +1227,7 @@
       this.errorTitle = el('strong', 'ebs-ar-error-title');
       this.errorText = el('span', 'ebs-ar-error-text');
       errorCopy.append(this.errorTitle, this.errorText);
-      this.reload = button('ebs-ar-button small', 'Opnieuw laden', (event) => {
-        if (event.isTrusted) this.reloadFolder();
-      }, 'rotate-cw');
+      this.reload = button('ebs-ar-button small', 'Opnieuw laden', () => this.reloadFolder(), 'rotate-cw');
       this.reload.title = 'Lijst vernieuwen van e-Boekhouden, zoals de knop rechtsboven';
       this.error.append(errorCopy, this.reload);
       this.uploadStatus = el('div', 'ebs-ar-upload');
@@ -1286,6 +1290,7 @@
         if (!hasFiles(event)) return;
         event.preventDefault();
         files.classList.remove('dragging');
+        if (!event.isTrusted) return;
         const transfer = transferOf(event.dataTransfer.files);
         if (transfer) this.uploadFiles(transfer);
       });
@@ -1676,7 +1681,9 @@
           if (ui.inboxCount !== null) badge.setAttribute('aria-label', `${plural(ui.inboxCount, 'nieuw bestand', 'nieuwe bestanden')}`);
           pick.append(badge);
         }
-        pick.addEventListener('click', () => this.openFolder(liveFolder(folder.path)));
+        pick.addEventListener('click', (event) => {
+          if (event.isTrusted) this.openFolder(liveFolder(folder.path));
+        });
         line.append(pick);
         if (folder.toggle) {
           const toggle = el('button', 'ebs-ar-folder-toggle');
@@ -1685,7 +1692,9 @@
           toggle.setAttribute('aria-expanded', String(folder.open));
           toggle.setAttribute('aria-label', `${folder.open ? 'Submappen verbergen' : 'Submappen tonen'}: ${folder.root ? 'Basismap' : folder.name}`);
           toggle.append(EBS.icon(folder.open ? 'chevron-down' : 'chevron-right', { size: 14 }));
-          toggle.addEventListener('click', () => this.toggleFolder(liveFolder(folder.path)));
+          toggle.addEventListener('click', (event) => {
+            if (event.isTrusted) this.toggleFolder(liveFolder(folder.path));
+          });
           line.append(toggle);
         }
         this.folderList.append(line);
@@ -1762,6 +1771,7 @@
       check.append(EBS.icon('check', { size: 14 }));
       check.addEventListener('click', (event) => {
         event.stopPropagation();
+        if (!event.isTrusted) return;
         const current = this.rowByKey(row.key);
         if (current) this.toggleRow(current, event.shiftKey);
       });
@@ -1774,12 +1784,12 @@
       const status = el('span', 'ebs-ar-statuscell');
       const links = el('span', 'ebs-ar-links');
       line.append(check, fileCell, date, status, links);
-      line.addEventListener('click', () => {
-        const current = this.rowByKey(row.key);
+      line.addEventListener('click', (event) => {
+        const current = event.isTrusted ? this.rowByKey(row.key) : null;
         if (current) this.activate(current);
       });
       line.addEventListener('keydown', (event) => {
-        if (event.target !== line || (event.key !== 'Enter' && event.key !== ' ')) return;
+        if (!event.isTrusted || event.target !== line || (event.key !== 'Enter' && event.key !== ' ')) return;
         event.preventDefault();
         const current = this.rowByKey(row.key);
         if (current) this.activate(current);
@@ -1864,7 +1874,7 @@
         toggle.append(EBS.icon(row.expanded ? 'chevron-down' : 'chevron-right', { size: 14 }), row.koppelCount === null ? 'Gekoppeld' : `Gekoppeld (${row.koppelCount})`);
         toggle.addEventListener('click', (event) => {
           event.stopPropagation();
-          const current = this.rowByKey(row.key);
+          const current = event.isTrusted ? this.rowByKey(row.key) : null;
           if (current) this.toggleLinks(current);
         });
         links.append(toggle);

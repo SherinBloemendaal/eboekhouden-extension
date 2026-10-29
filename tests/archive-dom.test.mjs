@@ -6,7 +6,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { closeAll } from './dom.mjs';
 import { demoData } from './archive-mock.mjs';
-import { archivePage, click, folderButton, nativeLog, rowNames, rowNode, settleAll, trusted, wait } from './archive-page.mjs';
+import { archivePage, click, folderButton, nativeLog, rowNames, rowNode, scriptClick, settleAll, trusted, wait } from './archive-page.mjs';
 
 after(closeAll);
 
@@ -97,11 +97,13 @@ test('a preview asks for one file per click, never before', async () => {
 
 test('with the shared request layer a preview sends nothing without a real click', async () => {
   const p = await archivePage();
-  click(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-file'));
+  scriptClick(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-file'));
   await settleAll(p);
   assert.equal(p.ours().filter((href) => href.includes('/preview')).length, 0);
-  assert.equal(p.$('.ebs-ar-preview-stage [role="alert"]')?.querySelector('strong').textContent, 'Geen voorbeeld');
-  assert.ok(p.$('.ebs-ar-pbutton:not(.green)'), 'the buttons stay');
+  assert.equal(p.$('.ebs-ar-preview-none').hidden, false, 'a script click opens no preview');
+  click(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-file'));
+  await settleAll(p);
+  assert.equal(p.ours().filter((href) => href.includes('/preview')).length, 1, 'a click of the user asks for that one file');
 });
 
 test('the preview button actions are the items of e-Boekhouden\'s right-click menu', async () => {
@@ -286,7 +288,7 @@ test('a failing folder shows the error, and "Opnieuw laden" is e-Boekhouden\'s r
   assert.equal(p.$('.ebs-ar-error-title').textContent, 'Deze map kon niet worden geladen');
   assert.equal(p.$('.ebs-ar-error-text').textContent, 'e-Boekhouden meldt: "Er is iets misgegaan." Je bestanden zijn niet weg.');
   assert.equal(p.$('.ebs-ar-error .ebs-ar-button').textContent, 'Opnieuw laden');
-  click(p, p.$('.ebs-ar-error .ebs-ar-button'));
+  scriptClick(p, p.$('.ebs-ar-error .ebs-ar-button'));
   await settleAll(p);
   assert.equal(nativeLog(p).filter((line) => line === 'Lijst vernieuwen').length, 0, 'a script click does nothing');
   trusted(p, p.$('.ebs-ar-error .ebs-ar-button'));
@@ -454,11 +456,7 @@ test('files dropped on the list go to e-Boekhouden\'s own upload window, which i
     }
   };
   const list = p.$('.ebs-ar-files');
-  const drag = (type, dataTransfer) => {
-    const event = new window.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer });
-    list.dispatchEvent(event);
-    return event;
-  };
+  const drag = (type, dataTransfer) => trusted(p, list, type, { dataTransfer }, window.DragEvent);
   const text = { types: ['text/plain'], files: [] };
   assert.equal(drag('dragover', text).defaultPrevented, false, 'dragging text is not ours');
   assert.equal(drag('drop', text).defaultPrevented, false);
@@ -467,6 +465,10 @@ test('files dropped on the list go to e-Boekhouden\'s own upload window, which i
   const files = { types: ['Files'], files: [new window.File(['a'], 'a.pdf'), new window.File(['b'], 'b.jpg')] };
   assert.equal(drag('dragover', files).defaultPrevented, true);
   assert.ok(list.classList.contains('dragging'));
+  // A drop a page script makes opens nothing.
+  list.dispatchEvent(new window.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: files }));
+  await settleAll(p);
+  assert.equal(p.$('app-digitaal-archief-upload'), null, 'a script drop does nothing');
   assert.equal(drag('drop', files).defaultPrevented, true);
   await settleAll(p);
   assert.equal(list.classList.contains('dragging'), false);
@@ -558,7 +560,7 @@ test('Vernieuwen clicks e-Boekhouden\'s Lijst vernieuwen in a real click; the ro
   assert.equal(p.$('.ebs-ar-tools').lastElementChild, refresh, 'at the right of the toolbar');
   assert.equal(refresh.getAttribute('aria-label'), 'Vernieuwen');
   assert.equal(refresh.querySelector('.ebs-ar-tip').textContent, 'Vernieuwen');
-  click(p, refresh);
+  scriptClick(p, refresh);
   await settleAll(p);
   assert.deepEqual(nativeLog(p), [], 'a script click does nothing');
   const before = rowNames(p);
@@ -599,7 +601,7 @@ test('Terug goes one folder up and selects the folder you came from; off in Basi
   click(p, folderButton(p, 'Oktober'));
   await settleAll(p, 6);
   assert.equal(back.getAttribute('aria-label'), 'Terug naar Inkoopfacturen 2026');
-  click(p, back);
+  scriptClick(p, back);
   await settleAll(p);
   assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Oktober', 'a script click does nothing');
   trusted(p, back);
@@ -746,6 +748,31 @@ test('files dropped on a folder row with files wait for its rows, then go to its
   assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Scan 0043.pdf']);
   assert.equal(p.$('.ebs-ar-head-message').textContent, '', 'no "ging niet open"');
   assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 1'], 'once, and not started');
+});
+
+test('a page script clicking our controls clicks nothing of e-Boekhouden', async () => {
+  const p = await archivePage();
+  const state = p.window.__archive.state;
+  scriptClick(p, folderButton(p, 'Inbox'));
+  scriptClick(p, p.$('.ebs-ar-folder-toggle'));
+  scriptClick(p, rowNode(p, 'Oktober').querySelector('.ebs-ar-file'));
+  scriptClick(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-check'));
+  scriptClick(p, p.$('.ebs-ar-row-head .ebs-ar-check'));
+  scriptClick(p, rowNode(p, 'Factuur 88231 Voorbeeld Hosting.pdf').querySelector('.ebs-ar-linkbutton'));
+  scriptClick(p, p.$('.ebs-ar-head-actions .ebs-ar-button.primary'));
+  rowNode(p, 'Oktober').querySelector('.ebs-ar-file').dispatchEvent(new p.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026', 'no folder opened');
+  assert.equal(state.folder, 12);
+  assert.equal(state.selected.size, 0, 'no checkbox of e-Boekhouden clicked');
+  assert.equal(state.opened.size, 0, 'no links toggle clicked');
+  assert.equal(p.$('app-digitaal-archief-upload'), null, 'no upload window');
+  assert.deepEqual(nativeLog(p), []);
+  assert.deepEqual(p.ours().length, 1, 'and no preview request');
+  // The same controls in a click of the user do.
+  click(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-check'));
+  await settleAll(p);
+  assert.equal(state.selected.size, 1);
 });
 
 test('after Terug the folder you came from is selected, but the focus stays in a field you went to meanwhile', async () => {

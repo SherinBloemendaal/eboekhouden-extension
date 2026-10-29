@@ -7,7 +7,7 @@
 import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { closeAll } from './dom.mjs';
-import { archivePage, click, folderButton, hold, nativeLog, rowNames, settleAll, trusted, wait } from './archive-page.mjs';
+import { archivePage, click, folderButton, hold, nativeLog, rowNames, scriptClick, settleAll, trusted, wait } from './archive-page.mjs';
 
 after(closeAll);
 
@@ -219,7 +219,7 @@ describe('a folder change always ends', { concurrency: true }, () => {
     assert.equal(p.$('.ebs-ar-error-text').textContent, 'e-Boekhouden gaf de lijst van deze map niet door. Je bestanden zijn niet weg.');
     const retry = p.$('.ebs-ar-error .ebs-ar-button');
     assert.equal(retry.textContent, 'Opnieuw proberen');
-    click(p, retry);
+    scriptClick(p, retry);
     await settleAll(p);
     assert.deepEqual(nativeLog(p), [], 'a script click does nothing');
     trusted(p, retry);
