@@ -598,6 +598,47 @@ test('an edited line has no preselection warning; a touched field loses it', asy
   p.close();
 });
 
+test('a line saved without choosing warns again when it is opened to edit, until the field is chosen', async () => {
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0');
+  const { document, window } = p;
+  const B = window.EBS.billing;
+  let overlay = openLineWindow(document);
+  await p.settle();
+  overlay.querySelector('#omschrijving').value = 'Licentie per gebruiker';
+  overlay.querySelector('#aantal').value = '3';
+  overlay.querySelector('#prijsExcl').value = '10,00';
+  // Only the btw was chosen in the add window; the tegenrekening was not.
+  B.lineWindow.onUserEvent({ isTrusted: true, type: 'mousedown', target: overlay.querySelector('#btw-AutocompletePickerInput') });
+  B.lineWindow.onUserEvent({ isTrusted: true, type: 'click', target: overlay.querySelector('button.form-submit') });
+  overlay.remove();
+  await p.settle();
+
+  // Wijzigen: e-Boekhouden fills the window a moment after it opens.
+  overlay = openLineWindow(document, { add: false });
+  for (const id of ['omschrijving', 'aantal', 'prijsExcl']) overlay.querySelector(`#${id}`).value = '';
+  await p.settle();
+  const warning = overlay.querySelector('.ebs-b-modal-warning');
+  assert.ok(!warning.classList.contains('show'), 'nothing to judge while empty');
+  overlay.querySelector('#omschrijving').value = 'Licentie per gebruiker';
+  overlay.querySelector('#aantal').value = '3';
+  overlay.querySelector('#prijsExcl').value = '10,00';
+  B.schedule();
+  await p.settle();
+  assert.ok(warning.classList.contains('show'));
+  assert.equal(warning.querySelector('.ebs-b-modal-warning-text').textContent, 'Tegenrekening 0100 Deelneming Voorbeeld is voorgeselecteerd, niet in dit venster gekozen.');
+  assert.ok(overlay.querySelector('#grootboekrekeningId-AutocompletePickerInput').closest('app-autocomplete').hasAttribute('data-ebs-risk'));
+  assert.ok(!overlay.querySelector('#btw-AutocompletePickerInput').closest('app-autocomplete').hasAttribute('data-ebs-risk'));
+
+  // Chosen now and saved: the line loses its mark.
+  B.lineWindow.onUserEvent({ isTrusted: true, type: 'mousedown', target: overlay.querySelector('#grootboekrekeningId-AutocompletePickerInput') });
+  B.lineWindow.onUserEvent({ isTrusted: true, type: 'click', target: overlay.querySelector('button.form-submit') });
+  overlay.remove();
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-b-line-flag'), null);
+  assert.ok(!document.querySelector('.ebs-b-warning-summary').classList.contains('show'));
+  p.close();
+});
+
 test('Overnemen that finds nothing leaves the field to e-Boekhouden, and never saves', async () => {
   const store = { 'store:123/billing/last-line': { v: { 'DEMO Demo Klant B.V.': { vat: 'Btw onbekend 7%', ledger: '9999 Bestaat niet', at: 1 } }, at: 1, by: 'local' } };
   const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0', { store });

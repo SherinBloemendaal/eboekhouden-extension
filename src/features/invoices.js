@@ -1068,7 +1068,11 @@
       overlay.setAttribute('data-ebs-line-window', '');
       if (this.current?.form !== form) {
         const title = text(form.querySelector('.form-header'));
-        this.current = { form, add: /toevoegen/i.test(title), vatTouched: false, ledgerTouched: false };
+        const add = /toevoegen/i.test(title);
+        // An add window starts on preselected values. An edit window does so
+        // only for a line saved from this window without choosing (found by
+        // its fields, once e-Boekhouden filled them in).
+        this.current = { form, add, matched: add, vatPre: add, ledgerPre: add, vatTouched: false, ledgerTouched: false };
       }
       this.draw();
     },
@@ -1079,6 +1083,14 @@
         vat: form?.querySelector('#btw-AutocompletePickerInput')?.closest('app-autocomplete') ?? null,
         ledger: form?.querySelector('#grootboekrekeningId-AutocompletePickerInput')?.closest('app-autocomplete') ?? null,
       };
+    },
+
+    // The line in the window, the way the line list shows it.
+    signature() {
+      const form = this.current?.form;
+      const field = (name) => form?.querySelector(`[id="${name}"]`)?.value?.trim() ?? '';
+      const line = { text: field('omschrijving'), qty: field('aantal'), price: field('prijsExcl') };
+      return line.text || line.price ? lineSignature(line) : null;
     },
 
     values() {
@@ -1102,8 +1114,17 @@
         ledgerRow.after(help);
       }
       const values = this.values();
-      const vatDefault = current.add && Boolean(vat) && !current.vatTouched;
-      const ledgerDefault = current.add && Boolean(ledger) && !current.ledgerTouched;
+      if (!current.matched) {
+        const signature = this.signature();
+        const seen = signature ? seenLines.get(signature) : null;
+        if (seen) {
+          current.matched = true;
+          current.vatPre = Boolean(seen.vatDefault);
+          current.ledgerPre = Boolean(seen.ledgerDefault);
+        }
+      }
+      const vatDefault = current.vatPre && Boolean(vat) && !current.vatTouched;
+      const ledgerDefault = current.ledgerPre && Boolean(ledger) && !current.ledgerTouched;
       if (vat) vat.toggleAttribute('data-ebs-risk', vatDefault);
       if (ledger) ledger.toggleAttribute('data-ebs-risk', ledgerDefault);
 
@@ -1182,9 +1203,13 @@
       const form = current.form;
       const values = this.values();
       const field = (name) => form.querySelector(`[id="${name}"]`)?.value?.trim() ?? '';
+      const vatDefault = current.vatPre && !current.vatTouched;
+      const ledgerDefault = current.ledgerPre && !current.ledgerTouched;
       seenLines.set(lineSignature({ text: field('omschrijving'), qty: field('aantal'), price: field('prijsExcl') }), {
         ledger: values.ledger,
-        flagged: current.add && (!current.vatTouched || !current.ledgerTouched),
+        vatDefault,
+        ledgerDefault,
+        flagged: vatDefault || ledgerDefault,
       });
       const relation = this.relationOf();
       if (!relation || (!values.vat && !values.ledger)) return;
