@@ -297,7 +297,7 @@
       :host { all: initial; }
       .box { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 10px; background: #fff; color: #30395f; font: 13px Ubuntu, system-ui, sans-serif; box-shadow: 0 8px 24px rgba(20, 26, 48, .18), 0 0 0 1px rgba(20, 26, 48, .08); }
       a { color: #30395f; font-weight: 700; }
-      button { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: #5d6584; font: inherit; cursor: pointer; }
+      button { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #5d6584; font: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; }
       button { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
       button:hover { background: #f3f5fa; }
       a:focus-visible, button:focus-visible { outline: 2px solid #30395f; outline-offset: 2px; }
@@ -307,7 +307,8 @@
     const link = el('a', '', 'Terug naar vorige pagina');
     link.href = url;
     link.target = '_self';
-    const close = el('button', '', '✕');
+    const close = el('button');
+    close.append(lucide('x', 16));
     close.type = 'button';
     close.setAttribute('aria-label', 'Sluiten');
     close.addEventListener('click', () => host.remove());
@@ -414,15 +415,6 @@
     }
   }
 
-  const SWAP_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></svg>';
-  const CHEVRON_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
-  const CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>';
-  const CLOCK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
-  const CAMERA_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>';
-  const IMAGE_OFF_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 20L20 4"/></svg>';
-  const TRASH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14"/><path d="M10 7V5h4v2"/><path d="M7 7l1 12h8l1-12"/></svg>';
-  const PLUS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
-
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -430,10 +422,35 @@
     return node;
   }
 
-  // Icons are fixed strings from this file; user text always goes in via textContent.
-  function icon(markup) {
+  // A Lucide icon (EBS.icon) in a span, so the shadow styles can place it.
+  // 'image-off' is not in icons.js yet. Shared change requested: add it
+  // (lucide-static 1.63.0) to src/icons.js; EXTRA_ICONS then goes. It takes
+  // the frame and attributes of an EBS.icon.
+  const EXTRA_ICONS = {
+    'image-off': [
+      ['line', { x1: '2', x2: '22', y1: '2', y2: '22' }],
+      ['path', { d: 'M10.41 10.41a2 2 0 1 1-2.83-2.83' }],
+      ['line', { x1: '13.5', x2: '6', y1: '13.5', y2: '21' }],
+      ['line', { x1: '18', x2: '21', y1: '12', y2: '15' }],
+      ['path', { d: 'M3.59 3.59A1.99 1.99 0 0 0 3 5v14a2 2 0 0 0 2 2h14c.55 0 1.052-.22 1.41-.59' }],
+      ['path', { d: 'M21 15V5a2 2 0 0 0-2-2H9' }],
+    ],
+  };
+  function lucide(name, size) {
+    if (EBS.icon.has(name) || !EXTRA_ICONS[name]) return EBS.icon(name, { size });
+    const svg = EBS.icon('minus', { size });
+    svg.replaceChildren(...EXTRA_ICONS[name].map(([tag, attributes]) => {
+      const child = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [attribute, value] of Object.entries(attributes)) child.setAttribute(attribute, value);
+      return child;
+    }));
+    svg.setAttribute('class', svg.getAttribute('class').replace('lucide-minus', `lucide-${name}`));
+    return svg;
+  }
+
+  function icon(name, size = 16) {
     const wrap = el('span', 'icon');
-    wrap.innerHTML = markup;
+    wrap.append(lucide(name, size));
     return wrap;
   }
 
@@ -474,10 +491,10 @@
       this.button.setAttribute('aria-expanded', String(menu.open));
       this.button.classList.toggle('open', menu.open);
       if (this.variant === 'new') {
-        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Wissel'));
+        this.button.append(icon('arrow-left-right', 18), el('span', 'label', 'Wissel'));
         if (state.slots.length) this.button.append(el('span', 'badge', String(state.slots.length)));
       } else {
-        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Administraties'), icon(CHEVRON_ICON));
+        this.button.append(icon('arrow-left-right', 16), el('span', 'label', 'Administraties'), icon('chevron-down', 14));
       }
     },
   };
@@ -666,9 +683,9 @@
       add.dataset.key = 'add';
       add.setAttribute('role', 'menuitem');
       if (variant === 'new') {
-        add.append(icon(PLUS_ICON), el('span', '', 'Administratie toevoegen'));
+        add.append(icon('plus', 18), el('span', '', 'Administratie toevoegen'));
       } else {
-        add.textContent = '+ Sessie toevoegen';
+        add.append(icon('plus', 14), el('span', '', 'Sessie toevoegen'));
       }
       add.addEventListener('click', () => {
         this.confirm = null;
@@ -713,8 +730,8 @@
       pick.append(text);
 
       const label = el('span', `status ${status}`);
-      if (variant === 'new' && status === 'active') label.append(icon(CHECK_ICON));
-      if (variant === 'new' && status === 'expired') label.append(icon(CLOCK_ICON));
+      if (variant === 'new' && status === 'active') label.append(icon('check', 16));
+      if (variant === 'new' && status === 'expired') label.append(icon('clock', 14));
       const pending = this.busy && this.pendingId === slot.id;
       label.append(document.createTextNode(pending ? 'Bezig…' : STATUS_LABEL[variant][status]));
       pick.append(label);
@@ -728,10 +745,10 @@
       const actions = el('span', 'actions');
       if (variant === 'new') {
         const hasPicture = Boolean(state.avatars[slot.id]);
-        actions.append(actionButton(CAMERA_ICON, hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot), `photo:${slot.id}`));
-        if (hasPicture) actions.append(actionButton(IMAGE_OFF_ICON, 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id }), `photo-off:${slot.id}`));
+        actions.append(actionButton('camera', hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot), `photo:${slot.id}`));
+        if (hasPicture) actions.append(actionButton('image-off', 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id }), `photo-off:${slot.id}`));
       }
-      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => {
+      actions.append(actionButton('trash-2', 'Sessie verwijderen', () => {
         this.removing = slot.id;
         this.render();
         this.root.querySelector('[data-key="remove-no"]')?.focus();
@@ -791,13 +808,13 @@
     },
   };
 
-  function actionButton(markup, label, onClick, key) {
+  function actionButton(iconName, label, onClick, key) {
     const button = el('button', 'action');
     button.type = 'button';
     button.dataset.key = key;
     button.title = label;
     button.setAttribute('aria-label', label);
-    button.append(icon(markup));
+    button.append(icon(iconName));
     button.addEventListener('click', (event) => {
       event.stopPropagation();
       onClick();
@@ -914,7 +931,9 @@
     .legacy .action { color: #7a7a7a; border-radius: 3px; }
     .legacy .action:hover { background: #e3e3e3; color: #30395f; }
     .legacy .foot { padding: 10px 14px; }
-    .legacy .add { border: 0; background: none; padding: 0; font-size: 13px; color: #30395f; text-decoration: underline; }
+    .legacy .add { display: flex; align-items: center; gap: 4px; border: 0; background: none; padding: 0; font-size: 13px; color: #30395f; }
+    .legacy .add span:last-child { text-decoration: underline; }
+    .legacy .add:hover { color: #1b2240; }
     .legacy .note { padding: 8px 14px 10px; border-top: 1px solid #ececec; font-size: 11px; line-height: 16px; color: #7a7a7a; }
     .legacy .confirm button { border-radius: 3px; }
     .legacy .confirm .ok { background: #30395f; }
