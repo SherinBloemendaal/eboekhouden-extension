@@ -485,6 +485,38 @@
     },
   };
 
+  // The new design's own user menu (app-header-identity-b .dropdown-menu) is
+  // in the DOM while it is closed (display: none), so its computed styles give
+  // the exact colours, radius, shadow, font and padding for ours. The
+  // fallbacks in MENU_CSS are the values of e-Boekhouden's bundle and root.
+  function nativeMenuTokens() {
+    const native = document.querySelector('app-header-identity-b .dropdown-menu');
+    if (!native) return {};
+    const box = getComputedStyle(native);
+    const tokens = {
+      '--ebs-native-bg': box.backgroundColor,
+      '--ebs-native-radius': box.borderBottomLeftRadius,
+      '--ebs-native-shadow': box.boxShadow,
+      '--ebs-native-hover-bg': box.getPropertyValue('--pageBackground').trim(),
+      '--ebs-native-hover-fg': box.getPropertyValue('--textColor').trim(),
+      '--ebs-native-warning': box.getPropertyValue('--colorWarning').trim(),
+    };
+    const item = native.querySelector('a');
+    if (item) {
+      const text = getComputedStyle(item);
+      Object.assign(tokens, {
+        '--ebs-native-fg': text.color,
+        '--ebs-native-font': text.fontFamily,
+        '--ebs-native-size': text.fontSize,
+        '--ebs-native-weight': text.fontWeight,
+        '--ebs-native-pad': text.padding,
+      });
+    }
+    // A value the page does not give (an empty string, or no shadow at all)
+    // keeps the fallback.
+    return Object.fromEntries(Object.entries(tokens).filter(([, value]) => value && value !== 'none'));
+  }
+
   const menu = {
     open: false,
     host: null,
@@ -493,6 +525,7 @@
     variant: null,
     confirm: null,
     avatarTarget: null,
+    leaving: null,
 
     toggle(variant, anchor, fromKeyboard = false) {
       if (this.open) {
@@ -502,6 +535,21 @@
       this.variant = variant;
       this.anchor = anchor;
       this.open = true;
+      // Opened again while it fades out: the same menu fades back in.
+      if (this.leaving && this.leaving.variant === variant) {
+        clearTimeout(this.leaving.timer);
+        ({ host: this.host, root: this.root, body: this.body, fileInput: this.fileInput } = this.leaving);
+        this.leaving = null;
+        this.host.inert = false;
+        this.host.style.pointerEvents = '';
+        this.listen();
+        this.render();
+        nav.render();
+        this.body.classList.add('shown');
+        if (fromKeyboard) this.items()[0]?.focus();
+        return;
+      }
+      this.drop();
       this.host = el('div');
       this.host.id = 'ebs-menu';
       this.root = this.host.attachShadow({ mode: 'closed' });
@@ -523,9 +571,25 @@
           console.warn('EB Sessions: could not read the picture', error);
         }
       });
-      this.body = el('div');
+      this.body = el('div', `sheet ${variant}`);
+      if (variant === 'new') {
+        for (const [name, value] of Object.entries(nativeMenuTokens())) this.host.style.setProperty(name, value);
+      }
       this.root.append(style, this.fileInput, this.body);
       document.documentElement.append(this.host);
+      this.listen();
+      this.render();
+      nav.render();
+      // The new menu fades and slides in from its first frame (opacity and
+      // transform start at the closed values in MENU_CSS).
+      if (variant === 'new') {
+        this.body.getBoundingClientRect();
+        this.body.classList.add('shown');
+      }
+      if (fromKeyboard) this.items()[0]?.focus();
+    },
+
+    listen() {
       this.onOutside = (event) => {
         if (!event.composedPath().some((node) => node === this.host || node === nav.host)) this.close();
       };
@@ -534,9 +598,14 @@
       document.addEventListener('mousedown', this.onOutside, true);
       document.addEventListener('keydown', this.onKey, true);
       window.addEventListener('resize', this.onResize);
-      this.render();
-      nav.render();
-      if (fromKeyboard) this.items()[0]?.focus();
+    },
+
+    // Removes a menu that is still fading out, at once.
+    drop() {
+      if (!this.leaving) return;
+      clearTimeout(this.leaving.timer);
+      this.leaving.host.remove();
+      this.leaving = null;
     },
 
     // The menu items in order: the rows, then "toevoegen".
@@ -568,7 +637,21 @@
       document.removeEventListener('mousedown', this.onOutside, true);
       document.removeEventListener('keydown', this.onKey, true);
       window.removeEventListener('resize', this.onResize);
-      this.host?.remove();
+      if (this.host && this.variant === 'new') {
+        // Fade and slide out, then leave the page. Clicks go through meanwhile,
+        // and inert keeps Tab (and a focused row's actions) out of it.
+        const leaving = { variant: this.variant, host: this.host, root: this.root, body: this.body, fileInput: this.fileInput };
+        leaving.host.inert = true;
+        leaving.host.style.pointerEvents = 'none';
+        leaving.body.classList.remove('shown');
+        leaving.timer = setTimeout(() => {
+          leaving.host.remove();
+          if (this.leaving === leaving) this.leaving = null;
+        }, 150);
+        this.leaving = leaving;
+      } else {
+        this.host?.remove();
+      }
       this.host = null;
       this.root = null;
       this.open = false;
@@ -578,15 +661,30 @@
       nav.render();
     },
 
-    // Under the navbar, right edge on the item's right edge.
+    // Right under the navbar, right edge on the item's right edge. The new
+    // design's own menu hangs from the header the same way (top: the header
+    // height, square top corners).
     place() {
       if (!this.host || !this.anchor?.isConnected) return;
       const rect = this.anchor.getBoundingClientRect();
       let bar = this.anchor;
       while (bar.parentElement && bar.getBoundingClientRect().height < 48) bar = bar.parentElement;
-      const top = Math.max(rect.bottom, bar.getBoundingClientRect().bottom) + (this.variant === 'new' ? 6 : 0);
-      const right = Math.max(8, document.documentElement.clientWidth - rect.right);
-      this.host.style.cssText = `position:fixed;top:${top}px;right:${right}px;z-index:2147483600;`;
+      const top = Math.max(rect.bottom, bar.getBoundingClientRect().bottom);
+      const width = document.documentElement.clientWidth;
+      if (this.variant !== 'new') {
+        const right = Math.max(8, width - rect.right);
+        Object.assign(this.host.style, { position: 'fixed', top: `${top}px`, right: `${right}px`, zIndex: '2147483600' });
+        return;
+      }
+      // The new item is the Wissel button plus a divider: line up with the
+      // button. In a narrow window the menu keeps 8px from the left edge, and
+      // in a short one it scrolls (--ebs-menu-max-height in MENU_CSS).
+      // The card's own width: the host is not fixed yet on the first call.
+      const edge = nav.button?.isConnected ? nav.button.getBoundingClientRect() : rect;
+      const menuWidth = this.body.querySelector('.card')?.offsetWidth ?? 0;
+      const right = Math.min(Math.max(8, width - edge.right), Math.max(8, width - menuWidth - 8));
+      Object.assign(this.host.style, { position: 'fixed', top: `${top}px`, right: `${right}px`, zIndex: '2147483600' });
+      this.host.style.setProperty('--ebs-menu-max-height', `${Math.max(160, document.documentElement.clientHeight - top - 8)}px`);
     },
 
     origin() {
@@ -859,39 +957,75 @@
     .pick:disabled { cursor: wait; opacity: .6; }
     .pick[aria-busy="true"] { opacity: 1; }
 
-    /* New design */
-    .new.card { width: 340px; border-radius: 10px; box-shadow: 0 16px 40px rgba(20, 26, 48, 0.22), 0 0 0 1px rgba(20, 26, 48, 0.06); color: #232c4f; }
-    .new .head { padding: 14px 16px 10px; display: flex; align-items: baseline; justify-content: space-between; }
-    .new .title { font-size: 14px; font-weight: 700; }
-    .new .count { font-size: 11px; color: #5d6584; }
-    .new .list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 8px; }
-    .new .row { border-radius: 8px; }
-    .new .row:hover { background: #f5f6fa; }
-    .new .row.active { background: #eef1f8; }
-    .new .pick { gap: 12px; padding: 10px; border-radius: 8px; color: #232c4f; }
-    .new .avatar { width: 34px; height: 34px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+    /* New design: e-Boekhouden's own user menu (app-header-identity-b
+       .dropdown-menu). The --ebs-native-* values are read from that menu when
+       ours opens (nativeMenuTokens); the fallbacks are the bundle's values:
+       background colorPrimary, items textColorInverted with padding 12px 16px,
+       hover pageBackground with textColor, bottom corners defaultRounding,
+       shadow 0 0 24px #0003 plus an inset one under the header. */
+    .new.sheet { opacity: 0; transform: translateY(-4px); transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .new.sheet.shown { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) { .new.sheet { transform: none; } }
+    .new.card {
+      --bg: var(--ebs-native-bg, #30395f);
+      --fg: var(--ebs-native-fg, #fff);
+      --hover-bg: var(--ebs-native-hover-bg, #f5f6fa);
+      --hover-fg: var(--ebs-native-hover-fg, #4b4b4b);
+      --pad: var(--ebs-native-pad, 12px 16px);
+      --radius: var(--ebs-native-radius, 12px);
+      /* The native items' size and weight take more room than the old card:
+         as wide as the names need, within bounds. */
+      width: max-content; min-width: min(340px, calc(100vw - 16px)); max-width: min(440px, calc(100vw - 16px));
+      max-height: var(--ebs-menu-max-height, none); overflow-y: auto; overscroll-behavior: contain;
+      scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 40%, transparent) transparent;
+      border-radius: 0 0 var(--radius) var(--radius);
+      background: var(--bg); color: var(--fg);
+      box-shadow: var(--ebs-native-shadow, 0 0 24px #0003, inset 0 24px 24px -10px #0003);
+      font-family: var(--ebs-native-font, Ubuntu, system-ui, sans-serif);
+      font-size: var(--ebs-native-size, 16px); font-weight: var(--ebs-native-weight, 700);
+    }
+    /* Each item draws in --ink on --paper: white on navy, dark on the light hover. */
+    .new .row, .new .add { --ink: var(--fg); --paper: var(--bg); }
+    .new .row:hover, .new .add:hover { --ink: var(--hover-fg); --paper: var(--hover-bg); }
+    .new .head { padding: 12px 16px 4px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; font-weight: 500; color: color-mix(in srgb, var(--fg) 65%, transparent); }
+    .new .list { display: flex; flex-direction: column; }
+    .new .row { color: var(--ink); }
+    .new .row.active { background: color-mix(in srgb, var(--fg) 10%, var(--bg)); }
+    .new .row:hover { background: var(--hover-bg); }
+    .new .pick { gap: 12px; padding: var(--pad); font: inherit; color: inherit; }
+    .new .avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+    .new .avatar, .new .status, .new .number, .new .add .icon { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
     .new .avatar.photo { object-fit: cover; }
-    .new .avatar.active { background: #232c4f; color: #fff; }
-    .new .avatar.ready { background: #dfe4f1; color: #232c4f; }
-    .new .avatar.expired { background: #fbe9e9; color: #b42318; }
-    .new .avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
+    /* Logged in: solid. Not logged in: outlined in a light translucent ink. */
+    .new .avatar.active, .new .avatar.ready { background: var(--ink); color: var(--paper); }
+    .new .avatar.expired, .new .avatar.login { border: 1.5px solid color-mix(in srgb, var(--ink) 55%, transparent); color: color-mix(in srgb, var(--ink) 85%, transparent); }
+    .new .avatar.login { border-style: dashed; }
     .new .text { gap: 2px; }
-    .new .name { font-size: 14px; font-weight: 700; }
-    .new .number { font-size: 11px; color: #5d6584; }
-    .new .status { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #5d6584; white-space: nowrap; }
-    .new .status.active { color: #3f7f22; font-weight: 500; }
-    .new .status.expired { color: #b42318; font-weight: 500; }
-    .new .actions { padding-right: 6px; }
-    .new .action { color: #5d6584; }
-    .new .action:hover { background: #e6e9f1; color: #232c4f; }
-    .new .foot { border-top: 1px solid #e6e9f1; padding: 8px; }
-    .new .add { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px; border: 0; border-radius: 8px; background: #fff; font-size: 14px; font-weight: 500; color: #232c4f; text-align: left; }
-    .new .add:hover { background: #f5f6fa; }
-    .new .add .icon { width: 34px; height: 34px; border-radius: 50%; background: #f1f7ec; color: #3f7f22; align-items: center; justify-content: center; }
-    .new .note { background: #f6f7fb; padding: 10px 16px; font-size: 11px; line-height: 16px; color: #5d6584; }
-    .new .confirm { border-radius: 8px; }
+    .new .name { line-height: 1.25; }
+    /* 85% keeps 4.5:1 on both: 8.6:1 on navy, 5.4:1 on the light hover. */
+    .new .number { font-size: 12px; font-weight: 400; color: color-mix(in srgb, var(--ink) 85%, transparent); }
+    .new .status { display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; line-height: 18px; white-space: nowrap; color: var(--ink); background: color-mix(in srgb, var(--ink) 14%, transparent); }
+    .new .status.active { background: color-mix(in srgb, var(--ink) 22%, transparent); }
+    .new .status.login { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 40%, transparent); }
+    /* Room for all three actions on every row, so the status labels line up. */
+    .new .actions { min-width: 108px; justify-content: flex-end; padding-right: 8px; }
+    .new .action { color: color-mix(in srgb, var(--ink) 75%, transparent); }
+    .new .action:hover { background: color-mix(in srgb, var(--ink) 14%, transparent); color: var(--ink); }
+    .new .foot { padding-bottom: 4px; }
+    .new .add { width: 100%; display: flex; align-items: center; gap: 12px; padding: var(--pad); border: 0; background: transparent; font: inherit; color: var(--ink); text-align: left; }
+    .new .add:hover { background: var(--hover-bg); }
+    .new .add .icon { width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--ink) 14%, transparent); color: var(--ink); align-items: center; justify-content: center; }
+    .new .empty { margin: 4px 16px 12px; font-size: 12px; font-weight: 400; color: color-mix(in srgb, var(--fg) 75%, transparent); }
+    .new .error { margin: 4px 16px 8px; padding-left: 8px; border-left: 3px solid var(--ebs-native-warning, #f09900); font-weight: 400; color: var(--fg); }
+    .new .confirm { margin: 4px 16px 8px; border-radius: 8px; background: color-mix(in srgb, var(--fg) 10%, var(--bg)); color: var(--fg); font-weight: 400; }
     .new .confirm button { border-radius: 6px; }
-    .new .confirm .ok { background: #232c4f; }
+    .new .confirm .no { border: 1px solid color-mix(in srgb, var(--fg) 40%, transparent); background: transparent; color: var(--fg); }
+    .new .confirm .no:hover { background: color-mix(in srgb, var(--fg) 14%, transparent); }
+    .new .confirm .ok { background: var(--fg); color: var(--bg); }
+    .new .confirm .ok:hover { background: var(--hover-bg); color: var(--hover-fg); }
+    /* Focus rings in the item's own ink: white on navy, dark on the hover. */
+    .new .pick:focus-visible, .new .add:focus-visible, .new .action:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+    .new .confirm button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
 
     /* Legacy design */
     .legacy.card { width: 300px; border: 1px solid #d3d3d3; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12); color: #30395f; }
