@@ -281,7 +281,7 @@ test('logging in for a logged-out entry from the popup opens the login page with
   await fake.dispatch({ type: 'switcher:switch', slotId: 'x' }, popup);
   assert.equal(fake.created.at(-1).url, `${ORIGIN}/bh/`, 'no e-Boekhouden tab open: one is opened');
   assert.equal(fake.storage.session.dump().pendingLoginFor, 'x');
-  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: 'x' });
+  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: 'x', relogin: false });
 });
 
 test('the popup may only send its own actions', async () => {
@@ -341,4 +341,12 @@ test('a login report next to a page report loses neither', async () => {
   const tab = fake.storage.session.dump()['tab:7'];
   assert.equal(tab.loginHost, true);
   assert.equal(tab.relogin, true);
+});
+
+test('the login page learns when the re-login dialog takes its form', async () => {
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/boekhouden/overzicht', kind: 'app' }, main);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, true);
+  await fake.dispatch({ type: 'relogin:cancel' }, main);
+  assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, false);
 });

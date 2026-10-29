@@ -575,9 +575,12 @@ const handlers = {
     await chrome.storage.session.set({ pendingLoginFor: slotId });
     return {};
   },
-  'login:context': async () => {
+  // What the login page needs to know: the administration picked for this
+  // login, and whether the re-login dialog takes the form in this tab.
+  'login:context': async (message, sender) => {
     const { pendingLoginFor = null } = await chrome.storage.session.get('pendingLoginFor');
-    return { pendingLoginFor };
+    const tab = sender.tab ? await getTab(sender.tab.id) : {};
+    return { pendingLoginFor, relogin: Boolean(tab.relogin) };
   },
   'header:identity': (message) => onHeaderIdentity(message),
   'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url),

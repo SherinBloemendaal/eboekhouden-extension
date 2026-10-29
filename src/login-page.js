@@ -53,6 +53,7 @@
       avatars: Object.fromEntries(Object.entries(all).filter(([key]) => key.startsWith('avatar:')).map(([key, value]) => [key.slice(7), value])),
       settings: EBS.settingsWithDefaults(all.settings),
       pendingLoginFor: context?.pendingLoginFor ?? null,
+      relogin: Boolean(context?.relogin),
     };
   }
 
@@ -63,9 +64,13 @@
   if (window === window.top) {
     // The swap can happen before or after DOMContentLoaded (it waits for the
     // settings), so react to whichever comes last.
+    // Both the swap event and DOMContentLoaded can call this while the first
+    // call still waits for the settings: the flag is set before that wait.
+    let started = false;
     const addHeader = async () => {
       const host = document.getElementById('ebs-login-host');
-      if (!host || document.getElementById('ebs-login-header')) return;
+      if (!host || started || document.getElementById('ebs-login-header')) return;
+      started = true;
       const { settings } = await loadState();
       const header = el('div');
       header.id = 'ebs-login-header';
@@ -100,13 +105,26 @@
     if (!form || !user) return;
     if (/reeds ingelogd/i.test(document.body?.innerText ?? '')) return;
 
-    // The username, as a matching key. Read when the form is sent; never the password.
-    form.addEventListener('submit', () => {
+    // The username, as a matching key; never the password. Read when the form
+    // is sent, and also on the Inloggen button and on leaving the page: a
+    // form sent from script (form.submit()) fires no submit event.
+    let sentUsername = null;
+    const sendUsername = () => {
+      if (user.value === sentUsername) return;
+      sentUsername = user.value;
       send({ type: 'login:username', username: user.value });
-    }, true);
+    };
+    form.addEventListener('submit', sendUsername, true);
+    form.querySelector('input[type="submit"], button[type="submit"]')?.addEventListener('click', sendUsername, true);
+    window.addEventListener('pagehide', () => {
+      if (user.value) sendUsername();
+    });
 
     let state = await loadState();
-    const page = state.settings.betterDesign ? betterLayout(form, user) : classicLayout(form);
+    // The re-login dialog (content.js) shows this same form on its own:
+    // leave the page as it is then.
+    if (state.relogin && state.settings.relogin) return;
+    const page = state.settings.betterDesign && inLoginHost() ? betterLayout(form, user) : classicLayout(form);
     page.render(state);
     refresh = async () => {
       state = await loadState();
@@ -116,6 +134,17 @@
       if (area === 'local') refresh();
     });
   });
+
+  // The full-page layout only fits the login iframe of the 1Password fix
+  // (login-breakout.js). Inside e-Boekhouden's own small v1login frame the
+  // classic block is used.
+  function inLoginHost() {
+    try {
+      return window.parent === window.top && Boolean(window.top.document.getElementById('ebs-login-host'));
+    } catch {
+      return false;
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Shared: who is who, and what a click does.
@@ -209,7 +238,7 @@
       #ebs-sessions .chip { height: 26px; padding: 0 10px; border: 1px solid #d3d3d3; border-radius: 13px; background: #fff; font-family: inherit; font-size: 12px; color: #4b4b4b; cursor: pointer; }
       #ebs-sessions .chip.expired { color: #c0392b; }
       #ebs-sessions .chip.picked { border-color: #30395f; }
-      #ebs-notice { width: 400px; box-sizing: border-box; margin: 0 auto 14px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border: 1px solid #d9e7cc; border-top: 2px solid #68ab32; font-family: 'Ubuntu', sans-serif; font-size: 13px; color: #30395f; text-align: left; }
+      #ebs-notice { width: 400px; box-sizing: border-box; margin: 0 auto 14px; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border: 1px solid #d9e7cc; border-left: 0; border-top: 2px solid #68ab32; font-family: 'Ubuntu', sans-serif; font-size: 13px; color: #30395f; text-align: left; }
       .ebs-avatar { border-radius: 50%; box-sizing: border-box; flex: none; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; object-fit: cover; background: #dfe4f1; color: #30395f; }
       .ebs-avatar.expired { background: #fbe9e9; color: #b42318; }
       .ebs-avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
@@ -358,46 +387,50 @@
     const LIST_AFTER = 4;
     const LIST_PAGE = 9;
 
+    // The heading and the search field stay in place across redraws, so
+    // typing in the search keeps its caret and its input method.
+    const top = el('div', 'ebs-left-head');
+    const heading = el('h2', '', 'Actieve sessies');
+    heading.id = 'ebs-active-title';
+    const sub = el('span', 'ebs-sub');
+    top.append(heading, sub);
+    const search = el('input', 'ebs-search');
+    search.type = 'search';
+    search.placeholder = 'Zoek op naam of nummer, bijvoorbeeld "Studio"';
+    search.setAttribute('aria-label', 'Zoek in actieve sessies');
+    const content = el('div', 'ebs-left-content');
+    left.append(top, search, content);
+    let current = null;
+    search.addEventListener('input', () => {
+      query = search.value;
+      if (current) this.render(current);
+    });
+
     return {
       render(state) {
+        current = state;
         const { active, other } = split(state);
-        left.replaceChildren();
-
-        const top = el('div', 'ebs-left-head');
-        const heading = el('h2', '', 'Actieve sessies');
-        heading.id = 'ebs-active-title';
-        const sub = el('span', 'ebs-sub');
+        content.replaceChildren();
         sub.textContent = opening
           ? `${opening.name} wordt geopend…`
           : failed ? 'Openen lukte niet. Probeer het opnieuw.'
           : active.length === 0 ? 'Er staat nog niets open.'
           : active.length > LIST_AFTER ? `${active.length} administraties zijn nog ingelogd.`
           : 'Deze administraties zijn nog ingelogd. Klik om direct verder te gaan.';
-        top.append(heading, sub);
-        left.append(top);
+        search.hidden = active.length <= LIST_AFTER;
 
         if (!active.length) {
           const empty = el('div', 'ebs-empty');
           empty.innerHTML = '<svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="30" fill="#eef1f8"/><rect x="20" y="30" width="24" height="16" rx="4" stroke="#6b7290" stroke-width="3"/><path d="M25 30v-5a7 7 0 0 1 14 0v5" stroke="#6b7290" stroke-width="3" stroke-linecap="round"/></svg>';
           empty.append(el('strong', '', 'Geen actieve sessies'));
           empty.append(el('span', '', 'Log rechts in bij e-Boekhouden. Daarna verschijnt je administratie hier en kun je er later direct naar terug.'));
-          left.append(empty);
+          content.append(empty);
         } else if (active.length <= LIST_AFTER) {
           const grid = el('div', 'ebs-cards');
           for (const slot of active) grid.append(this.card(slot, state));
-          left.append(grid);
+          content.append(grid);
         } else {
           // Many sessions: a searchable list instead of cards.
-          const search = el('input', 'ebs-search');
-          search.type = 'search';
-          search.placeholder = 'Zoek op naam of nummer, bijvoorbeeld "Studio"';
-          search.setAttribute('aria-label', 'Zoek in actieve sessies');
-          search.value = query;
-          search.addEventListener('input', () => {
-            query = search.value;
-            this.render(state);
-            left.querySelector('.ebs-search')?.focus();
-          });
           const needle = query.trim().toLowerCase();
           const matches = active.filter((slot) => !needle || `${slot.name} ${slot.number ?? ''}`.toLowerCase().includes(needle));
           const shown = showAll ? matches : matches.slice(0, LIST_PAGE);
@@ -411,7 +444,7 @@
             all.addEventListener('click', () => { showAll = true; this.render(state); });
             more.append(all);
           }
-          left.append(search, list, more);
+          content.append(list, more);
         }
 
         if (other.length) {
@@ -428,7 +461,7 @@
             row.addEventListener('click', () => chooseForLogin(slot));
             block.append(row);
           }
-          left.append(block);
+          content.append(block);
         }
 
         const target = state.slots.find((slot) => slot.id === state.pendingLoginFor);
@@ -490,12 +523,15 @@
     html.ebs-better-login body > *:not(#ebs-better):not(script):not(style) { display: none !important; }
     html.ebs-better-login .ebs-better-hidden { display: none !important; }
     #ebs-better { font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; min-height: 100vh; display: flex; flex-direction: column; }
-    #ebs-better .ebs-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 56px 24px 0; }
+    #ebs-better .ebs-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 64px 40px 0; }
     #ebs-better .ebs-left { width: 460px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 14px; background: #f7f8fb; border-radius: 16px 0 0 16px; box-shadow: 0 18px 48px rgba(20, 26, 48, .10); }
     #ebs-better .ebs-right { width: 420px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 20px; background: #fff; border-left: 1px solid #e3e6ee; border-radius: 0 16px 16px 0; box-shadow: 0 1px 0 rgba(20, 26, 48, .04), 0 18px 48px rgba(20, 26, 48, .10); }
     #ebs-better h1 { margin: 0; font-size: 24px; font-weight: 700; color: #232c4f; }
     #ebs-better h2 { margin: 0; font-size: 22px; font-weight: 700; }
-    #ebs-better .ebs-left-head, #ebs-better .ebs-right-head { display: flex; flex-direction: column; gap: 6px; }
+    #ebs-better .ebs-left-head { display: flex; flex-direction: column; gap: 4px; }
+    #ebs-better .ebs-right-head { display: flex; flex-direction: column; gap: 6px; }
+    #ebs-better .ebs-left-content { display: flex; flex-direction: column; gap: 14px; }
+    #ebs-better .ebs-search[hidden] { display: none; }
     #ebs-better .ebs-sub { font-size: 13px; color: #5d6584; }
     #ebs-better .ebs-for { font-size: 14px; color: #5d6584; }
     #ebs-better .ebs-for.picked { color: #232c4f; font-weight: 500; }
@@ -531,7 +567,8 @@
     #ebs-better .ebs-card-name { font-size: 15px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     #ebs-better .ebs-card-number, #ebs-better .ebs-list-number { font-size: 12px; color: #5d6584; }
     #ebs-better .ebs-card-bottom { display: flex; align-items: center; justify-content: space-between; }
-    #ebs-better .ebs-card-action, #ebs-better .ebs-list-action { font-size: 14px; font-weight: 700; }
+    #ebs-better .ebs-card-action { font-size: 14px; font-weight: 700; }
+    #ebs-better .ebs-list-action { font-size: 13px; font-weight: 700; }
     #ebs-better .ebs-pill { padding: 3px 9px; border-radius: 10px; font-size: 12px; font-weight: 500; }
     #ebs-better .ebs-pill.ready { background: #eef6e7; color: #2f6f1a; }
     #ebs-better .ebs-pill.expired { background: #fbe9e9; color: #b42318; }
