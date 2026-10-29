@@ -531,7 +531,7 @@
     back: 'Abonnementen',
     inExLabel: false,
     linesAt: 2,
-    moreLabel: 'Meer velden van e-Boekhouden: omschrijving regels 1 tot 3, t.n.v., plaats, incl. of excl. btw, machtiging, Peppol',
+    moreNoun: 'dit abonnement',
     fields: {
       relation: ['relatieId'],
       name: ['nummer'],

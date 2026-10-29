@@ -138,7 +138,7 @@ test('the subscription form: period, the computed next invoices and what happens
   const what = [...view.querySelectorAll('.ebs-b-check-label')].map((label) => label.textContent);
   assert.deepEqual(what, ['Automatisch factureren, verwerken en versturenOp de prolongatiedatum, zonder dat je iets doet.', 'Per e-mail versturen', 'Per post versturen', 'Factuurbedrag incasseren', 'Tijdelijk niet factureren']);
   // e-Boekhouden's own checkbox, through our label: a click of the user.
-  view.querySelector('.ebs-b-check-label[for="geenFactuur"]').click();
+  [...view.querySelectorAll('.ebs-b-check-label')].find((label) => label.textContent === 'Tijdelijk niet factureren').click();
   await p.settle();
   assert.equal(document.getElementById('geenFactuur').checked, true);
   assert.equal(view.querySelector('.ebs-b-next > span').textContent, 'Volgende facturen (berekend): geen, Tijdelijk niet factureren staat aan');
