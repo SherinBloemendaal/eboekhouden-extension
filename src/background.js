@@ -25,6 +25,10 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 
 async function getSlots() {
   const { slots = [] } = await chrome.storage.local.get('slots');
+  // Entries saved by 0.1.0 kept the administration name in `title`.
+  for (const slot of slots) {
+    if (!slot.name && slot.title) slot.name = slot.title;
+  }
   return slots;
 }
 

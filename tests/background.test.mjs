@@ -200,3 +200,37 @@ test('pages never get cookie values: only the mirrored view', async () => {
   await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'secret-demo-value')]);
   assert.ok(!JSON.stringify(fake.storage.local.dump()).includes('secret-demo-value'));
 });
+
+test('a logout keeps the entry, its number and picture; only the bin removes it', async () => {
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, main);
+  await fake.dispatch({ type: 'avatar:set', slotId: slot.id, dataUrl: 'data:image/webp;base64,UklGRhIAAABXRUJQ' }, main);
+
+  // Power button in the new design: the shell loads uitloggen.asp inside its frame.
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1page?url=bh/uitloggen.asp', kind: 'app' }, main);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/uitloggen.asp`, kind: 'logout' }, inner);
+  // Legacy design and the login iframe: uitloggen.asp straight in mainframe.
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/uitloggen.asp`, kind: 'logout' }, main);
+
+  const [kept] = await slots();
+  assert.equal(kept.id, slot.id);
+  assert.equal(kept.name, 'Voorbeeld B.V.');
+  assert.equal(kept.number, '1000001');
+  assert.equal(kept.expired, false, 'a deliberate logout is not Verlopen');
+  assert.ok((await chrome.storage.local.get(`avatar:${slot.id}`))[`avatar:${slot.id}`]);
+  assert.deepEqual(await view(), { activeSlotId: slot.id, loggedIn: false, ready: [] }, 'shown as Inloggen');
+
+  // Logging in again lands on the same entry, picture included.
+  await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a2')]);
+  assert.equal((await slots()).length, 1);
+  assert.equal((await view()).activeSlotId, slot.id);
+});
+
+test('entries saved by the first version (name kept as title) still match', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'old', title: 'Voorbeeld B.V.', label: 'Voorbeeld B.V.' }] });
+  await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  const list = await slots();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'old');
+  assert.equal(list[0].name, 'Voorbeeld B.V.');
+});
