@@ -11,6 +11,8 @@ const SETTINGS = [
   ['relogin', 'Opnieuw inloggen in de pagina', 'Venster als je sessie verloopt'],
   ['shiftSelect', 'Shift-selectie bij importeren', 'Shift-klik selecteert alle regels ertussen'],
   ['actionBar', 'Actiebalk bij selectie', 'Wegboeken en verwijderen onderaan in beeld'],
+  ['popupDialogs', 'Pop-ups als venster', 'Losse vensters van e-Boekhouden openen in de pagina'],
+  ['aiWriter', 'AI-schrijfhulp', 'Hulp bij het schrijven van e-mails en sjablonen'],
 ];
 
 let state = { slots: [], view: {}, avatars: {}, settings: EBS.settingsWithDefaults() };

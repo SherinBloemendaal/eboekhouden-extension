@@ -18,6 +18,11 @@
   "host_permissions": [
     "https://*.e-boekhouden.nl/*"
   ],
+  "optional_host_permissions": [
+    "https://openrouter.ai/*",
+    "https://api.openai.com/*",
+    "https://api.anthropic.com/*"
+  ],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
@@ -55,7 +60,16 @@
         "src/password-fields.js",
         "src/content.js",
         "src/login-page.js",
-        "src/import.js"
+        "src/import.js",
+        "src/features/loader.js",
+        "src/features/popups.js",
+        "src/features/archive.js",
+        "src/features/openposts.js",
+        "src/features/remind.js",
+        "src/features/templates.js",
+        "src/features/ai.js",
+        "src/features/invoices.js",
+        "src/features/subscriptions.js"
       ],
       "run_at": "document_start",
       "all_frames": true
