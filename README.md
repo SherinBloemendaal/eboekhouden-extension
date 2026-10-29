@@ -16,7 +16,7 @@
 **EB Sessions** is a small Chrome extension for [e-Boekhouden.nl](https://www.e-boekhouden.nl) that makes 1Password autofill work on the login page, switches between administrations in one click, and turns an expired session into a login dialog instead of a lost page.<br>
 Repo: [github.com/SherinBloemendaal/eboekhouden-extension](https://github.com/SherinBloemendaal/eboekhouden-extension)
 
-[Install](#-install) · [Highlights](#-highlights) · [1Password](#-1password-on-the-login-page) · [Switching](#-switching-sessions) · [Login page](#-login-page) · [Importing](#-importing) · [Better design](#-better-design) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
+[Install](#-install) · [Highlights](#-highlights) · [1Password](#-1password-on-the-login-page) · [Switching](#-switching-sessions) · [Login page](#-login-page) · [Importing](#-importing) · [Better design](#-better-design) · [Pop-ups](#-pop-ups-als-venster) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
 
 </div>
 
@@ -107,9 +107,17 @@ One switch, *Better design* in the popup, off by default. It turns on redesigned
 
 - **Login page:** two joined panels: your active sessions as cards (or a searchable list when there are many) next to the login form, restyled with CSS around e-Boekhouden's real fields.
 - **Import screen:** totals for what is in view, one search field over every column, filters on direction, booking month and amount, groups you make yourself (tabs, and *Aan groep toevoegen* in the action bar), hiding lines from your view with *Verborgen (N) tonen* to get them back, tooltips on the row buttons, and the counterparty and IBAN pulled from the bank description. Clicking a line opens e-Boekhouden's own *Handmatig invoeren* page in a dialog instead of leaving the list; after saving, the dialog closes and the list reloads. *Klassieke weergave* switches this screen back to e-Boekhouden's own table, and *Nieuwe weergave* at the same spot returns. The choice is remembered per screen until you flip *Better design* in the popup.
-- **Coming screens, same switch.** The redesigned archive, open posts, templates and billing screens, and the loader shown while a page opens, will all fall under *Better design*. The loader has no switch of its own. *Pop-ups als venster* and *AI-schrijfhulp* get their own switches in the popup; both are off by default and do nothing yet.
+- **Coming screens, same switch.** The redesigned archive, open posts, templates and billing screens, and the loader shown while a page opens, will all fall under *Better design*. The loader has no switch of its own. *Pop-ups als venster* and *AI-schrijfhulp* have their own switches in the popup, both off by default (see [Pop-ups als venster](#-pop-ups-als-venster)).
 - **Hiding and groups are local.** They live in `chrome.storage.local`, per administration number. Hiding is never deleting.
 - **Motion with restraint:** the action bar, the dialog, the group menu and hidden lines move briefly (120 to 200 ms, transform and opacity only), nothing animates on page load, and with *reduce motion* set in your system the movement turns into a short fade.
+
+## 🪟 Pop-ups als venster
+
+Its own switch in the popup, off by default. e-Boekhouden opens many small windows of a fixed size: help, print previews, pickers that send a choice back, forms that post into a named window. With the switch on, such a window opens as a dialog in the page that opened it instead.
+
+- **Which ones.** Only a window you open with a click, with a size, to a page on `secure*.e-boekhouden.nl` (relative addresses too); an empty one that e-Boekhouden writes a print preview into; and a form posted to a named window. Payments (iDEAL, Wero) and links with a bank or webshop stay a real window: e-Boekhouden opens those empty with a name and sets the address later, at another party, and a short note says so once. So do `www.e-boekhouden.nl`, other sites, PDFs and ordinary links to a new tab.
+- **It works as a window.** The page that opened it gets the dialog's frame as its window (`focus()`, `closed`, writing a preview into it), the page inside gets `window.opener`, and its `window.close()` closes the dialog, with a short *Venster gesloten door e-Boekhouden.* What a classic page's picker sends back reaches that page. If e-Boekhouden then reloads the page below, it does so itself; the extension refreshes nothing.
+- **The dialog.** The size e-Boekhouden asks for, never larger than the screen, below the navbar; on a classic page inside its content frame. *Afdrukken* on print previews prints the page inside, *Nieuw venster* opens the same page as a real window, and Escape, the background or the cross closes it. A page that does not load within 10 seconds, or will not show in a frame, gets a button to open it as a real window.
 
 ## ⏱️ Re-login dialog
 

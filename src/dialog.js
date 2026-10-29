@@ -330,6 +330,7 @@
     }
 
     host.addEventListener('keydown', onKey);
+    close.addEventListener('click', () => handle.close({ reason: 'close' }));
     host.addEventListener('mousedown', (event) => {
       if (event.target === host && options.closeOnBackdrop !== false) handle.close({ reason: 'backdrop' });
     });

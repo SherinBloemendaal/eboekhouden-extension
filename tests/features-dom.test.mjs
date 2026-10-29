@@ -1,6 +1,8 @@
 // Every content script of the manifest, in manifest order, on a page: with
 // all switches off nothing new may appear and the page's own functions stay
-// the page's own. The feature stubs read their switch and do nothing yet.
+// the page's own. With every switch on nothing appears either; only
+// Pop-ups als venster puts its hooks around window.open and form submit,
+// and they pass the page's own calls through.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -25,9 +27,14 @@ for (const [label, settings] of [['all switches off', OFF], ['every switch on', 
     await p.settle();
     assert.equal(p.document.body.innerHTML, '<main id="app"><p>Facturen</p></main>');
     assert.equal(p.document.head.innerHTML, '');
-    assert.equal(p.window.open, natives.open);
+    if (settings.popupDialogs) {
+      assert.notEqual(p.window.open, natives.open, 'Pop-ups als venster watches window.open');
+      assert.notEqual(p.window.HTMLFormElement.prototype.submit, natives.submit, 'and form submits');
+    } else {
+      assert.equal(p.window.open, natives.open);
+      assert.equal(p.window.HTMLFormElement.prototype.submit, natives.submit);
+    }
     assert.equal(p.window.fetch, natives.fetch);
-    assert.equal(p.window.HTMLFormElement.prototype.submit, natives.submit);
     assert.equal(await p.window.EBS.bridge.ready(), true);
     assert.deepEqual(p.sent, [], 'no messages to the service worker');
     p.close();

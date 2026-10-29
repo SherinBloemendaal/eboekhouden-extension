@@ -2,7 +2,8 @@
 //
 // The content scripts run in Chrome's isolated world: they share the DOM with
 // e-Boekhouden but not its JavaScript. A few features need the page's own
-// objects: its window.open and form submits, its CKEditor 4 instances, the
+// objects: its window.open and form submits (and window.opener and close()
+// in a popup shown as a dialog), its CKEditor 4 instances, the
 // responses of its own fetch and XMLHttpRequest calls, and its fetch for a
 // request that must carry the page's own auth. This file runs in the page's
 // world for exactly those hooks and nothing else.
@@ -36,6 +37,8 @@
   const MAX_OBSERVED_BODY = 4 * 1024 * 1024;
   const APP_ORIGIN = /^https:\/\/secure\d*\.e-boekhouden\.nl$/;
   const FRAME_NAME = /^ebs-[a-z0-9-]{1,48}$/;
+  // The frame of a popup dialog (see windowOpen and popupFrame).
+  const POPUP_FRAME = /^ebs-popup-[a-z0-9]{1,24}$/;
 
   // The page's scripts run after this one and could replace these later:
   // keep the originals.
@@ -67,6 +70,9 @@
   const formAction = formGetter('action');
   const formMethod = formGetter('method');
   const elementId = Object.getOwnPropertyDescriptor(ElementProto, 'id')?.get;
+  const byName = Document.prototype.getElementsByName;
+  const IFrameElement = HTMLIFrameElement;
+  const frameWindowOf = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow')?.get;
   const activationOf = typeof navigator !== 'undefined' && navigator.userActivation
     ? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(navigator.userActivation), 'isActive')?.get
     : null;
@@ -167,10 +173,39 @@
   // -------------------------------------------------------------------------
   // window.open: a feature may claim a popup to an e-Boekhouden page (and show
   // it in a dialog). Unclaimed, the page's own window.open runs as always.
-  // A claimed call returns null, as a blocked popup does. Only a call during
-  // a user gesture is offered: one without could not have opened a popup
-  // either, so a script cannot make a dialog appear on its own.
+  // An empty popup (no URL, '' or about:blank: one to write into, or one that
+  // gets its address later) is offered as about:blank. A claimed call returns
+  // the window of the feature's frame when the answer names one ({ claim,
+  // frame: 'ebs-popup-...' }, an iframe in this document), as a popup would
+  // return its window, and null otherwise, as a blocked popup does. Only a
+  // call during a user gesture is offered: one without could not have opened
+  // a popup either, so a script cannot make a dialog appear on its own.
   // -------------------------------------------------------------------------
+
+  // The window of the popup frame named in an answer. An empty frame runs no
+  // script of its own (no content script in about:blank), so its opener and
+  // close() are set from here; a frame with a page does that itself
+  // (popupFrame below).
+  function popupWindow(name, blank) {
+    if (typeof name !== 'string' || !POPUP_FRAME.test(name)) return null;
+    const nodes = apply(byName, doc, [name]);
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      if (!(node instanceof IFrameElement)) continue;
+      const win = frameWindowOf ? apply(frameWindowOf, node, []) : null;
+      if (!win) return null;
+      if (blank) {
+        try {
+          win.opener = window;
+          win.close = function close() {
+            notify('popupClose', { frame: name });
+          };
+        } catch { /* a frame with a page of another origin: it does this itself */ }
+      }
+      return win;
+    }
+    return null;
+  }
 
   const windowOpen = {
     on: false,
@@ -184,13 +219,19 @@
       this.original = original;
       this.wrapper = function open(url, target, features) {
         let claimed = false;
+        let popup = null;
         try {
-          const absolute = !hook.on || url === undefined || url === '' || !userGesture() ? null : appUrl(url);
-          if (absolute) {
-            const answer = ask('windowOpen', { url: absolute, target: text(target, 200), features: text(features, 500) });
-            claimed = own(answer, 'claim') === true;
+          if (hook.on && userGesture()) {
+            const blank = url === undefined || url === '' || String(url) === 'about:blank';
+            const absolute = blank ? 'about:blank' : appUrl(url);
+            if (absolute) {
+              const answer = ask('windowOpen', { url: absolute, target: text(target, 200), features: text(features, 500) });
+              claimed = own(answer, 'claim') === true;
+              if (claimed) popup = popupWindow(own(answer, 'frame'), blank);
+            }
           }
         } catch { /* never in the page's way */ }
+        if (popup) return popup;
         return claimed ? null : apply(original, this, arguments);
       };
       window.open = this.wrapper;
@@ -310,6 +351,34 @@
         this.wrapper = null;
       }
     },
+  };
+
+  // -------------------------------------------------------------------------
+  // The page inside a popup dialog (a frame named ebs-popup-*, made by a
+  // feature for a claimed window.open or form): window.opener is the page
+  // that opened it, and window.close() (self.close()) asks the feature to
+  // close the dialog ('popupClose'), as both would work in a popup window.
+  // Enabled by the frame's own isolated side at document_start, before the
+  // page's first script reads either.
+  // -------------------------------------------------------------------------
+
+  const popupFrame = {
+    on: false,
+    installed: false,
+    enable() {
+      this.on = true;
+      if (this.installed || window.parent === window || !POPUP_FRAME.test(String(window.name))) return;
+      this.installed = true;
+      const nativeClose = window.close;
+      try {
+        window.opener = window.parent;
+      } catch { /* the page decides */ }
+      window.close = function close() {
+        if (popupFrame.on) notify('popupClose', { frame: '' });
+        else apply(nativeClose, window, []);
+      };
+    },
+    disable() { this.on = false; },
   };
 
   // -------------------------------------------------------------------------
@@ -554,7 +623,7 @@
     },
   };
 
-  const CAPABILITIES = { windowOpen, formTarget, ckeditor, observe, request };
+  const CAPABILITIES = { windowOpen, formTarget, popupFrame, ckeditor, observe, request };
 
   const METHODS = {
     'ckeditor.list': { capability: ckeditor, run: () => ckeditor.methods.list() },
