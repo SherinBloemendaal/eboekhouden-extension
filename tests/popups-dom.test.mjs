@@ -22,7 +22,7 @@ const URL_V2 = `${APP}/boekhouden/facturen`;
 const HTML = '<!doctype html><html><head><title>Facturen</title></head><body><main id="app"><button id="go">Herinnering</button>'
   + '<form id="f" action="/bh/print.asp" target="printwin" name="frmPrint"></form>'
   + '<iframe name="hiddenframe" id="hidden"></iframe></main></body></html>';
-const SCRIPTS = ['main-world.js', 'shared.js', 'store.js', 'icons.js', 'dialog.js', 'bridge.js', 'features/popups.js'];
+const SCRIPTS = ['main-world.js', 'shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'bridge.js', 'features/popups.js'];
 const ON = { popupDialogs: true, betterDesign: false };
 
 function userActivation(window, gesture) {
@@ -100,7 +100,11 @@ test('a sized popup to an e-Boekhouden page opens in a dialog, and the page gets
   assert.match(dialog.style.height, /^min\(700px, /);
   assert.equal(text(dialog.querySelector('.ebs-dialog-title')), 'e-Boekhouden');
   assert.equal(text(dialog.querySelector('.ebs-dialog-sub')), 'secure20.e-boekhouden.nl/bh/herinnering.asp?ID=demo');
-  assert.ok(dialog.querySelector('.ebs-popup-stage').classList.contains('loading'), 'the page loads under a skeleton');
+  assert.ok(dialog.querySelector('.ebs-popup-stage').classList.contains('loading'), 'the page loads under a cover');
+  const loading = dialog.querySelector('.ebs-popup-loading');
+  assert.equal(loading.getAttribute('role'), 'status');
+  assert.equal(text(loading), 'Bezig met laden…');
+  assert.ok(loading.querySelector('.ebs-mark-slot > .ebs-mark.ebs-mark-light.is-still'), 'the loader\'s mark, still without Better design');
   const newWindow = dialog.querySelector('.ebs-popup-secondary');
   assert.equal(text(newWindow), 'Nieuw venster');
   assert.equal(newWindow.title, 'Openen in een nieuw venster');
@@ -179,7 +183,7 @@ test('a print preview the page writes: Afdrukken prints the frame, close() close
   assert.match(dialog.style.width, /^min\(1200px, /);
   assert.equal(text(dialog.querySelector('.ebs-dialog-title')), 'Overeenkomst', 'the title the page wrote');
   assert.equal(text(dialog.querySelector('.ebs-dialog-sub')), 'Afdrukvoorbeeld van secure20.e-boekhouden.nl/boekhouden/facturen');
-  assert.ok(dialog.querySelector('.ebs-popup-stage').classList.contains('ready'), 'no skeleton over a written page');
+  assert.ok(dialog.querySelector('.ebs-popup-stage').classList.contains('ready'), 'no loading cover over a written page');
   assert.equal(dialog.querySelector('.ebs-popup-secondary'), null, 'a written preview has no address to open again');
   const printed = [];
   popup.print = () => printed.push('frame');
@@ -276,7 +280,7 @@ test('inside the dialog: opener, title, messages to the page, Escape and close()
   assert.ok(again === iframe.contentWindow, 'the same frame\'s window');
   assert.equal(p.document.querySelectorAll('.ebs-popup-frame').length, 1);
   assert.equal(iframe.src, `${APP}/bh/herinnering.asp?ID=2`);
-  assert.ok(stage.classList.contains('loading'), 'the next page loads under the skeleton');
+  assert.ok(stage.classList.contains('loading'), 'the next page loads under the cover');
   await loaded(iframe);
   const next = loadInFrame(p, iframe, p.gesture);
   await p.settle();

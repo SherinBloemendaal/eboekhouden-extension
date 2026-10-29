@@ -13,10 +13,13 @@
 //   content              a node for the body (the content slot), or
 //   src, frameTitle      a same-origin e-Boekhouden page in an iframe
 //   loading, ready       the text over the body while it loads (default
-//                        'Bezig met laden…'); ready: 'load' (default for src)
-//                        lifts it when the iframe has loaded, 'manual' leaves
-//                        that to setReady(); without src the body shows at once
-//                        unless loading is given
+//                        'Bezig met laden…'), under the animated e-Boekhouden
+//                        mark (EBS.mark: its entry and loop with Better design,
+//                        still and complete without it or with less motion);
+//                        ready: 'load' (default for src) lifts it when the
+//                        iframe has loaded, 'manual' leaves that to setReady();
+//                        without src the body shows at once unless loading is
+//                        given. The cover fades out (150 ms) when it lifts
 //   fallbackUrl          offered as "Openen in een nieuw venster" with an error.
 //                        A frame that cannot show its page (it went to another
 //                        site, or the browser refused it) gets an error by
@@ -43,6 +46,8 @@
 
   const MARGIN = 24;
   const CLOSE_MS = 120;
+  // The mark over a loading body: the loader's, scaled to a dialog.
+  const MARK_SIZE = 120;
   const APP_ORIGIN = /^https:\/\/secure\d*\.e-boekhouden\.nl$/;
   const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])';
 
@@ -183,7 +188,10 @@
     const cover = el('div', 'ebs-dialog-cover');
     cover.setAttribute('role', 'status');
     const coverText = el('span', 'ebs-dialog-cover-text');
-    cover.append(coverText);
+    // Only while it loads; an error shows its text alone.
+    const mark = EBS.mark?.slot({ size: MARK_SIZE, tone: 'light', motion: motion ? 'entry' : 'still' }) ?? null;
+    if (mark) mark.node.classList.add('ebs-dialog-cover-mark');
+    cover.append(...(mark ? [mark.node] : []), coverText);
     body.append(cover);
 
     let foot = null;
@@ -221,12 +229,17 @@
         cover.classList.remove('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
+        // A cover that comes back gets a new mark: its entry plays again.
+        mark?.start();
         cover.hidden = false;
       },
       setReady() {
         cover.hidden = true;
+        // The mark goes once the cover has faded out.
+        mark?.stop();
       },
       setError(text, { fallbackUrl } = {}) {
+        mark?.stop({ immediate: true });
         cover.classList.add('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
@@ -252,6 +265,7 @@
         }
         frame?.removeEventListener('load', onFrameLoad);
         detachFrameKeys();
+        mark?.stop();
         syncInert();
         try {
           options.onClose?.(reason);
@@ -376,9 +390,17 @@
     .ebs-dialog-body { position: relative; flex: 1; display: flex; min-height: 0; }
     .ebs-dialog-body.content { display: block; overflow: auto; padding: 20px; }
     .ebs-dialog-frame { flex: 1; width: 100%; border: 0; }
-    .ebs-dialog-cover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; padding: 24px; background: #fff; font-size: 14px; color: #5d6584; text-align: center; }
-    .ebs-dialog-cover[hidden] { display: none; }
+    .ebs-dialog-cover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; padding: 24px; background: #fff; font-size: 14px; color: #5d6584; text-align: center; opacity: 1; visibility: visible; transition: opacity 150ms ease-out, visibility 0s; }
+    /* A lifted cover fades out over the page. display stays (also against a
+       page rule such as [hidden] { display: none !important }), so it never
+       jumps; visibility takes it out of reach once it is transparent. */
+    .ebs-dialog-cover[hidden] { display: flex !important; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 150ms ease-out, visibility 0s linear 150ms; }
+    /* The mark's glow leaves room under the disc: the text sits closer. */
+    .ebs-dialog-cover .ebs-dialog-cover-mark { margin-bottom: -18px; }
+    .ebs-dialog-cover.error .ebs-dialog-cover-mark { display: none; }
     .ebs-dialog-cover.error { color: #232c4f; }
+    .ebs-dialog-cover.error > * { animation: ebsDialogCoverIn 150ms ease-out both; }
+    @keyframes ebsDialogCoverIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     .ebs-dialog-fallback { font-size: 13px; color: #232c4f; }
     .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
     .ebs-dialog-button { height: 36px; padding: 0 14px; border: 1px solid #d6dbe8; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; cursor: pointer; }
@@ -390,9 +412,11 @@
     .ebs-dialog-backdrop.ebs-motion .ebs-dialog { opacity: 0; transform: scale(0.97); transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1), transform 180ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-dialog-backdrop.ebs-motion.open, .ebs-dialog-backdrop.ebs-motion.open .ebs-dialog { opacity: 1; transform: none; }
     .ebs-dialog-backdrop.ebs-motion.closing, .ebs-dialog-backdrop.ebs-motion.closing .ebs-dialog { transition-duration: ${CLOSE_MS}ms; transition-timing-function: ease-in; pointer-events: none; }
+    @keyframes ebsDialogCoverFade { from { opacity: 0; } to { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) {
       .ebs-dialog-backdrop.ebs-motion .ebs-dialog, .ebs-dialog-backdrop.ebs-motion.open .ebs-dialog { transform: none; transition: opacity 120ms ease-out; }
       .ebs-dialog-backdrop.ebs-motion { transition: opacity 120ms ease-out; }
+      .ebs-dialog-cover.error > * { animation-name: ebsDialogCoverFade; }
     }
   `;
 

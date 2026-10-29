@@ -236,10 +236,13 @@
     // The form's own submit fills a frame without an address.
     if (kind === 'page') iframe.src = url.href;
     const stage = el('div', 'ebs-popup-stage');
-    const skeleton = el('div', 'ebs-popup-skeleton');
-    skeleton.setAttribute('role', 'status');
-    skeleton.setAttribute('aria-label', TEXT.loading);
-    for (const className of ['a', 'b', 'c', 'd']) skeleton.append(el('span', `ebs-popup-skel-${className}`));
+    // While a page loads: the animated e-Boekhouden mark, as in every
+    // dialog that waits (EBS.mark; still without Better design).
+    const loading = el('div', 'ebs-popup-loading');
+    loading.setAttribute('role', 'status');
+    const mark = EBS.mark?.slot({ size: 120, tone: 'light', motion: () => (betterDesign ? 'entry' : 'still') }) ?? null;
+    if (mark) mark.node.classList.add('ebs-popup-loading-mark');
+    loading.append(...(mark ? [mark.node] : []), el('span', 'ebs-popup-loading-text', TEXT.loading));
     const problem = el('div', 'ebs-popup-problem');
     problem.setAttribute('role', 'alert');
     const problemTitle = el('span', 'ebs-popup-problem-title');
@@ -247,7 +250,7 @@
     const reopen = el('button', 'ebs-popup-primary', TEXT.newWindowTitle);
     reopen.type = 'button';
     problem.append(problemTitle, problemText, reopen);
-    stage.append(iframe, skeleton, problem);
+    stage.append(iframe, loading, problem);
 
     const print = kind === 'write' || Boolean(url && PRINT_PAGE.test(url.pathname));
     const actions = [];
@@ -282,12 +285,15 @@
         session.timers.clear();
       },
       showLoading() {
+        // A new mark each time the cover comes back, so its entry plays again.
+        mark?.start();
         stage.classList.remove('ready', 'problem');
         stage.classList.add('loading');
       },
       showReady() {
         stage.classList.remove('loading', 'problem');
         stage.classList.add('ready');
+        mark?.stop();
       },
       showProblem(kindOfProblem) {
         const form = kindOfProblem === 'refused' && session.kind !== 'page';
@@ -296,6 +302,7 @@
         reopen.hidden = kindOfProblem === 'session' || form;
         stage.classList.remove('loading', 'ready');
         stage.classList.add('problem');
+        mark?.stop();
       },
       // A new page is on its way into the frame (a navigation, a form).
       expectPage() {
@@ -674,14 +681,11 @@
     .ebs-popup-print svg, .ebs-popup-secondary svg { flex: none; }
     .ebs-popup-stage { position: relative; flex: 1; display: flex; min-width: 0; min-height: 0; }
     .ebs-popup-frame { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
-    .ebs-popup-skeleton, .ebs-popup-problem { position: absolute; inset: 0; background: #fff; transition: opacity 150ms ease-out, transform 150ms ease-out, visibility 0s linear 150ms; }
-    .ebs-popup-skeleton { display: flex; flex-direction: column; gap: 12px; padding: 20px; opacity: 0; visibility: hidden; }
-    .ebs-popup-skeleton span { display: block; animation: ebs-popup-shimmer 1200ms ease-in-out infinite; }
-    .ebs-popup-skel-a { height: 16px; width: 220px; max-width: 100%; border-radius: 8px; background: #e6e9f1; }
-    .ebs-popup-skel-b { height: 10px; border-radius: 5px; background: #eef0f5; }
-    .ebs-popup-skel-c { height: 10px; width: 80%; border-radius: 5px; background: #eef0f5; }
-    .ebs-popup-skel-d { height: 120px; border-radius: 10px; background: #f3f5fa; }
-    .ebs-popup-stage.loading .ebs-popup-skeleton { opacity: 1; visibility: visible; transition: opacity 150ms ease-out, visibility 0s; }
+    .ebs-popup-loading, .ebs-popup-problem { position: absolute; inset: 0; background: #fff; transition: opacity 150ms ease-out, transform 150ms ease-out, visibility 0s linear 150ms; }
+    .ebs-popup-loading { display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; padding: 24px; font-size: 14px; color: #5d6584; text-align: center; opacity: 0; visibility: hidden; }
+    /* The mark's glow leaves room under the disc: the text sits closer. */
+    .ebs-popup-loading .ebs-popup-loading-mark { margin-bottom: -18px; }
+    .ebs-popup-stage.loading .ebs-popup-loading { opacity: 1; visibility: visible; transition: opacity 150ms ease-out, visibility 0s; }
     .ebs-popup-problem { display: flex; align-items: center; justify-content: center; padding: 20px; opacity: 0; visibility: hidden; transform: translateY(4px); }
     .ebs-popup-problem > * { max-width: 420px; }
     .ebs-popup-problem { flex-direction: column; gap: 10px; text-align: center; }
@@ -692,7 +696,6 @@
     .ebs-popup-primary:hover { background: #30395f; }
     .ebs-popup-primary[hidden] { display: none; }
     .ebs-popup-print:focus-visible, .ebs-popup-secondary:focus-visible, .ebs-popup-primary:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
-    @keyframes ebs-popup-shimmer { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
     .ebs-popup-toast { position: fixed; bottom: 28px; z-index: 2147483200; display: flex; align-items: center; gap: 10px; box-sizing: border-box; padding: 12px 16px; border-radius: 12px; background: #232c4f; color: #fff; font: 13px/1.4 Ubuntu, system-ui, sans-serif; box-shadow: 0 12px 32px rgba(20, 26, 48, .3); opacity: 0; transform: translateY(8px); transition: opacity 150ms ease-out, transform 150ms ease-out; pointer-events: none; }
     .ebs-popup-toast.ebs-motion { transform: translateY(12px); transition-duration: 200ms; transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); }
@@ -702,7 +705,6 @@
     .ebs-popup-toast-mark { flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: #5d9e35; }
     @media (max-width: 420px) { .ebs-popup-toast-done { left: 16px; margin-left: 0; } }
     @media (prefers-reduced-motion: reduce) {
-      .ebs-popup-skeleton span { animation: none; }
       .ebs-popup-problem, .ebs-popup-stage.problem .ebs-popup-problem { transform: none; }
       .ebs-popup-toast, .ebs-popup-toast.ebs-motion { transform: none; transition: opacity 150ms ease-out; }
     }

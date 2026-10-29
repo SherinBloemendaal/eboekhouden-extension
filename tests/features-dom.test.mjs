@@ -23,7 +23,7 @@ for (const [label, settings] of [['all switches off', OFF], ['every switch on', 
   test(`the feature stubs change nothing, ${label}`, async () => {
     const p = page(HTML, { url: 'https://secure20.e-boekhouden.nl/boekhouden/facturen', store: { settings } });
     const natives = { open: p.window.open, fetch: p.window.fetch, submit: p.window.HTMLFormElement.prototype.submit };
-    p.load('main-world.js', 'shared.js', 'store.js', 'icons.js', 'dialog.js', 'bridge.js', 'request.js', ...FEATURES);
+    p.load('main-world.js', 'shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'bridge.js', 'request.js', ...FEATURES);
     await p.settle();
     assert.equal(p.document.body.innerHTML, '<main id="app"><p>Facturen</p></main>');
     assert.equal(p.document.head.innerHTML, '');

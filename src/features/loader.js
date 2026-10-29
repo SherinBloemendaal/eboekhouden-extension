@@ -42,7 +42,9 @@
 // with one bulk GET of EBS.request per page and split into its parts (disc,
 // crescent, e) so the mark can be built up as on the board. Anything that
 // does not look like that mark falls back to our own drawn one, the board's.
-// The file itself is never stored or shipped.
+// The file itself is never stored or shipped. Building and animating the
+// mark is EBS.mark's (src/mark.js); the dialogs in the app's frames use the
+// same module with the drawn mark, so they never request the logo.
 //
 // Classic design: no loader. When the view state says a session is logged
 // in, a plain neutral cover in e-Boekhouden's own background colour hides
@@ -74,7 +76,6 @@
   const APP_WATCH_MS = 10_000;
   const EXIT_MS = { app: 240, login: 180, plain: 150, reduced: 150 };
   const KINDS = new Set(['login', 'already', 'app', 'other']);
-  const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const isTop = window === window.top;
 
@@ -653,10 +654,6 @@
     .ebs-loader.classic { background: #f5f5f5; }
     .ebs-loader.leaving { pointer-events: none; }
     .ebs-content { display: flex; flex-direction: column; align-items: center; padding-bottom: 36px; }
-    .ebs-mark-wrap { position: relative; width: 220px; height: 220px; }
-    .ebs-badge { position: absolute; inset: 0; }
-    .ebs-mark-wrap svg { display: block; overflow: visible; }
-    .ebs-mark-wrap .ebs-e { position: absolute; inset: 0; }
     .ebs-who { margin-top: -14px; display: flex; align-items: center; gap: 10px; height: 32px; }
     .ebs-who.empty { visibility: hidden; }
     .ebs-avatar { width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%; border: 1px solid rgba(255,255,255,0.16); background: rgba(142,160,208,0.2); color: #ffffff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; display: flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -670,37 +667,19 @@
     .ebs-link:focus-visible { outline: 2px solid #8ea0d0; outline-offset: 2px; }
     .ebs-brand { position: absolute; bottom: 24px; left: 0; right: 0; text-align: center; font-size: 12px; letter-spacing: 0.04em; color: rgba(255,255,255,0.36); }
 
-    @keyframes ebsDraw { to { stroke-dashoffset: 0; } }
-    @keyframes ebsBadgeIn { 0% { transform: scale(.2); animation-timing-function: cubic-bezier(0.23,1,0.32,1); } 72% { transform: scale(1.035); animation-timing-function: ease-in-out; } 100% { transform: scale(1); } }
-    @keyframes ebsCresOut { 0% { transform: translateX(8px) scale(.96); animation-timing-function: cubic-bezier(0.23,1,0.32,1); } 65% { transform: translateX(-1.2px) scale(1.01); animation-timing-function: ease-in-out; } 100% { transform: none; } }
-    @keyframes ebsBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(.98); } }
-    @keyframes ebsHaloBreathe { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
-    @keyframes ebsSheen { 0% { opacity: 0; transform: translateX(0); } 6% { opacity: 1; } 32% { opacity: 0; transform: translateX(150px); } 100% { opacity: 0; transform: translateX(150px); } }
     @keyframes ebsRise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @keyframes ebsRiseSmall { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes ebsFadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes ebsFadeOut { from { opacity: 1; } to { opacity: 0; } }
     @keyframes ebsSettle { from { transform: scale(1); } to { transform: scale(.97); } }
 
-    /* Entry, one gesture of about 1.2 s: the e (crossbar, then bowl), the disc, the crescent. */
-    .ebs-bar { stroke-dasharray: 100 110; stroke-dashoffset: 80; animation: ebsDraw 320ms cubic-bezier(0.23,1,0.32,1) both; }
-    .ebs-bowl { stroke-dasharray: 100 110; stroke-dashoffset: 101; animation: ebsDraw 580ms cubic-bezier(0.23,1,0.32,1) 150ms both; }
-    .ebs-badge { transform: scale(0); animation: ebsBadgeIn 520ms linear 340ms forwards; }
-    .ebs-cres { transform-box: fill-box; transform-origin: center; animation: ebsCresOut 560ms linear 640ms both; }
+    /* The mark's own entry and loop are EBS.mark's (src/mark.js); the row under it rises with it. */
     .ebs-who { animation: ebsRise 480ms cubic-bezier(0.23,1,0.32,1) 300ms both; }
     /* The brand line comes with the mark, a moment after the cover itself. */
     .ebs-brand { animation: ebsFadeIn 150ms ease-out both; }
-    /* Idle loop from 1250 ms: breathing, glow and a gleam over the disc, one 2.8 s rhythm. */
-    .ebs-mark-wrap { animation: ebsBreathe 2800ms ease-in-out 1250ms infinite; }
-    .ebs-halo { animation: ebsHaloBreathe 2800ms ease-in-out 1250ms infinite; }
-    .ebs-sheen { opacity: 0; animation: ebsSheen 2800ms ease-in-out 1250ms infinite both; }
 
-    /* A loader that continues from the previous document: the mark is complete and breathes on. */
-    .is-settled .ebs-bar, .is-settled .ebs-bowl { animation: none; stroke-dashoffset: 0; }
-    .is-settled .ebs-badge { animation: none; transform: none; }
-    .is-settled .ebs-cres, .is-settled .ebs-who, .is-settled .ebs-brand { animation: none; }
-    .is-settled .ebs-mark-wrap, .is-settled .ebs-halo { animation-delay: 0ms; }
-    .is-settled .ebs-sheen { animation-delay: 400ms; }
+    /* A loader that continues from the previous document: the mark is complete and breathes on (EBS.mark 'settled'). */
+    .is-settled .ebs-who, .is-settled .ebs-brand { animation: none; }
 
     /* Slow: after 3 s. */
     .is-slow .ebs-slow { animation: ebsRiseSmall 240ms cubic-bezier(0.23,1,0.32,1) 120ms both; }
@@ -714,10 +693,6 @@
 
     /* Less motion: the mark stands still and complete; only fades of 150 ms. */
     @media (prefers-reduced-motion: reduce) {
-      .ebs-bar, .ebs-bowl { animation: none; stroke-dashoffset: 0; }
-      .ebs-badge { animation: none; transform: none; }
-      .ebs-cres, .ebs-halo, .ebs-mark-wrap { animation: none; }
-      .ebs-sheen { animation: none; opacity: 0; }
       .ebs-who { animation: ebsFadeIn 150ms ease-out both; }
       .is-settled .ebs-who { animation: none; }
       .is-slow .ebs-slow { animation: ebsFadeIn 150ms ease-out 120ms both; transform: none; }
@@ -726,93 +701,11 @@
     }
   `;
 
-  function svg(tag, attributes = {}, children = []) {
-    const node = document.createElementNS(SVG_NS, tag);
-    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value));
-    node.append(...children);
-    return node;
-  }
-
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
-  }
-
-  // The disc layer: halo, crescent, disc, rim and gleam. As on the board,
-  // with e-Boekhouden's own crescent and disc when `mark` has them.
-  function badgeSvg(mark) {
-    const defs = svg('defs', {}, [
-      svg('radialGradient', { id: 'ebsHaloGrad', cx: '50%', cy: '50%', r: '50%' }, [
-        svg('stop', { offset: 0, 'stop-color': '#8ea0d0', 'stop-opacity': 0.22 }),
-        svg('stop', { offset: 0.55, 'stop-color': '#8ea0d0', 'stop-opacity': 0.06 }),
-        svg('stop', { offset: 1, 'stop-color': '#8ea0d0', 'stop-opacity': 0 }),
-      ]),
-      svg('linearGradient', { id: 'ebsCrescentGrad', x1: 0, y1: 0, x2: 0, y2: 1 }, [
-        svg('stop', { offset: 0, 'stop-color': '#a9b6e0' }),
-        svg('stop', { offset: 1, 'stop-color': '#8ea0d0' }),
-      ]),
-      svg('linearGradient', { id: 'ebsDiscGrad', x1: 0.15, y1: 0.1, x2: 0.85, y2: 0.95 }, [
-        svg('stop', { offset: 0, 'stop-color': '#30395f' }),
-        svg('stop', { offset: 1, 'stop-color': '#232c4f' }),
-      ]),
-      svg('linearGradient', { id: 'ebsSheenGrad', x1: 0, y1: 0, x2: 1, y2: 0 }, [
-        svg('stop', { offset: 0, 'stop-color': '#ffffff', 'stop-opacity': 0 }),
-        svg('stop', { offset: 0.5, 'stop-color': '#ffffff', 'stop-opacity': 0.16 }),
-        svg('stop', { offset: 1, 'stop-color': '#ffffff', 'stop-opacity': 0 }),
-      ]),
-      svg('clipPath', { id: 'ebsDiscClip' }, [svg('circle', { cx: 48, cy: 48, r: 44 })]),
-    ]);
-    const shape = (part, extra = {}) => svg('path', { d: part.d, transform: part.transform, fill: part.fill, 'fill-rule': part.fillRule, ...extra });
-    const layers = [svg('circle', { class: 'ebs-halo', cx: 48, cy: 48, r: 86, fill: 'url(#ebsHaloGrad)' })];
-    if (!mark) {
-      layers.push(
-        svg('circle', { class: 'ebs-cres', cx: 40, cy: 48, r: 43, fill: 'url(#ebsCrescentGrad)' }),
-        svg('circle', { cx: 48, cy: 48, r: 44, fill: 'url(#ebsDiscGrad)', stroke: '#ffffff', 'stroke-opacity': 0.1, 'stroke-width': 1 }),
-      );
-    } else {
-      if (mark.crescent) layers.push(svg('g', { class: 'ebs-cres' }, [shape(mark.crescent)]));
-      layers.push(shape(mark.disc), svg('circle', { cx: 48, cy: 48, r: 44, fill: 'none', stroke: '#ffffff', 'stroke-opacity': 0.1, 'stroke-width': 1 }));
-    }
-    layers.push(svg('g', { 'clip-path': 'url(#ebsDiscClip)' }, [
-      svg('g', { transform: 'rotate(20 48 48)' }, [svg('rect', { class: 'ebs-sheen', x: -34, y: -30, width: 30, height: 156, fill: 'url(#ebsSheenGrad)' })]),
-    ]));
-    return svg('svg', { width: 220, height: 220, viewBox: '-40 -40 176 176', 'aria-hidden': 'true', focusable: 'false' }, [defs, ...layers]);
-  }
-
-  // The board's e: crossbar (sticking out left over the bowl) and bowl.
-  const E_BAR = 'M19 48H71';
-  const E_BOWL = 'M67 48A18 18 0 1 0 62.79 59.57';
-  // Its bounds with the stroke: x 19..71, y 48 - 22.25 .. 48 + 22.25.
-  const E_BOX = { x: 19, y: 25.75, w: 52, h: 44.5 };
-
-  // The e layer. Ours is drawn as two strokes. e-Boekhouden's is a filled
-  // glyph: the same two strokes, wide and fitted to its bounds, draw a mask
-  // that uncovers it, and the mask goes once the e is complete, so the end
-  // result is exactly their glyph.
-  function eSvg(mark, { animate }) {
-    const strokes = (width, extra = {}) => [
-      svg('path', { class: 'ebs-bowl', d: E_BOWL, pathLength: 100, fill: 'none', stroke: '#ffffff', 'stroke-width': width, 'stroke-linecap': 'butt', ...extra }),
-      svg('path', { class: 'ebs-bar', d: E_BAR, pathLength: 100, fill: 'none', stroke: '#ffffff', 'stroke-width': width, 'stroke-linecap': 'butt', ...extra }),
-    ];
-    const root = svg('svg', { class: 'ebs-e', width: 220, height: 220, viewBox: '-40 -40 176 176', 'aria-hidden': 'true', focusable: 'false' });
-    if (!mark) {
-      root.append(...strokes(8.5));
-      return { root, done: () => {} };
-    }
-    const glyph = svg('g', {}, mark.e.map((part) => svg('path', { d: part.d, transform: part.transform, fill: part.fill, 'fill-rule': part.fillRule })));
-    root.append(glyph);
-    if (!animate) return { root, done: () => {} };
-    const sx = mark.eBox.w / E_BOX.w;
-    const sy = mark.eBox.h / E_BOX.h;
-    const fit = `matrix(${round(sx)} 0 0 ${round(sy)} ${round(mark.eBox.x - E_BOX.x * sx)} ${round(mark.eBox.y - E_BOX.y * sy)})`;
-    const mask = svg('mask', { id: 'ebsEMask', maskUnits: 'userSpaceOnUse', x: -40, y: -40, width: 176, height: 176 }, [
-      svg('g', { transform: fit }, strokes(8.5 * 2.2)),
-    ]);
-    root.prepend(svg('defs', {}, [mask]));
-    glyph.setAttribute('mask', 'url(#ebsEMask)');
-    return { root, done: () => glyph.removeAttribute('mask') };
   }
 
   // e-Boekhouden's logo through the request layer: one bulk GET per page,
@@ -935,7 +828,7 @@
       host.style.cssText = 'all: initial !important; position: fixed !important; inset: 0 !important; z-index: 2147483647 !important; display: block !important;';
       const root = host.attachShadow({ mode: 'open' });
       const style = document.createElement('style');
-      style.textContent = CSS;
+      style.textContent = `${EBS.mark.css}${CSS}`;
       const box = el('div', `ebs-loader${mode === 'classic' ? ' classic' : ''}`);
       box.setAttribute('role', 'status');
       box.setAttribute('aria-live', 'polite');
@@ -963,13 +856,9 @@
       if (name) state.box.setAttribute('aria-label', `Administratie ${name} wordt geopend`);
 
       const content = el('div', 'ebs-content');
-      const wrap = el('div', 'ebs-mark-wrap');
-      const badge = el('div', 'ebs-badge');
-      badge.append(badgeSvg(state.mark));
-      const e = eSvg(state.mark, { animate: !settled && !reducedMotion() });
-      wrap.append(badge, e.root);
-      // The mask goes once the bowl is drawn (150 + 580 ms).
-      state.timers.push(window.setTimeout(e.done, 760));
+      // The board's mark at full size, with e-Boekhouden's own parts when
+      // the logo was read (EBS.mark lifts the mask of its e once it is drawn).
+      const { node: wrap } = EBS.mark.create({ size: 220, tone: 'dark', motion: settled ? 'settled' : 'entry', logo: state.mark });
 
       const who = el('div', `ebs-who${name ? '' : ' empty'}`);
       const avatarBox = el('span', 'ebs-avatar');

@@ -8,7 +8,7 @@ import { closeAll, page } from './dom.mjs';
 after(closeAll);
 
 const URL_PAGE = 'https://secure20.e-boekhouden.nl/boekhouden/openposten?soort=Debiteur&zoeken=true';
-const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'request.js', 'features/openposts.js', 'features/remind.js'];
+const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'request.js', 'features/openposts.js', 'features/remind.js'];
 const LADDER = { steps: [
   { id: 1, name: 'Herinnering', soort: 'E' }, { id: 2, name: 'Herinnering 2', soort: 'E' },
   { id: 3, name: 'Aanmaning', soort: 'E' }, { id: 4, name: 'Ingebrekestelling', soort: 'E' },
@@ -349,6 +349,9 @@ test('the reminder dialog shows e-Boekhouden\'s own form with the selection in i
   assert.equal(src.searchParams.get('proefAanmaning'), 'false');
   assert.equal(src.searchParams.get('returnUrl'), '/boekhouden/openposten?soort=Debiteur&zoeken=true');
   assert.equal(panel.querySelector('.ebs-dialog-cover').hidden, false, 'loading until the frame says it is ready');
+  // The loader's mark over the loading text, animated with Better design.
+  assert.ok(panel.querySelector('.ebs-dialog-cover > .ebs-mark-slot > .ebs-mark.ebs-mark-light:not(.is-still)'));
+  assert.equal(panel.querySelector('.ebs-dialog-cover-text').textContent, 'Bezig met laden…');
   // The template text is one item for a click of the user; this click was
   // not one (jsdom), so the request layer refused it: no request.
   assert.equal(p.calls.length, 1);
@@ -366,6 +369,10 @@ test('the reminder dialog shows e-Boekhouden\'s own form with the selection in i
   assert.ok(document.querySelector('.ebs-rm-dialog'));
   say({ type: 'ready' });
   assert.equal(panel.querySelector('.ebs-dialog-cover').hidden, true);
+  // The cover fades out; the mark (and its loop) goes once it has.
+  assert.ok(panel.querySelector('.ebs-dialog-cover .ebs-mark'));
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  assert.equal(panel.querySelector('.ebs-dialog-cover .ebs-mark'), null);
   say({ type: 'close', reason: 'cancel' });
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(document.querySelector('.ebs-rm-dialog'), null);
