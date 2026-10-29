@@ -57,8 +57,9 @@ function withPage(html, url, { store = {}, invoices = 3, mail = null } = {}) {
       body = { data: Array.from({ length: invoices }, (_, i) => ({ id: 100 + i, nummer: `2026-${String(400 + i).padStart(4, '0')}`, relatie: `Demo Klant ${i} B.V.`, datum: '2026-10-12T00:00:00', uitersteBetaaldatum: '2026-10-26T00:00:00', bedragIncl: 3448.5, bedragExcl: 2850, kenmerk: '' })) };
     } else if (href.includes('maildata')) {
       body = mail ?? {};
-    } else if (/factuur\/\d+$/.test(href)) {
-      body = { id: 100, regels: [{ aantal: 1, omschrijving: 'Management fee oktober', prijsPerEenheid: 2850, btwPercentage: '21%', totaal: 2850 }] };
+    } else if (href.includes('factuuritem/griditems')) {
+      // As e-Boekhouden's invoice form gets its lines: a plain list.
+      body = [{ id: 1, code: 'MF', aantal: 1, enkelvoud: 'maand', meervoud: 'maanden', omschrijving: 'Management fee oktober', prijsExcl: 2850, prijsIncl: 3448.5, btw: 'HOOG_VERK_21', korting: null, kortingIsPerc: false }];
     }
     return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
   };
@@ -441,7 +442,8 @@ test('invoice: three parts of e-Boekhouden, each with its own save, a sketch and
   assert.equal(frame.name, 'ebs-tpl-columns');
   assert.equal(frame.getAttribute('src'), `${ORIGIN}/beheer/sjabloonregel/5`);
   assert.equal(document.querySelector('.ebs-tpl-sheet-title').textContent, 'Factuur VB-0001');
-  assert.equal(document.querySelector('.ebs-tpl-card-notes a').getAttribute('href'), `${ORIGIN}/v1/api/factuursjabloon/download/5`);
+  // Eenvoudig has no file: Sjabloon bekijken is e-Boekhouden's editor.
+  assert.equal(document.querySelector('.ebs-tpl-card-notes a').getAttribute('href'), `${ORIGIN}/v1/api/factuursjabloon/editor/5/`);
   assert.match(document.querySelector('.ebs-tpl-vars .ebs-tpl-muted').textContent, /\(66 codes\)/);
   assert.equal(document.querySelector('.ebs-tpl-vars .ebs-tpl-var-code').textContent, '[NUMMER]', 'the invoice codes first, as on the board');
 
@@ -509,9 +511,11 @@ test('invoice: picking an invoice is one item request; until it is there the ske
   assert.ok(document.querySelector('.ebs-tpl-sheet').classList.contains('loading'), 'a quiet grey page while it loads');
   await p.settle();
   assert.equal(p.slots(), 2);
-  assert.ok(p.fetched[1].endsWith('/v1/api/factuur/1099'), p.fetched[1]);
+  assert.ok(p.fetched[1].endsWith('/v1/api/factuuritem/griditems?factid=1099'), p.fetched[1]);
   assert.equal(document.querySelector('.ebs-tpl-sheet-title').textContent, 'Factuur 2026-1399');
-  assert.ok([...document.querySelectorAll('.ebs-tpl-sheet-row:not(.head) span')].some((node) => node.textContent === 'Management fee oktober'));
+  const cells = [...document.querySelectorAll('.ebs-tpl-sheet-row:not(.head) span')].map((node) => node.textContent);
+  assert.deepEqual(cells, ['Management fee oktober', '1', '2.850,00', '21%', '2.850,00'], 'the real line of the invoice, in the sketch\'s columns');
+  assert.equal(document.querySelector('.ebs-tpl-preview-status').textContent, '');
   assert.equal(document.querySelector('.ebs-tpl-sheet-total').textContent, 'Totaal € 3.448,50');
   p.close();
 });
@@ -676,5 +680,284 @@ test('columns in the frame of the invoice screen: only the editor, and its state
   const last = got.filter((one) => one?.type === 'ebs-tpl-columns').pop();
   assert.deepEqual(plain(last.columns.map((one) => one.id)), ['OMSCHRIJVING', 'AANTAL', 'PPE', 'BTWPERC', 'REGELTOTAAL']);
   assert.equal(last.columns[0].width, '*');
+  p.close();
+});
+
+// ---------------------------------------------------------------------------
+// Audit regressions
+// ---------------------------------------------------------------------------
+
+test('values: a filled text that does not line up gives nothing at once (no backtracking), spaces do not count', async () => {
+  const p = page('<!doctype html><html><head></head><body></body></html>', { url: `${ORIGIN}/boekhouden/facturen` });
+  p.load('shared.js', 'icons.js', 'features/templates.js');
+  const T = p.window.EBS.templates;
+  let source = '';
+  let filled = '';
+  for (let i = 0; i < 40; i += 1) {
+    source += `Regel ${i} met waarde [RELCODE${i}] en meer tekst. `;
+    filled += `Regel ${i} met waarde Waarde ${i} en meer tekst. `;
+  }
+  const started = Date.now();
+  assert.deepEqual({ ...T.alignValues(source, `${filled}Een regel die er in het sjabloon niet staat.`) }, {});
+  assert.ok(Date.now() - started < 200, `${Date.now() - started} ms for a text that does not line up`);
+  const values = T.alignValues(source, filled);
+  assert.equal(values.RELCODE0, 'Waarde 0');
+  assert.equal(values.RELCODE39, 'Waarde 39');
+  assert.equal(T.alignValues('Aan [RELBEDRIJF], ter attentie', 'Aan Demo B.V.,ter attentie').RELBEDRIJF, 'Demo B.V.', 'a missing space is no mismatch');
+  const adjacent = T.alignValues('Groet, [ABBEDRIJF][ABEMAIL] en [ABWEBSITE]', 'Groet, Demo B.V.info@demo.test en www.demo.test');
+  assert.equal(adjacent.ABBEDRIJF, undefined);
+  assert.equal(adjacent.ABEMAIL, undefined, 'the second of two touching codes is just as unknown');
+  assert.equal(adjacent.ABWEBSITE, 'www.demo.test');
+  p.close();
+});
+
+test('checks: the per-article codes of an invoice template ([AAN1] up to [BTW100]) are known', async () => {
+  const p = page('<!doctype html><html><head></head><body></body></html>', { url: `${ORIGIN}/boekhouden/facturen` });
+  p.load('shared.js', 'icons.js', 'features/templates.js');
+  const T = p.window.EBS.templates;
+  const ok = T.checkTemplate(['factuur'], ['[AAN1] [OM1] [PPE12] [TOT100] [BTW3] [E7] [KO2]']);
+  assert.deepEqual(plain(ok.unknown), []);
+  const bad = T.checkTemplate(['factuur'], ['[AAN101] [AAN0]']);
+  assert.deepEqual(plain(bad.unknown.map((one) => one.code)), ['[AAN101]', '[AAN0]']);
+  assert.equal(T.checkTemplate(['mail'], ['[AAN1]']).unknown.length, 1, 'only in invoice templates');
+  p.close();
+});
+
+test('e-mail: Escape closes the [ list in the editor for good, and Enter is CKEditor\'s again once it is closed', async () => {
+  const p = await emailPage({ body: '<p>Postcode: [RELP</p>' });
+  const { document, frame } = p;
+  const doc = frame.contentDocument;
+  const view = frame.contentWindow;
+  const text = doc.body.querySelector('p').firstChild;
+  const range = doc.createRange();
+  range.setStart(text, text.data.length);
+  range.collapse(true);
+  doc.getSelection().removeAllRanges();
+  doc.getSelection().addRange(range);
+  view.dispatchEvent(new view.KeyboardEvent('keyup', { key: 'P', bubbles: true }));
+  const pop = document.querySelector('.ebs-tpl-pop.floating');
+  assert.equal(pop.hidden, false);
+  const escape = new view.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  doc.body.dispatchEvent(escape);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(pop.hidden, true);
+  doc.body.dispatchEvent(new view.KeyboardEvent('keyup', { key: 'Escape', bubbles: true }));
+  assert.equal(pop.hidden, true, 'the release of Escape does not open the list again');
+  let reached = 0;
+  doc.body.addEventListener('keydown', () => { reached += 1; });
+  const enter = new view.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  doc.body.dispatchEvent(enter);
+  assert.equal(enter.defaultPrevented, false);
+  assert.equal(reached, 1, 'CKEditor gets the Enter: a new line');
+  assert.deepEqual(p.inserted, []);
+  // Typing on opens it again; leaving the editor closes it.
+  view.dispatchEvent(new view.KeyboardEvent('keyup', { key: 'P', bubbles: true }));
+  assert.equal(pop.hidden, false);
+  view.dispatchEvent(new view.FocusEvent('blur'));
+  assert.equal(pop.hidden, true, 'an open list never waits for an Enter in an editor without focus');
+  const later = new view.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  doc.body.dispatchEvent(later);
+  assert.equal(later.defaultPrevented, false);
+  // A key during an IME composition is the composition's.
+  view.dispatchEvent(new view.KeyboardEvent('keyup', { key: 'P', bubbles: true }));
+  const composing = new view.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true });
+  doc.body.dispatchEvent(composing);
+  assert.equal(composing.defaultPrevented, false);
+  assert.deepEqual(p.inserted, []);
+  p.close();
+});
+
+test('e-mail: the highlights in the editor leave the text that CKEditor saves alone', async () => {
+  const p = await emailPage({ body: '<p>[RELAANHEF], factuur [FACTNUMER].</p>' });
+  const { frame } = p;
+  const view = frame.contentWindow;
+  // jsdom has no CSS Custom Highlight API: a stand-in that records.
+  const registry = new Map();
+  view.CSS = { highlights: registry };
+  view.Highlight = class { constructor(...ranges) { this.ranges = ranges; } };
+  const before = p.window.CKEDITOR.instances.editor1.getData();
+  view.dispatchEvent(new view.KeyboardEvent('keyup', { key: 'a', bubbles: true }));
+  await p.settle();
+  assert.equal(registry.get('ebs-tpl-var').ranges.length, 1);
+  assert.equal(registry.get('ebs-tpl-unknown').ranges.length, 1);
+  assert.equal(p.window.CKEDITOR.instances.editor1.getData(), before, 'getData is the same');
+  assert.equal(frame.contentDocument.body.innerHTML, before);
+  assert.equal(frame.contentDocument.body.querySelector('style, span, mark'), null, 'nothing added to the editable body');
+  p.close();
+});
+
+test('e-mail: after Klassieke weergave our listeners are gone from e-Boekhouden\'s own fields', async () => {
+  const p = await emailPage();
+  const { document, window } = p;
+  [...document.querySelectorAll('.ebs-tpl-link')].find((node) => node.textContent === 'Klassieke weergave').click();
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-tpl-head'), null);
+  const subject = document.querySelector('#subject');
+  subject.value = 'Factuur [FACTN';
+  subject.setSelectionRange(subject.value.length, subject.value.length);
+  subject.dispatchEvent(new window.Event('input', { bubbles: true }));
+  const pop = document.querySelector('.ebs-tpl-pop.floating');
+  assert.ok(!pop || pop.hidden, 'no [ list on the classic screen');
+  const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  subject.dispatchEvent(enter);
+  assert.equal(enter.defaultPrevented, false);
+  assert.equal(subject.value, 'Factuur [FACTN');
+  p.close();
+});
+
+test('invoice: Sjabloon bekijken opens e-Boekhouden\'s editor for Eenvoudig and the RTF file for Geavanceerd', async () => {
+  const p = withPage(invoiceHtml(), `${ORIGIN}/beheer/sjabloon/factuur/5`);
+  await p.settle();
+  const view = p.document.querySelector('.ebs-tpl-card-notes a');
+  view.dispatchEvent(new p.window.MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+  await p.settle();
+  assert.equal(p.document.querySelector('.ebs-tpl-editor-dialog iframe.ebs-dialog-frame').getAttribute('src'), `${ORIGIN}/v1/api/factuursjabloon/editor/5/`);
+  p.close();
+  const rtf = withPage(invoiceHtml({ type: 'A' }), `${ORIGIN}/beheer/sjabloon/factuur/5`);
+  await rtf.settle();
+  const link = rtf.document.querySelector('.ebs-tpl-card-notes a');
+  assert.equal(link.getAttribute('href'), `${ORIGIN}/v1/api/factuursjabloon/download/5`);
+  assert.match(link.title, /RTF-bestand/);
+  rtf.close();
+});
+
+test('invoice: the editor\'s saved message counts from its own frame (or a frame in it) only', async () => {
+  const p = withPage(invoiceHtml(), `${ORIGIN}/beheer/sjabloon/factuur/5`);
+  await p.settle();
+  const { document, window } = p;
+  document.querySelector('.ebs-tpl-part3 .ebs-tpl-button').click();
+  await p.settle();
+  const frame = document.querySelector('.ebs-tpl-editor-dialog iframe.ebs-dialog-frame');
+  const say = (source, origin = ORIGIN) => window.dispatchEvent(new window.MessageEvent('message', { origin, source, data: 'sjabeditor-saved' }));
+  // Another frame of the page, and the right frame from another origin.
+  const other = document.createElement('iframe');
+  document.body.append(other);
+  say(other.contentWindow);
+  say(frame.contentWindow, 'https://evil.test');
+  say(window);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(document.querySelector('.ebs-tpl-editor-dialog'), 'still open');
+  // A frame inside the editor's page.
+  const editorDoc = frame.contentDocument;
+  const inner = editorDoc.createElement('iframe');
+  (editorDoc.body ?? editorDoc.documentElement ?? editorDoc.appendChild(editorDoc.createElement('html'))).append(inner);
+  assert.equal(inner.contentWindow.parent, frame.contentWindow);
+  say(inner.contentWindow);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(document.querySelector('.ebs-tpl-editor-dialog'), null);
+  p.close();
+});
+
+test('invoice: an English template\'s sketch has English sample headers; leaving the screen closes the editor', async () => {
+  const p = withPage(invoiceHtml(), `${ORIGIN}/beheer/sjabloon/factuur/5`);
+  await p.settle();
+  const { document } = p;
+  [...document.querySelectorAll('.ebs-tpl-lang-option')].find((node) => node.textContent === 'EN').click();
+  await p.settle();
+  assert.deepEqual([...document.querySelectorAll('.ebs-tpl-sheet-row.head span')].map((node) => node.textContent), ['Description', 'Quantity', 'Unit price', 'VAT', 'Line total']);
+  document.querySelector('.ebs-tpl-part3 .ebs-tpl-button').click();
+  await p.settle();
+  assert.ok(document.querySelector('.ebs-tpl-editor-dialog'));
+  p.window.history.pushState({}, '', '/beheer/sjabloon/factuur');
+  document.querySelector('app-factuur-sjabloon-form').remove();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-tpl-head'), null);
+  assert.equal(document.querySelector('.ebs-tpl-editor-dialog'), null, 'the editor does not stay open over another page');
+  p.close();
+});
+
+test('columns: a second arrow key while e-Boekhouden still redraws is not a second move', async () => {
+  const p = withPage(columnsHtml(), `${ORIGIN}/beheer/sjabloonregel/5`);
+  const native = nativeColumns(p.window, { async: true });
+  await p.settle();
+  const { document, window } = p;
+  const handle = document.querySelectorAll('tr.ebs-tpl-col-row')[1].querySelector('.ebs-tpl-col-handle');
+  const down = () => handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+  down();
+  down();
+  down();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await p.settle();
+  assert.deepEqual(native.clicks, [[1, 2]], 'one move, never a click from a stale position');
+  assert.deepEqual(native.ids(), ['OMSCHRIJVING', 'PPE', 'AANTAL', 'BTWPERC', 'REGELTOTAAL']);
+  p.close();
+});
+
+test('columns frame: after e-Boekhouden saved, the parent is told once, however much its list page changes', async () => {
+  const p = await framedPage('<!doctype html><html><head></head><body><router-outlet></router-outlet><app-factuur-sjabloon-list><div id="grid"></div></app-factuur-sjabloon-list></body></html>', {
+    url: `${ORIGIN}/beheer/sjabloon/factuur?MSG=Gegevens%20zijn%20gewijzigd.`,
+    parentUrl: `${ORIGIN}/beheer/sjabloon/factuur/5`,
+    parentHtml: `<html><body><iframe name="ebs-tpl-columns" src="${ORIGIN}/beheer/sjabloon/factuur?MSG=Gegevens%20zijn%20gewijzigd."></iframe></body></html>`,
+    frameName: 'ebs-tpl-columns',
+    store: { settings: { betterDesign: true } },
+    answer: () => ({}),
+  });
+  const got = [];
+  p.window.parent.addEventListener('message', (event) => got.push(event.data));
+  p.window.name = 'ebs-tpl-columns';
+  p.load(...SCRIPTS);
+  await p.settle();
+  for (let i = 0; i < 5; i += 1) {
+    p.document.getElementById('grid').append(p.document.createElement('div'));
+    await p.settle();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(got.filter((one) => one?.saved).length, 1);
+  p.close();
+});
+
+test('the styles: every hover fades, and no hover switches display or visibility', async () => {
+  const { readFileSync } = await import('node:fs');
+  const text = readFileSync(new URL('../src/features/templates.js', import.meta.url), 'utf8');
+  const css = text.slice(text.indexOf('const CSS = `'), text.indexOf('`;', text.indexOf('const CSS = `'))).replace(/\$\{FIELD\}/g, '');
+  const hovers = [...css.matchAll(/([^{}\n]*:hover[^{}\n]*)\{([^}]*)\}/g)];
+  assert.ok(hovers.length > 5);
+  for (const [, selector, body] of hovers) {
+    assert.doesNotMatch(body, /\b(display|visibility)\s*:/, selector);
+    // The element itself (the last part of the selector without :hover) has
+    // a rule with a transition, on the same classes or fewer.
+    const last = (one) => one.trim().replace(/:hover|:has\(img\)/g, '').split(/\s+/).pop();
+    const transitions = [...css.matchAll(/([^{}\n]+)\{([^}]*)\}/g)].filter(([, , decl]) => /transition\s*:/.test(decl)).flatMap(([, sel]) => sel.split(',').map(last));
+    for (const part of selector.split(',')) {
+      const base = last(part);
+      assert.ok(transitions.some((one) => base.startsWith(one)), `no transition for ${part.trim()}`);
+    }
+  }
+});
+
+test('e-mail: e-Boekhouden leaving the page right after Opslaan leaves no error behind', async () => {
+  const p = await emailPage();
+  const { document, window } = p;
+  const errors = [];
+  window.addEventListener('error', (event) => errors.push(event.error ?? event.message));
+  document.querySelector('form.form').addEventListener('submit', (event) => event.preventDefault());
+  document.querySelector('.ebs-tpl-head .ebs-tpl-button.primary').click();
+  // Saved: Angular goes to the list.
+  window.history.pushState({}, '', '/beheer/sjabloon/email');
+  document.querySelector('app-email-sjabloon-form').remove();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-tpl-head'), null);
+  assert.deepEqual(errors.map(String), []);
+  p.close();
+});
+
+test('preview: a code at the end of a paragraph stays in that paragraph; the board\'s codes come first in their group', async () => {
+  const p = page('<!doctype html><html><head></head><body></body></html>', { url: `${ORIGIN}/boekhouden/facturen` });
+  p.load('shared.js', 'icons.js', 'features/templates.js');
+  const T = p.window.EBS.templates;
+  const box = p.document.createElement('div');
+  box.append(T.sanitize('<p>Uw referentie: [FACTNUMER]</p><p>Factuur [FACTNUMMER]</p><p>Met vriendelijke groet</p>'));
+  T.fillCodes(box, { values: { FACTNUMMER: '2026-0412' }, known: T.variablesOf('mail'), missingTitle: '' });
+  const paragraphs = [...box.children];
+  assert.equal(paragraphs.length, 3);
+  assert.ok(paragraphs.every((node) => node.tagName === 'P'), 'nothing between the paragraphs');
+  assert.equal(paragraphs[0].querySelector('.ebs-tpl-unknown').textContent, '[FACTNUMER]');
+  assert.equal(paragraphs[1].querySelector('b').textContent, '2026-0412');
+  const groups = T.grouped(T.variablesOf('mail'));
+  assert.deepEqual([...groups[0].items.slice(0, 6)].map((one) => one.name), ['FACTNUMMER', 'FACTDATUM', 'TOTAAL', 'VERVALDATUM', 'FACTTERMIJN', 'FACTKENMERK']);
+  assert.deepEqual([...groups[1].items.slice(0, 2)].map((one) => one.name), ['RELAANHEF', 'RELBEDRIJF']);
+  assert.equal(groups.reduce((sum, group) => sum + group.items.length, 0), 31);
   p.close();
 });

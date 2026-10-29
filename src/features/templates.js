@@ -38,9 +38,10 @@
   // The variables, copied from e-Boekhouden's own help screens in its bundle:
   // app-factuur-mailen-uitleg-popup (e-mails with an invoice, 31 codes),
   // app-mailinglijst-uitleg-popup ("Sjablooncodes nieuwsbrief", 15) and
-  // app-factuur-sjabloon-uitleg-popup (invoice templates, 66 rows; one row
-  // has two spellings, and [KVK] is listed twice there). For quotes
-  // e-Boekhouden has no list of its own.
+  // app-factuur-sjabloon-uitleg-popup (invoice templates: 66 codes here; its
+  // 78 rows also list [KVK] twice and eleven per-article ranges such as
+  // "[AAN 1 t/m 100]", see ARTICLE_CODE). One row has two spellings. For
+  // quotes e-Boekhouden has no list of its own.
   // ---------------------------------------------------------------------------
 
   const VARIABLES = {
@@ -164,6 +165,11 @@
     ],
   };
 
+  // The per-article codes of an invoice template: [AAN1] up to [AAN100], and
+  // so on for each of e-Boekhouden's eleven "... 1 t/m 100" rows. Known for
+  // the checks, not listed one by one in the panel.
+  const ARTICLE_CODE = /^(?:AAN|EEN|CODE|OM|E|PPE|KORT|OPSL|KO|TOT|BTW)(?:100|[1-9]\d?)$/;
+
   const INVOICE_CODES = new Set(['DATUM', 'NUMMER', 'KENMERK', 'TERMIJN', 'NOTITIE', 'VARTEKST', 'VDATUM']);
   const LINE_CODES = new Set(['LAAN', 'LEEN', 'LCODE', 'LOM', 'LE', 'LPPE', 'LKORT', 'LOPSL', 'LKO', 'LTOT', 'LBTW']);
   const TOTAL_CODES = new Set(['TOT_EX', 'LST_BTW_OM', 'LEB', 'LST_BTW', 'TOTAAL', 'FACTUURREGELS']);
@@ -181,6 +187,9 @@
   }
 
   const GROUP_ORDER = ['Factuur', 'Totalen', 'Regels', 'Relatie', 'Uw bedrijf'];
+  // The codes the board puts first in their group; the rest follow in
+  // e-Boekhouden's order.
+  const BOARD_FIRST = ['FACTNUMMER', 'FACTDATUM', 'TOTAAL', 'VERVALDATUM', 'FACTTERMIJN', 'FACTKENMERK', 'RELAANHEF', 'RELBEDRIJF', 'RELCONTACTPERSOON', 'RELEMAILFACTUUR', 'RELIBAN', 'ABBEDRIJF', 'ABEMAIL', 'ABTELEFOON', 'ABOBNUMMER'];
 
   // [{ code: '[FACTNUMMER]', name: 'FACTNUMMER', aliases: [], label, group }]
   // in e-Boekhouden's order; one entry per row of its list.
@@ -207,7 +216,12 @@
 
   function grouped(list) {
     const groups = new Map();
-    for (const entry of list) {
+    const rank = (entry) => {
+      const at = BOARD_FIRST.indexOf(entry.name);
+      return at < 0 ? BOARD_FIRST.length : at;
+    };
+    const ordered = list.map((entry, index) => ({ entry, index })).sort((a, b) => rank(a.entry) - rank(b.entry) || a.index - b.index).map(({ entry }) => entry);
+    for (const entry of ordered) {
       if (!groups.has(entry.group)) groups.set(entry.group, []);
       groups.get(entry.group).push(entry);
     }
@@ -279,6 +293,10 @@
     KORTING: { title: 'Korting', width: '10' },
   };
 
+  // The sketch's headers for the sample columns of an English template (the
+  // real columns carry their own titles).
+  const COLUMN_TITLES_EN = { AANTAL: 'Quantity', CODE: 'Code', OMSCHRIJVING: 'Description', REGELTOTAAL: 'Line total', BTWPERC: 'VAT', PPE: 'Unit price', EENHEID: 'Unit', EURO: '', KORTING: 'Discount' };
+
   const LABELS = {
     NL: { invoice: 'Factuur', date: 'Factuurdatum', due: 'Vervaldatum', total: 'Totaal' },
     EN: { invoice: 'Invoice', date: 'Invoice date', due: 'Due date', total: 'Total' },
@@ -342,8 +360,9 @@
     const all = texts.join('\n');
     const used = new Set();
     const unknown = [];
+    const article = kinds.includes('factuur');
     for (const { code, name } of findCodes(all)) {
-      if (names.has(name)) {
+      if (names.has(name) || (article && ARTICLE_CODE.test(name))) {
         used.add(name);
         continue;
       }
@@ -388,8 +407,12 @@
   }
 
   // Values of codes, read from e-Boekhouden's own filled-in copy of the saved
-  // template: the saved text with codes against the filled text. A code with
-  // no text between it and the next one is ambiguous and stays unknown.
+  // template: the saved text with codes against the filled text. Spaces do
+  // not count. Each piece of text between two codes is looked up once, after
+  // the previous one (linear: a regular expression with a lazy group per code
+  // backtracks for seconds on a text that does not line up). A code right
+  // next to another one, with no text between them, is ambiguous and stays
+  // unknown, and so does a text that does not line up at all.
   function alignValues(source, filled) {
     const src = normalizeSpace(source);
     const out = normalizeSpace(filled);
@@ -398,24 +421,36 @@
     const literals = [];
     let at = 0;
     for (const { code, index } of codes) {
-      literals.push(src.slice(at, index));
+      literals.push(src.slice(at, index).replace(/ /g, ''));
       at = index + code.length;
     }
-    literals.push(src.slice(at));
-    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s*');
-    const pattern = literals.map(escape).join('(.*?)');
-    let match;
-    try {
-      match = new RegExp(`^${pattern}$`, 's').exec(out);
-    } catch {
-      return {};
+    literals.push(src.slice(at).replace(/ /g, ''));
+    // The filled text without spaces, and where each of its characters was.
+    let flat = '';
+    const where = [];
+    for (let i = 0; i < out.length; i += 1) {
+      if (out[i] === ' ') continue;
+      flat += out[i];
+      where.push(i);
     }
-    if (!match) return {};
+    where.push(out.length);
+    if (!flat.startsWith(literals[0])) return {};
+    const spans = [];
+    let pos = literals[0].length;
+    for (let i = 1; i < literals.length; i += 1) {
+      const literal = literals[i];
+      const last = i === literals.length - 1;
+      const next = last ? flat.length - literal.length : flat.indexOf(literal, pos);
+      if (next < pos || (last && !flat.endsWith(literal))) return {};
+      spans.push([pos, next]);
+      pos = next + literal.length;
+    }
     const values = {};
     codes.forEach(({ name }, i) => {
-      const ambiguous = literals[i + 1] === '' && i + 1 < codes.length;
-      const value = match[i + 1]?.trim();
-      if (!ambiguous && value !== undefined && !(name in values)) values[name] = value;
+      const ambiguous = (literals[i + 1] === '' && i + 1 < codes.length) || (literals[i] === '' && i > 0);
+      const [start, end] = spans[i];
+      const value = out.slice(where[start], where[end]).trim();
+      if (!ambiguous && !(name in values)) values[name] = value;
     });
     return values;
   }
@@ -486,25 +521,36 @@
     return values;
   }
 
-  // Lines of one invoice (factuur/:id), as far as their shape is known.
-  // The names are e-Boekhouden's model names where the bundle shows them;
-  // the rest is a guess that falls back to nothing.
-  function linesFromInvoice(answer) {
-    const list = pick(answer, ['regels', 'factuurRegels', 'factuurregels', 'items', 'lines']);
+  // The lines of one invoice: factuuritem/griditems?factid=:id, the GET with
+  // which e-Boekhouden's invoice form loads them (its toFactuurItem names:
+  // aantal, code, omschrijving, prijsExcl, enkelvoud, meervoud, btw, korting,
+  // kortingIsPerc). e-Boekhouden computes the line totals on the server
+  // (factuur/berekentotalen, a POST): here they are amount times price, less
+  // the discount, as a sketch.
+  function linesFromItems(answer) {
+    const list = Array.isArray(answer) ? answer : pick(answer, ['data', 'items', 'rows']);
     if (!Array.isArray(list)) return null;
     const text = (value) => (value === null || value === undefined ? '' : String(value));
-    const amount = (value) => (Number.isFinite(Number(value)) && value !== '' && value !== null ? EBS.formatMoney(Number(value)) : text(value));
-    const lines = list.slice(0, 20).map((line) => ({
-      AANTAL: text(pick(line, ['aantal'])),
-      CODE: text(pick(line, ['code', 'artikelCode'])),
-      OMSCHRIJVING: text(pick(line, ['omschrijving'])),
-      PPE: amount(pick(line, ['prijsPerEenheid', 'ppe', 'prijs'])),
-      BTWPERC: text(pick(line, ['btwPercentage', 'btwPerc', 'btw'])),
-      REGELTOTAAL: amount(pick(line, ['totaal', 'regelTotaal', 'bedrag'])),
-      EENHEID: text(pick(line, ['eenheid'])),
-      EURO: '€',
-      KORTING: text(pick(line, ['korting'])),
-    }));
+    const number = (value) => (value === '' || value === null || value === undefined ? NaN : Number(value));
+    const lines = list.filter((line) => line && typeof line === 'object').slice(0, 20).map((line) => {
+      const count = number(line.aantal);
+      const price = number(pick(line, ['prijsExcl', 'prijs']));
+      const discount = number(line.korting);
+      let total = count * price;
+      if (Number.isFinite(total) && Number.isFinite(discount) && discount) total = line.kortingIsPerc ? total * (1 - discount / 100) : total - discount;
+      const vat = /(\d+)$/.exec(text(line.btw));
+      return {
+        AANTAL: Number.isFinite(count) ? String(count).replace('.', ',') : text(line.aantal),
+        CODE: text(line.code),
+        OMSCHRIJVING: text(line.omschrijving),
+        PPE: Number.isFinite(price) ? EBS.formatMoney(price) : '',
+        BTWPERC: vat ? `${vat[1]}%` : '',
+        REGELTOTAAL: Number.isFinite(total) ? EBS.formatMoney(total) : '',
+        EENHEID: text(count === 1 ? line.enkelvoud : (line.meervoud || line.enkelvoud)),
+        EURO: '€',
+        KORTING: Number.isFinite(discount) && discount ? (line.kortingIsPerc ? `${String(discount).replace('.', ',')}%` : EBS.formatMoney(discount)) : '',
+      };
+    });
     return lines.length ? lines : null;
   }
 
@@ -589,9 +635,11 @@
       nodes.push({ node, start: text.length });
       text += node.data;
     }
-    const locate = (offset) => {
+    // An end offset belongs to the node it ends in, not to the start of the
+    // next one: a range up to "[CODE]</p><p>" stays inside its paragraph.
+    const locate = (offset, end = false) => {
       for (let i = nodes.length - 1; i >= 0; i -= 1) {
-        if (offset >= nodes[i].start) return { node: nodes[i].node, offset: Math.min(offset - nodes[i].start, nodes[i].node.data.length) };
+        if (end ? offset > nodes[i].start : offset >= nodes[i].start) return { node: nodes[i].node, offset: Math.min(offset - nodes[i].start, nodes[i].node.data.length) };
       }
       return null;
     };
@@ -600,7 +648,7 @@
 
   function rangeFor(map, start, end) {
     const from = map.locate(start);
-    const to = map.locate(end);
+    const to = map.locate(end, true);
     if (!from || !to) return null;
     const range = from.node.ownerDocument.createRange();
     try {
@@ -642,7 +690,7 @@
 
   EBS.define('templates', Object.freeze({
     variablesOf, variablesFor, grouped, findCodes, suggest, checkTemplate, checkMessages, suggestionsFor,
-    alignValues, formatDate, invoiceFromRow, invoicesFromGrid, valuesFromInvoice, linesFromInvoice,
+    alignValues, formatDate, invoiceFromRow, invoicesFromGrid, valuesFromInvoice, linesFromItems,
     widthSummary, moveSteps, sanitize, fillCodes, SAMPLE,
   }));
 
@@ -663,6 +711,9 @@
   let settings = EBS.settingsWithDefaults();
   let settingsLoaded = false;
   let classicScreens = {};
+  // Both known before the first view: a screen the user set to classic must
+  // not show the new view for a moment.
+  let classicLoaded = false;
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -941,6 +992,7 @@
 
     return {
       node: wrap,
+      close,
       reset() {
         state.choice = null;
         toggleText.textContent = 'Voorbeeldgegevens';
@@ -1101,7 +1153,8 @@
 
     // Keys while the list is open; true when the key was ours.
     key(event) {
-      if (!this.open()) return false;
+      // A key that finishes a composition (an IME) belongs to the composition.
+      if (!this.open() || event.isComposing) return false;
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         this.box.move(event.key === 'ArrowDown' ? 1 : -1);
         this.target?.input?.setAttribute('aria-activedescendant', this.box.activeId());
@@ -1284,6 +1337,8 @@
       this.unmount();
       this.host = host;
       this.rootDiv = rootDiv;
+      // Our listeners on e-Boekhouden's own elements go with the view.
+      this.listening = new AbortController();
       rootDiv.classList.add('ebs-tpl-email');
       form.classList.add('ebs-tpl-form');
       if (EBS.bridge && !EBS.bridge.isEnabled('ckeditor')) EBS.bridge.enable('ckeditor');
@@ -1293,6 +1348,9 @@
 
     unmount() {
       if (!this.nodes) return;
+      this.listening?.abort();
+      this.listening = null;
+      this.nodes.picker?.close();
       for (const node of Object.values(this.nodes)) if (node instanceof Node) node.remove();
       this.nodes.picker?.node.remove();
       this.rootDiv?.classList.remove('ebs-tpl-email');
@@ -1377,25 +1435,26 @@
 
       // The subject field: "[" suggestions and live preview.
       const subject = form.querySelector('input#subject');
+      const { signal } = this.listening;
       if (subject) {
         subject.addEventListener('input', () => {
           suggest$.list = this.entries();
           suggest$.owner = rootDiv;
           suggest$.fromInput(subject);
           this.queue();
-        });
+        }, { signal });
         subject.addEventListener('keydown', (event) => {
           if (suggest$.target?.input === subject && suggest$.key(event)) {
             event.preventDefault();
             event.stopPropagation();
           }
-        });
+        }, { signal });
         subject.addEventListener('blur', () => setTimeout(() => {
           if (suggest$.target?.input === subject) suggest$.close();
-        }, 150));
+        }, 150), { signal });
       }
-      form.addEventListener('change', () => this.queue());
-      form.addEventListener('input', () => this.queue());
+      form.addEventListener('change', () => this.queue(), { signal });
+      form.addEventListener('input', () => this.queue(), { signal });
       suggest$.onInserted = () => this.queue();
     },
 
@@ -1504,18 +1563,28 @@
       this.editorDoc = doc;
       const frame = ckeditor.frame(this.rootDiv);
       const scope = this.rootDiv;
+      let swallowed = null;
       this.editorHandlers = {
         keydown: (event) => {
           // The saved text, for reading an invoice's values later: taken
           // before the user's first change.
           this.snapshot();
-          if (suggest$.target?.doc === doc && suggest$.key(event)) {
+          // Only while our list is open is a key ours; otherwise CKEditor
+          // gets every key (Enter, Tab, Escape) as it always does.
+          const ours = suggest$.target?.doc === doc && suggest$.key(event);
+          swallowed = ours ? event.key : null;
+          if (ours) {
             event.preventDefault();
             event.stopImmediatePropagation();
           }
         },
         keyup: (event) => {
-          if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key) && suggest$.open()) return;
+          // The release of a key the list used: no new look at the text, or
+          // Escape would open the list it just closed.
+          if (swallowed === event.key) {
+            swallowed = null;
+            return;
+          }
           suggest$.list = this.entries();
           suggest$.owner = scope;
           suggest$.fromEditor(doc, frame);
@@ -1525,6 +1594,10 @@
         mousedown: () => suggest$.close(),
         paste: () => this.snapshot(),
         scroll: () => suggest$.close(),
+        // The editor lost focus: an open list would take the next Enter there.
+        blur: () => {
+          if (suggest$.target?.doc === doc) suggest$.close();
+        },
       };
       const view = doc.defaultView;
       // Capture on the frame's window: before CKEditor's own key handling.
@@ -1534,6 +1607,7 @@
       doc.addEventListener('mousedown', this.editorHandlers.mousedown, true);
       doc.addEventListener('paste', this.editorHandlers.paste, true);
       view.addEventListener('scroll', this.editorHandlers.scroll, true);
+      view.addEventListener('blur', this.editorHandlers.blur);
       if (doc.body.textContent.trim()) this.snapshot();
     },
 
@@ -1548,6 +1622,7 @@
           doc.removeEventListener('mousedown', this.editorHandlers.mousedown, true);
           doc.removeEventListener('paste', this.editorHandlers.paste, true);
           view?.removeEventListener('scroll', this.editorHandlers.scroll, true);
+          view?.removeEventListener('blur', this.editorHandlers.blur);
         } catch { /* the frame is gone */ }
       }
       this.editorDoc = null;
@@ -1626,6 +1701,8 @@
 
     syncBusy() {
       const nodes = this.nodes;
+      // The timer after a save may come when e-Boekhouden already left the page.
+      if (!nodes) return;
       const native = this.rootDiv?.querySelector('.form-footer button.form-submit, button[type="submit"].form-submit');
       const waiting = Boolean(this.busySince) && Boolean(native?.disabled);
       // Not disabled after a moment: e-Boekhouden refused (a field is wrong).
@@ -1672,6 +1749,7 @@
       this.unmount();
       this.host = host;
       this.rootDiv = rootDiv;
+      this.listening = new AbortController();
       rootDiv.classList.add('ebs-tpl-invoice');
       form.parentElement.classList.add('ebs-tpl-part1');
       this.build(rootDiv, form.parentElement);
@@ -1680,11 +1758,16 @@
 
     unmount() {
       if (!this.nodes) return;
+      this.listening?.abort();
+      this.listening = null;
+      // The server's editor belongs to this screen: it does not stay open
+      // over another page.
+      this.editorDialog?.close({ immediate: true, reason: 'close' });
+      this.nodes.picker?.close();
       for (const node of Object.values(this.nodes)) if (node instanceof Node) node.remove();
       this.nodes.picker?.node.remove();
       this.rootDiv?.classList.remove('ebs-tpl-invoice');
       this.rootDiv?.querySelector('.ebs-tpl-part1')?.classList.remove('ebs-tpl-part1');
-      window.removeEventListener('message', this.onMessage);
       this.nodes = null;
       this.rootDiv = null;
       this.host = null;
@@ -1733,7 +1816,10 @@
       nodes.part1Note = el('span', 'ebs-tpl-muted small ebs-tpl-part1-note');
       part1.before(nodes.part1Head);
       const form = part1.querySelector('.form-body');
-      form?.append(nodes.lang, nodes.langNote);
+      // Beside Type, where e-Boekhouden's own Taal row is (it stays, hidden).
+      const taalRow = form?.querySelector('.form-row:has(select#taal)');
+      if (taalRow) taalRow.after(nodes.lang, nodes.langNote);
+      else form?.append(nodes.lang, nodes.langNote);
       part1.after(nodes.part1Note);
 
       // Part 2: the columns, e-Boekhouden's own page in a frame.
@@ -1774,9 +1860,16 @@
       const notes = el('div', 'ebs-tpl-card-notes');
       nodes.view = el('a', 'ebs-tpl-button ghost small');
       nodes.view.append(icon('file-text', { size: 14 }), document.createTextNode('Sjabloon bekijken'));
-      nodes.view.title = 'De pdf van e-Boekhouden, van de opgeslagen versie';
       nodes.view.target = '_blank';
       nodes.view.rel = 'noopener';
+      // Eenvoudig has no file: e-Boekhouden shows that template in its
+      // editor, so a plain click opens that here (a middle click a tab).
+      nodes.view.addEventListener('click', (event) => {
+        const info = this.info();
+        if (!info.saved || !info.simple || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        event.preventDefault();
+        this.openEditor();
+      });
       notes.append(el('span', 'ebs-tpl-badge plain', 'Een schets: kolommen, breedtes en teksten zoals je ze instelt. e-Boekhouden maakt de echte pdf.'),
         requestNote('Eigen verzoek (alleen lezen, goedgekeurd, alleen bij jouw klik): de gegevens van één factuur, pas als je die kiest'),
         el('span', 'ebs-tpl-grow'), nodes.view);
@@ -1796,18 +1889,20 @@
       rootDiv.append(preview, nodes.varsNode);
       this.nodes = nodes;
 
-      this.onMessage = (event) => this.message(event);
-      window.addEventListener('message', this.onMessage);
-      rootDiv.addEventListener('change', () => this.queue());
-      rootDiv.addEventListener('input', () => this.queue());
+      const { signal } = this.listening;
+      window.addEventListener('message', (event) => this.message(event), { signal });
+      rootDiv.addEventListener('change', () => this.queue(), { signal });
+      rootDiv.addEventListener('input', () => this.queue(), { signal });
     },
 
     // Taal as two buttons over e-Boekhouden's own select (it stays the one
     // that counts; a click picks its option for you).
     buildLanguage() {
-      const wrap = el('span', 'ebs-tpl-lang');
+      const field = el('span', 'ebs-tpl-lang');
+      const wrap = el('span', 'ebs-tpl-lang-group');
       wrap.setAttribute('role', 'radiogroup');
       wrap.setAttribute('aria-label', 'Taal');
+      field.append(el('span', 'ebs-tpl-lang-label', 'Taal'), wrap);
       for (const [value, label] of [['NL', 'NL'], ['EN', 'EN']]) {
         const option = button('ebs-tpl-lang-option', label, () => {
           const select = this.rootDiv?.querySelector('select#taal');
@@ -1820,7 +1915,7 @@
         option.dataset.value = value;
         wrap.append(option);
       }
-      return wrap;
+      return field;
     },
 
     queue() {
@@ -1844,7 +1939,7 @@
       const select = this.rootDiv.querySelector('select#taal');
       const plain = Boolean(select) && [...select.options].map((one) => one.value).join(',') === 'NL,EN';
       this.rootDiv.classList.toggle('ebs-tpl-lang-buttons', plain);
-      for (const option of nodes.lang.children) {
+      for (const option of nodes.lang.querySelectorAll('.ebs-tpl-lang-option')) {
         const on = plain && select.value === option.dataset.value;
         option.setAttribute('aria-checked', String(on));
         option.classList.toggle('on', on);
@@ -1860,7 +1955,10 @@
 
       const view = nodes.view;
       if (info.saved) {
-        view.href = `${API}factuursjabloon/download/${info.id}`;
+        // Geavanceerd: the RTF file, as e-Boekhouden's list downloads it
+        // (factuursjabloon/download is its downloadRtf); Eenvoudig: its editor.
+        view.href = info.simple ? `${API}factuursjabloon/editor/${info.id}/` : `${API}factuursjabloon/download/${info.id}`;
+        view.title = info.simple ? 'In de sjablooneditor van e-Boekhouden, de opgeslagen versie' : 'Het RTF-bestand van e-Boekhouden, de opgeslagen versie';
         view.removeAttribute('aria-disabled');
         view.classList.remove('disabled');
       } else {
@@ -1961,7 +2059,7 @@
       // The editor tells its parent when it saved or was cancelled, as it
       // does inside e-Boekhouden's own page.
       const onMessage = (event) => {
-        if (event.source !== dialog.frame?.contentWindow || event.origin !== location.origin) return;
+        if (!fromFrame(event, dialog.frame)) return;
         if (event.data === 'sjabeditor-saved') {
           dialog.close({ reason: 'saved' });
           status(this.nodes.editorStatus, 'De sjablooneditor heeft opgeslagen.');
@@ -1993,9 +2091,9 @@
       this.loadingInvoice = true;
       this.sync();
       try {
-        const answer = await EBS.request.item(`templates:invoice:${invoice.id}`, `${API}factuur/${invoice.id}`, { userAction: true });
+        const answer = await EBS.request.item(`templates:lines:${invoice.id}`, `${API}factuuritem/griditems?factid=${invoice.id}`, { userAction: true });
         if (this.invoice !== invoice) return;
-        this.lines = linesFromInvoice(answer);
+        this.lines = linesFromItems(answer);
         if (!this.lines) this.invoiceError = 'De regels van deze factuur zijn niet te lezen; de schets toont een voorbeeldregel.';
       } catch (error) {
         if (this.invoice !== invoice) return;
@@ -2010,7 +2108,8 @@
 
     columnList() {
       if (this.columns?.length) return this.columns;
-      return ['OMSCHRIJVING', 'AANTAL', 'PPE', 'BTWPERC', 'REGELTOTAAL'].map((id) => ({ id, title: COLUMN_OPTIONS[id].title, width: COLUMN_OPTIONS[id].width }));
+      const english = this.language() === 'EN';
+      return ['OMSCHRIJVING', 'AANTAL', 'PPE', 'BTWPERC', 'REGELTOTAAL'].map((id) => ({ id, title: english ? COLUMN_TITLES_EN[id] : COLUMN_OPTIONS[id].title, width: COLUMN_OPTIONS[id].width }));
     },
 
     drawSheet() {
@@ -2061,6 +2160,20 @@
       if (nodes.previewStatus.textContent !== text) nodes.previewStatus.textContent = text;
     },
   };
+
+  // A message from the page in this frame, or from a frame inside that page
+  // (where the editor may post from), and only from e-Boekhouden itself.
+  function fromFrame(event, frame) {
+    const target = frame?.contentWindow;
+    if (!target || event.origin !== location.origin) return false;
+    let source = event.source;
+    for (let depth = 0; source && depth < 8; depth += 1) {
+      if (source === target) return true;
+      if (source === source.parent) return false;
+      source = source.parent;
+    }
+    return false;
+  }
 
   // Beside the server's editor in the dialog: its variables, a click inserts
   // into the field that had focus in the editor (or copies), and checks of
@@ -2151,6 +2264,7 @@
     nodes: null,
     framed: false,
     dragging: null,
+    moving: false,
     lastPost: '',
     queued: false,
 
@@ -2161,6 +2275,7 @@
         this.unmount();
         this.form = formHost;
         this.framed = framed;
+        this.listening = new AbortController();
         formHost.classList.add('ebs-tpl-cols');
         this.build(formHost, framed);
       }
@@ -2170,6 +2285,8 @@
 
     unmount() {
       if (!this.form) return;
+      this.listening?.abort();
+      this.listening = null;
       for (const node of Object.values(this.nodes ?? {})) if (node instanceof Node) node.remove();
       this.form.classList.remove('ebs-tpl-cols');
       for (const node of this.form.querySelectorAll('.ebs-tpl-col-ours')) node.remove();
@@ -2201,8 +2318,9 @@
       formHost.querySelector('table')?.after(nodes.note);
       formHost.append(nodes.live, nodes.help);
       this.nodes = nodes;
-      formHost.addEventListener('input', () => this.queue());
-      formHost.addEventListener('change', () => this.queue());
+      const { signal } = this.listening;
+      formHost.addEventListener('input', () => this.queue(), { signal });
+      formHost.addEventListener('change', () => this.queue(), { signal });
     },
 
     rows(table = this.form?.querySelector('table')) {
@@ -2339,34 +2457,53 @@
       return this.order() !== before;
     },
 
+    // One move at a time: a second one (a held arrow key, a drag while
+    // e-Boekhouden still redraws) would click from positions that are no
+    // longer true, and the user's own Opslaan would save that order.
     async move(from, to) {
-      for (const { index, dir } of moveSteps(from, to)) {
-        const before = this.order();
-        if (!this.nativeArrow(index, dir)) break;
-        // Each step waits for e-Boekhouden's table, so the next click is on
-        // the row that moved and never on another one.
-        if (!this.step(index, dir) && !(await this.redrawn(before))) break;
+      if (this.moving) return false;
+      this.moving = true;
+      try {
+        for (const { index, dir } of moveSteps(from, to)) {
+          if (!this.form) return false;
+          const before = this.order();
+          if (!this.nativeArrow(index, dir)) break;
+          // Each step waits for e-Boekhouden's table, so the next click is on
+          // the row that moved and never on another one.
+          if (!this.step(index, dir) && !(await this.redrawn(before))) break;
+        }
+        // Angular's ngModel writes the titles and widths a moment after the
+        // table itself: read them after that.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!this.form) return false;
+        this.decorate(this.form.querySelector('table'));
+        this.sync();
+        const list = this.read();
+        const moved = list[to];
+        if (moved) this.nodes.live.textContent = `Kolom ${moved.title || COLUMN_OPTIONS[moved.id]?.title || moved.id} staat nu op plek ${to + 1} van ${list.length}.`;
+        return true;
+      } finally {
+        this.moving = false;
       }
-      this.decorate(this.form.querySelector('table'));
-      this.sync();
-      const list = this.read();
-      const moved = list[to];
-      if (moved) this.nodes.live.textContent = `Kolom ${moved.title || COLUMN_OPTIONS[moved.id]?.title || moved.id} staat nu op plek ${to + 1} van ${list.length}.`;
     },
 
     onKey(event, row) {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
       event.preventDefault();
+      if (this.moving) return;
       const rows = this.rows();
       const from = rows.indexOf(row);
       const to = from + (event.key === 'ArrowUp' ? -1 : 1);
       if (from < 0 || to < 0 || to >= rows.length) return;
-      this.move(from, to).then(() => this.rows()[to]?.querySelector('.ebs-tpl-col-handle')?.focus());
+      this.move(from, to).then((moved) => {
+        if (moved) this.rows()[to]?.querySelector('.ebs-tpl-col-handle')?.focus();
+      });
     },
 
     onPointerDown(event, row) {
       if (event.button !== 0) return;
       event.preventDefault();
+      if (this.moving) return;
       const rows = this.rows();
       const from = rows.indexOf(row);
       if (from < 0) return;
@@ -2406,6 +2543,7 @@
 
   let queued = false;
   let current = null;
+  let savedSaid = '';
 
   function schedule() {
     if (queued) return;
@@ -2424,7 +2562,7 @@
   }
 
   function sync() {
-    if (!settingsLoaded) return;
+    if (!settingsLoaded || !classicLoaded) return;
     const screen = screenOf();
     const better = useBetter(screen);
     document.documentElement.classList.toggle('ebs-tpl-better', better && screen !== 'frame');
@@ -2439,7 +2577,12 @@
     if (!screen) return;
     if (screen === 'frame' && INVOICE_LIST.test(location.pathname)) {
       // e-Boekhouden saved the columns and went to its list, inside our frame.
-      if (better && /MSG=/.test(location.search)) columns.post({ saved: true, height: 0 });
+      // Said once: the parent loads the columns again on it, and every
+      // change of the list page while it goes would start that load anew.
+      if (better && /MSG=/.test(location.search) && savedSaid !== location.href) {
+        savedSaid = location.href;
+        columns.post({ saved: true, height: 0 });
+      }
       return;
     }
     if (better || settings.betterDesign) injectStyle();
@@ -2641,10 +2784,16 @@
     .ebs-tpl-invoice .ebs-tpl-part1 .form-row { margin: 0 !important; padding: 0 !important; }
     .ebs-tpl-invoice .form-component.right-align { margin: 0 !important; }
     .ebs-tpl-invoice.ebs-tpl-lang-buttons .form-row:has(select#taal) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-    .ebs-tpl-lang { display: none; align-self: flex-start; padding: 3px; border-radius: 9px; background: #e3e7f0; }
+    .ebs-tpl-lang { display: none; flex-direction: column; align-items: flex-start; gap: 6px; }
     .ebs-tpl-invoice.ebs-tpl-lang-buttons .ebs-tpl-lang { display: flex; }
     .ebs-tpl-invoice:not(.ebs-tpl-lang-buttons) .ebs-tpl-lang + .ebs-tpl-muted { display: none; }
-    .ebs-tpl-lang::before { content: "Taal"; align-self: center; margin: 0 8px 0 4px; font-size: 13px; font-weight: 500; }
+    .ebs-tpl-lang-label { font-size: 13px; font-weight: 500; }
+    .ebs-tpl-lang-group { display: flex; padding: 3px; border-radius: 9px; background: #e3e7f0; }
+    /* Type and Taal side by side, as on the board (only where both are there). */
+    .ebs-tpl-invoice.ebs-tpl-lang-buttons .ebs-tpl-part1 .form-body:has(select#type) { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: end; }
+    .ebs-tpl-invoice.ebs-tpl-lang-buttons .ebs-tpl-part1 .form-body:has(select#type) > * { grid-column: 1 / -1; }
+    .ebs-tpl-invoice.ebs-tpl-lang-buttons .ebs-tpl-part1 .form-body:has(select#type) > .form-row:has(select#type) { grid-column: 1; }
+    .ebs-tpl-invoice.ebs-tpl-lang-buttons .ebs-tpl-part1 .form-body:has(select#type) > .ebs-tpl-lang { grid-column: 2; }
     .ebs-tpl-lang-option { height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: #232c4f; font-size: 13px; cursor: pointer; transition: background-color 150ms ease; }
     .ebs-tpl-lang-option.on { background: #fff; font-weight: 700; }
     .ebs-tpl-lang-option:hover { background: rgba(255, 255, 255, .6); }
@@ -2773,15 +2922,22 @@
     try {
       chrome.storage.local.get('classicScreens').then(({ classicScreens: stored }) => {
         classicScreens = stored ?? {};
+        classicLoaded = true;
         schedule();
-      }, () => {});
+      }, () => {
+        classicLoaded = true;
+        schedule();
+      });
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area === 'local' && changes.classicScreens) {
           classicScreens = changes.classicScreens.newValue ?? {};
           schedule();
         }
       });
-    } catch { /* orphaned after a reload: the settings watch keeps it off */ }
+    } catch {
+      // Orphaned after a reload: the settings watch keeps it off.
+      classicLoaded = true;
+    }
     // Our own drawing must not wake the loop: only changes outside our nodes.
     const OURS = '.ebs-tpl-head, .ebs-tpl-card, .ebs-tpl-vars, .ebs-tpl-checks, .ebs-tpl-more, .ebs-tpl-pop, .ebs-tpl-part, .ebs-tpl-part-head, .ebs-tpl-part1-note, .ebs-tpl-native-toggle, .ebs-tpl-col-ours, .ebs-tpl-lang, #ebs-templates-style';
     new MutationObserver((records) => {
