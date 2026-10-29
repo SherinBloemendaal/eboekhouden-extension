@@ -6,28 +6,38 @@
 //   await EBS.request.bulk('archive:folders', '/api/folder/list')
 //   await EBS.request.item(`archive:file:${id}`, `/api/folder/${id}`, { userAction: true })
 //
-// The rules, enforced here for every feature together (one budget per frame):
-//   - GET only. Any other method, or a body, throws.
+// The rules, enforced here for every feature together:
+//   - GET only. Any other method, or a body, is refused.
 //   - Same origin only, and only on e-Boekhouden's app hosts (secure*).
-//   - bulk(): cached for 60 s (memory of this page only, so a session switch,
-//     which reloads the tabs, never shows another administration's data);
-//     the same key while a request runs shares that request.
-//   - item(): throws without { userAction: true }, and needs a real click or
-//     Enter/Space of the user before it: one network request per click.
-//   - At most 2 requests at a time and 20 per minute; more wait in a queue of
-//     at most 20, and beyond that a call fails with code 'rate'.
+//   - bulk(): one request per key per screen. The answer is cached for 60 s
+//     (memory of this page only, so a session switch, which reloads the
+//     tabs, never shows another administration's data), and the same key
+//     while a request runs shares that request. Asked again on the same
+//     screen (the same URL), it gets that screen's answer again without a
+//     request, until the user clicks (or presses Enter or Space) or the
+//     screen changes; after a failure it is refused ('repeat') until then.
+//     So a timer or a loop cannot poll.
+//   - item(): refused without { userAction: true }, and needs a real click
+//     or Enter/Space of the user before it: one network request per click.
+//   - At most 2 requests at a time and 20 per minute, counted in this frame
+//     and, through the service worker (src/bg/requests.js), over every frame
+//     and tab together. More wait in a queue of at most 20 per frame; beyond
+//     that a call fails with code 'rate'.
 //   - After a failure (network, HTTP error, 429) the next request waits:
-//     2 s, then 4, 8 and so on up to 5 minutes, or what Retry-After says.
-//     Nothing is retried on its own, and there is no polling helper.
+//     2 s, then 4, 8 and so on up to 5 minutes, or what Retry-After says; a
+//     429 or 503 pauses every frame. Nothing is retried on its own, and there
+//     is no polling helper.
 //   - abort(key), abortAll() and leaving the page cancel what is running.
 //
 // options: as ('json', the default, or 'text'), mode ('isolated', the
 // default: the content script's own fetch with the page's cookies; or
 // 'main': the page's own fetch through the bridge, so whatever auth the page
 // adds to its fetch applies), ttl (ms, at most 60 s), signal (AbortSignal).
-// Errors are EBS.request.RequestError with a code: 'method', 'origin',
-// 'user-action', 'key', 'rate', 'abort', 'network', 'http', 'redirected',
-// 'parse', 'unavailable'. Nothing here reads, stores or logs a token.
+// bulk() and item() always return a promise; every error is a rejection with
+// an EBS.request.RequestError (a TypeError for a wrong option) with a code:
+// 'method', 'origin', 'user-action', 'key', 'rate', 'repeat', 'abort',
+// 'network', 'http', 'redirected', 'parse', 'unavailable'. Nothing here
+// reads, stores or logs a token.
 
 (() => {
   const root = typeof window !== 'undefined' ? window : globalThis;
@@ -61,9 +71,15 @@
   let failures = 0;
   let blockedUntil = 0;
   let wake = null;
+  let wakeAt = Infinity;
   let sequence = 0;
   // The last trusted click (or Enter/Space) and whether an item used it.
   const click = { at: -Infinity, used: true };
+  // Trusted clicks and keys so far, and per bulk key the screen it was
+  // fetched on: { screen, actions, ok, value }.
+  let userActions = 0;
+  const screens = new Map();
+  let lastScreen = null;
   let mainRequest = null;
   let mainEnabled = false;
 
@@ -113,10 +129,15 @@
   // Scheduling
   // ---------------------------------------------------------------------------
 
+  // One timer, for the earliest moment something may start.
   function schedule(delay) {
+    const at = now() + Math.max(0, delay);
+    if (wake !== null && wakeAt <= at) return;
     if (wake !== null) root.clearTimeout(wake);
+    wakeAt = at;
     wake = root.setTimeout(() => {
       wake = null;
+      wakeAt = Infinity;
       pump();
     }, Math.max(0, delay));
   }
@@ -157,6 +178,14 @@
 
   function settle(job, error, value) {
     jobs.delete(job.id);
+    if (job.kind === 'bulk') {
+      // An aborted request got nothing: the screen may ask again.
+      if (error?.code === 'abort') {
+        if (screens.get(job.cacheKey)?.job === job.id) screens.delete(job.cacheKey);
+      } else {
+        screens.set(job.cacheKey, { job: job.id, screen: job.screen, actions: job.actions, ok: !error, value: error ? undefined : value });
+      }
+    }
     for (const waiter of job.waiters) {
       waiter.detach();
       if (error) waiter.reject(error);
@@ -198,6 +227,28 @@
       job.controller.abort();
       if (job.mode === 'main') mainRequest?.abort(job.id);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // The budget of every frame and tab together, kept by the service worker.
+  // ---------------------------------------------------------------------------
+
+  async function globalSlot() {
+    let answer;
+    try {
+      answer = await root.chrome.runtime.sendMessage({ type: 'requests:slot' });
+    } catch {
+      throw new RequestError('unavailable', 'EBS.request: the extension did not answer; reload the page');
+    }
+    if (answer?.ok === true && typeof answer.lease === 'string') return { ok: true, lease: answer.lease };
+    if (answer?.ok === false && Number.isFinite(answer.waitMs)) return { ok: false, waitMs: Math.min(Math.max(answer.waitMs, 0), BACKOFF_MAX_MS) };
+    throw new RequestError('unavailable', 'EBS.request: no answer from the request budget');
+  }
+
+  function release(lease, status, retryAfter) {
+    try {
+      root.chrome.runtime.sendMessage({ type: 'requests:done', lease, status, retryAfterMs: retryAfter }).catch(() => {});
+    } catch { /* an orphaned script: its lease runs out by itself */ }
   }
 
   async function fetchIsolated(job) {
@@ -245,18 +296,45 @@
 
   async function run(job) {
     active += 1;
-    started.push(now());
     job.state = 'running';
+    let grant;
+    try {
+      grant = await globalSlot();
+    } catch (caught) {
+      active -= 1;
+      settle(job, job.aborted ? new RequestError('abort', 'EBS.request: aborted') : caught);
+      pump();
+      return;
+    }
+    if (!grant.ok || job.aborted) {
+      active -= 1;
+      if (grant.ok) release(grant.lease, null, null);
+      if (job.aborted) {
+        settle(job, new RequestError('abort', 'EBS.request: aborted'));
+        pump();
+      } else {
+        // Other frames or tabs used the budget: back to the front, later.
+        job.state = 'queued';
+        queue.unshift(job);
+        schedule(grant.waitMs);
+      }
+      return;
+    }
+    started.push(now());
     let value;
     let error = null;
+    let status = null;
+    let retryAfter = null;
     try {
       const response = job.mode === 'main' ? await fetchMain(job) : await fetchIsolated(job);
+      status = response.status;
+      retryAfter = retryAfterMs(response.retryAfter);
       if (response.redirected) {
         // A data URL that redirects is a login or error page, not data.
         error = new RequestError('redirected', 'EBS.request: the server redirected', { status: response.status });
       } else if (!response.ok) {
         error = new RequestError('http', `EBS.request: HTTP ${response.status}`, { status: response.status });
-        backoff(response.status === 429 || response.status === 503 ? retryAfterMs(response.retryAfter) : null);
+        backoff(response.status === 429 || response.status === 503 ? retryAfter : null);
       } else if (job.as === 'json') {
         try {
           value = response.text.trim() ? JSON.parse(response.text) : null;
@@ -280,11 +358,25 @@
       }
     }
     active -= 1;
+    release(grant.lease, status, retryAfter);
     settle(job, error, value);
     pump();
   }
 
+  // The screen is the page's URL: e-Boekhouden changes it for every screen.
+  function screenOf() {
+    return root.location.href;
+  }
+
   function request(kind, key, url, options = {}) {
+    try {
+      return start(kind, key, url, options);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  function start(kind, key, url, options) {
     checkKey(key);
     const settings = checkOptions(options);
     if (kind === 'item' && options.userAction !== true) {
@@ -292,13 +384,30 @@
     }
     const href = checkUrl(url);
     const cacheKey = `${settings.mode} ${settings.as} ${key} ${href}`;
+    if (settings.signal?.aborted) throw new RequestError('abort', 'EBS.request: aborted');
 
     const cached = cache.get(cacheKey);
     if (cached && cached.expires > now()) return Promise.resolve(copy(cached.value));
     if (cached) cache.delete(cacheKey);
 
-    const running = [...jobs.values()].find((job) => job.cacheKey === cacheKey);
+    const running = [...jobs.values()].find((job) => job.cacheKey === cacheKey && !job.aborted);
     if (running) return addWaiter(running, settings.signal);
+
+    const screen = screenOf();
+    if (screen !== lastScreen) {
+      // A new screen: what the old ones got is not needed any more.
+      for (const [cacheKeyOf, seen] of [...screens]) {
+        if (seen.screen !== screen) screens.delete(cacheKeyOf);
+      }
+      lastScreen = screen;
+    }
+    if (kind === 'bulk') {
+      const seen = screens.get(cacheKey);
+      if (seen && seen.screen === screen && seen.actions === userActions) {
+        if (seen.ok) return Promise.resolve(copy(seen.value));
+        throw new RequestError('repeat', 'EBS.request.bulk: this screen asked already; again after a click of the user');
+      }
+    }
 
     if (kind === 'item') {
       // One network request per click: a loop over rows in one click handler
@@ -312,7 +421,8 @@
 
     sequence += 1;
     const job = {
-      id: sequence, key, url: href, cacheKey, as: settings.as, mode: settings.mode, ttl: settings.ttl,
+      id: sequence, kind, key, url: href, cacheKey, as: settings.as, mode: settings.mode, ttl: settings.ttl,
+      screen, actions: userActions,
       state: 'queued', aborted: false, controller: new AbortController(), waiters: new Set(),
     };
     jobs.set(job.id, job);
@@ -337,9 +447,11 @@
   // A trusted event comes from the user, never from a page script.
   function onUserAction(event) {
     if (!event.isTrusted) return;
-    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    // A held key repeats keydown: that is still one action.
+    if (event.type === 'keydown' && ((event.key !== 'Enter' && event.key !== ' ') || event.repeat)) return;
     click.at = now();
     click.used = false;
+    userActions += 1;
   }
 
   if (typeof root.addEventListener === 'function') {
@@ -349,6 +461,7 @@
     root.addEventListener('pagehide', () => {
       abortAll();
       cache.clear();
+      screens.clear();
     });
   }
 

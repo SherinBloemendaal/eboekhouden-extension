@@ -34,6 +34,7 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 //          activeSlotId, loggedIn, pendingCheck
 //          pendingUsername, pendingLoginFor  (the login in progress)
 //          tab:<tabId>    { mainFrameId, returnUrl, relogin, innerUrl, innerFor, restoreInner }
+//          requestBudget  { started: [ms], blockedUntil } of the request budget (bg/requests.js)
 // ---------------------------------------------------------------------------
 
 async function getSlots() {

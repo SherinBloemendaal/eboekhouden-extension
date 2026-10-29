@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { createBudget } from '../src/bg/requests.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const source = (file) => readFileSync(join(root, 'src', file), 'utf8');
@@ -13,8 +14,26 @@ const flush = async (rounds = 6) => {
   for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
 
-function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief' } = {}) {
+// The service worker's budget over every frame (src/bg/requests.js), on a
+// clock of the test's own; frames of one test share it.
+function sharedBudget() {
+  const clock = { time: 1_000_000 };
+  const data = {};
+  const area = {
+    async get(key) {
+      return key in data ? { [key]: structuredClone(data[key]) } : {};
+    },
+    async set(values) {
+      Object.assign(data, structuredClone(values));
+    },
+  };
+  return { clock, area, budget: createBudget({ now: () => clock.time, area }) };
+}
+
+function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', shared = sharedBudget(), worker = true } = {}) {
   let time = 1_000_000;
+  const { clock, budget } = shared;
+  const slots = [];
   let nextTimer = 1;
   const timers = [];
   const listeners = {};
@@ -41,6 +60,20 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief' }
       if (at >= 0) timers.splice(at, 1);
     },
     addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
+    chrome: worker ? {
+      runtime: {
+        async sendMessage(message) {
+          clock.time = Math.max(clock.time, time);
+          if (message.type === 'requests:slot') {
+            const answer = await budget.slot();
+            slots.push(answer);
+            return answer;
+          }
+          if (message.type === 'requests:done') return budget.done(message);
+          return {};
+        },
+      },
+    } : undefined,
     fetch: (href, init) => new Promise((resolve, reject) => {
       running += 1;
       maxRunning = Math.max(maxRunning, running);
@@ -82,7 +115,13 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief' }
     calls,
     maxRunning: () => maxRunning,
     // A real click of the user (event.isTrusted), and one a page script made.
+    slots,
     click: (isTrusted = true) => (listeners.click ?? []).forEach((fn) => fn({ type: 'click', isTrusted })),
+    key: (key, repeat = false) => (listeners.keydown ?? []).forEach((fn) => fn({ type: 'keydown', key, repeat, isTrusted: true })),
+    // Another screen of the app (e-Boekhouden changes the URL for each).
+    go: (href) => {
+      context.location = new URL(href, context.location.href);
+    },
     leave: () => (listeners.pagehide ?? []).forEach((fn) => fn({ type: 'pagehide' })),
     async advance(ms) {
       const end = time + ms;
@@ -138,16 +177,16 @@ test('ten identical bulk calls at once share one request, and get their own copy
 
 test('an item request needs { userAction: true } and a real click, one request per click', async () => {
   const s = sandbox();
-  assert.throws(() => s.request.item('file:1', '/api/folder/1'), { code: 'user-action' });
-  assert.throws(() => s.request.item('file:1', '/api/folder/1', { userAction: false }), { code: 'user-action' });
-  assert.throws(() => s.request.item('file:1', '/api/folder/1', { userAction: true }), { code: 'user-action' }, 'no click yet');
+  await assert.rejects(s.request.item('file:1', '/api/folder/1'), { code: 'user-action' });
+  await assert.rejects(s.request.item('file:1', '/api/folder/1', { userAction: false }), { code: 'user-action' });
+  await assert.rejects(s.request.item('file:1', '/api/folder/1', { userAction: true }), { code: 'user-action' }, 'no click yet');
   s.click(false);
-  assert.throws(() => s.request.item('file:1', '/api/folder/1', { userAction: true }), { code: 'user-action' }, 'a click from a page script does not count');
+  await assert.rejects(s.request.item('file:1', '/api/folder/1', { userAction: true }), { code: 'user-action' }, 'a click from a page script does not count');
 
   s.click();
   const one = s.request.item('file:1', '/api/folder/1', { userAction: true });
   // A loop over rows in the same click handler gets an error for the rest.
-  assert.throws(() => s.request.item('file:2', '/api/folder/2', { userAction: true }), { code: 'user-action' });
+  await assert.rejects(s.request.item('file:2', '/api/folder/2', { userAction: true }), { code: 'user-action' });
   await flush();
   s.calls[0].respond({ id: 1 });
   assert.deepEqual(await one, { id: 1 });
@@ -201,6 +240,8 @@ test('a failure pauses the next request: 2 s, then 4 s; a 429 waits as long as R
   assert.equal((await first).error.code, 'http');
   assert.equal((await first).error.status, 500);
 
+  // The user asks again (a click on "Opnieuw"): it waits for the pause.
+  s.click();
   const second = outcome(s.request.bulk('a', '/api/a'));
   await flush();
   assert.equal(s.calls.length, 1, 'nothing is retried at once');
@@ -211,6 +252,7 @@ test('a failure pauses the next request: 2 s, then 4 s; a 429 waits as long as R
   s.calls[1].fail();
   assert.equal((await second).error.code, 'network');
 
+  s.click();
   const third = outcome(s.request.bulk('a', '/api/a'));
   await s.advance(3_999);
   assert.equal(s.calls.length, 2);
@@ -219,6 +261,7 @@ test('a failure pauses the next request: 2 s, then 4 s; a 429 waits as long as R
   s.calls[2].respond('', { status: 429, headers: { 'retry-after': '30' } });
   assert.equal((await third).error.status, 429);
 
+  s.click();
   const fourth = s.request.bulk('a', '/api/a');
   await s.advance(29_999);
   assert.equal(s.calls.length, 3);
@@ -232,25 +275,45 @@ test('a failure pauses the next request: 2 s, then 4 s; a 429 waits as long as R
   assert.equal(s.calls.length, 5);
 });
 
-test('only GET, only the same e-Boekhouden origin', () => {
+test('only GET, only the same e-Boekhouden origin', async () => {
   const s = sandbox();
-  assert.throws(() => s.request.bulk('k', '/api/x', { method: 'POST' }), { code: 'method' });
-  assert.throws(() => s.request.bulk('k', '/api/x', { method: 'delete' }), { code: 'method' });
-  assert.throws(() => s.request.bulk('k', '/api/x', { body: '{}' }), { code: 'method' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { method: 'POST' }), { code: 'method' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { method: 'delete' }), { code: 'method' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { body: '{}' }), { code: 'method' });
   s.click();
-  assert.throws(() => s.request.item('k', '/api/x', { userAction: true, method: 'PUT' }), { code: 'method' });
-  assert.throws(() => s.request.bulk('k', 'https://example.com/api/x'), { code: 'origin' });
-  assert.throws(() => s.request.bulk('k', 'https://secure.e-boekhouden.nl/bh/x.asp'), { code: 'origin' }, 'another e-Boekhouden host is another origin');
-  assert.throws(() => s.request.bulk('k', 'http://secure20.e-boekhouden.nl/api/x'), { code: 'origin' });
-  assert.throws(() => s.request.bulk('', '/api/x'), { code: 'key' });
+  await assert.rejects(s.request.item('k', '/api/x', { userAction: true, method: 'PUT' }), { code: 'method' });
+  await assert.rejects(s.request.bulk('k', 'https://example.com/api/x'), { code: 'origin' });
+  await assert.rejects(s.request.bulk('k', 'https://secure.e-boekhouden.nl/bh/x.asp'), { code: 'origin' }, 'another e-Boekhouden host is another origin');
+  await assert.rejects(s.request.bulk('k', 'http://secure20.e-boekhouden.nl/api/x'), { code: 'origin' });
+  await assert.rejects(s.request.bulk('', '/api/x'), { code: 'key' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { as: 'blob' }), { name: 'TypeError' });
   assert.equal(s.calls.length, 0);
   s.request.bulk('k', '/api/x', { method: 'get' });
   assert.equal(s.request.stats().active + s.request.stats().queued, 1, 'GET in any case is fine');
 });
 
-test('the layer only runs on e-Boekhouden app hosts', () => {
+test('every refusal is a rejected promise, never an exception at the call', () => {
+  const s = sandbox();
+  const layer = s.request;
+  for (const call of [
+    () => layer.item('k', '/api/x'),
+    () => layer.bulk('k', '/api/x', { method: 'POST' }),
+    () => layer.bulk('', '/api/x'),
+    () => layer.bulk('k', 'https://example.com/'),
+    () => layer.bulk('k', '/api/x', null),
+  ]) {
+    let promise;
+    assert.doesNotThrow(() => {
+      promise = call();
+    });
+    promise?.catch?.(() => {});
+    assert.equal(typeof promise?.then, 'function');
+  }
+});
+
+test('the layer only runs on e-Boekhouden app hosts', async () => {
   const s = sandbox({ url: 'https://www.e-boekhouden.nl/prijzen' });
-  assert.throws(() => s.request.bulk('k', '/api/x'), { code: 'origin' });
+  await assert.rejects(s.request.bulk('k', '/api/x'), { code: 'origin' });
 });
 
 test('abort cancels a running request without a pause, and frees its slot', async () => {
@@ -279,7 +342,7 @@ test('abort cancels a running request without a pause, and frees its slot', asyn
   assert.equal(s.request.stats().active, 0);
 });
 
-test('answers are cached for 60 s, then fetched again', async () => {
+test('answers are cached for 60 s; on the same screen fetched again only after a click', async () => {
   const s = sandbox();
   const first = s.request.bulk('a', '/api/a');
   await flush();
@@ -289,9 +352,21 @@ test('answers are cached for 60 s, then fetched again', async () => {
   assert.deepEqual(await s.request.bulk('a', '/api/a'), { n: 1 });
   assert.equal(s.calls.length, 1);
   await s.advance(1_000);
+  assert.deepEqual(await s.request.bulk('a', '/api/a'), { n: 1 }, 'the same screen, nobody did anything: its own answer');
+  assert.equal(s.calls.length, 1);
+  s.click();
+  const second = s.request.bulk('a', '/api/a');
+  await flush();
+  assert.equal(s.calls.length, 2, 'after a click of the user');
+  s.calls[1].respond({ n: 2 });
+  assert.deepEqual(await second, { n: 2 });
+
+  // Another screen that needs the same data, after the cache ran out.
+  await s.advance(60_000);
+  s.go('/boekhouden/archief/2025');
   s.request.bulk('a', '/api/a');
   await flush();
-  assert.equal(s.calls.length, 2);
+  assert.equal(s.calls.length, 3);
 });
 
 test('a full queue refuses more instead of piling up', async () => {
@@ -311,4 +386,145 @@ test('text answers and broken JSON', async () => {
   s.calls[1].respond('<html>not json</html>');
   assert.equal(await page, '<table></table>');
   assert.equal((await broken).error.code, 'parse');
+});
+
+test('a feature that asks per row (another key per row) is cut off: 2 running and 20 waiting, the rest refused', async () => {
+  const s = sandbox();
+  const rows = Array.from({ length: 1000 }, (_, i) => outcome(s.request.bulk(`row:${i}`, `/api/row/${i}`)));
+  await flush();
+  const refused = (await Promise.all(rows.slice(22))).filter((result) => result.error?.code === 'rate');
+  assert.equal(refused.length, 978);
+  assert.equal(s.calls.length, 2);
+  for (let i = 0; i < 22; i += 1) {
+    await s.advance(60_000);
+    for (const call of s.calls.filter((one) => !one.done)) {
+      call.done = true;
+      call.respond({});
+    }
+    await flush();
+  }
+  assert.equal(s.calls.length, 22, 'never more than 22 requests for 1000 rows');
+  assert.equal(s.request.stats().queued, 0);
+});
+
+test('items for every row in one click: one request', async () => {
+  const s = sandbox();
+  s.click();
+  const rows = Array.from({ length: 1000 }, (_, i) => outcome(s.request.item(`row:${i}`, `/api/row/${i}`, { userAction: true })));
+  await flush();
+  assert.equal(s.calls.length, 1);
+  assert.equal((await Promise.all(rows.slice(1))).filter((result) => result.error?.code === 'user-action').length, 999);
+});
+
+test('a timer cannot poll: the same bulk on the same screen every minute makes one request', async () => {
+  const s = sandbox();
+  for (let minute = 0; minute < 30; minute += 1) {
+    const answer = outcome(s.request.bulk('open:posts', '/api/openpost/grid'));
+    await flush();
+    for (const call of s.calls.filter((one) => !one.done)) {
+      call.done = true;
+      call.respond({ minute });
+    }
+    assert.deepEqual((await answer).value, { minute: 0 });
+    await s.advance(61_000);
+  }
+  assert.equal(s.calls.length, 1);
+  // A held Enter key is one action, not one per repeat.
+  s.key('Enter');
+  for (let i = 0; i < 5; i += 1) s.key('Enter', true);
+  await flush();
+  s.request.bulk('open:posts', '/api/openpost/grid');
+  await flush();
+  assert.equal(s.calls.length, 2);
+});
+
+test('after a failure the same screen does not try again by itself', async () => {
+  const s = sandbox();
+  const first = outcome(s.request.bulk('a', '/api/a'));
+  await flush();
+  s.calls[0].respond('', { status: 500 });
+  assert.equal((await first).error.code, 'http');
+  await s.advance(10 * 60_000);
+  assert.equal((await outcome(s.request.bulk('a', '/api/a'))).error.code, 'repeat');
+  assert.equal(s.calls.length, 1);
+});
+
+test('an aborted request is not joined by the next caller, and an aborted signal sends nothing', async () => {
+  const s = sandbox();
+  const a = outcome(s.request.bulk('a', '/api/a'));
+  await flush();
+  s.request.abort('a');
+  const again = s.request.bulk('a', '/api/a');
+  assert.equal((await a).error.code, 'abort');
+  await flush();
+  assert.equal(s.calls.length, 2, 'a request of its own, not the aborted one');
+  s.calls[1].respond({ again: true });
+  assert.deepEqual(await again, { again: true });
+
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal((await outcome(s.request.bulk('b', '/api/b', { signal: controller.signal }))).error.code, 'abort');
+  await flush();
+  assert.equal(s.calls.length, 2);
+});
+
+test('one budget over every frame and tab: 2 at a time and 20 a minute together', async () => {
+  const shared = sharedBudget();
+  const top = sandbox({ shared });
+  const dialog = sandbox({ shared, url: 'https://secure20.e-boekhouden.nl/boekhouden/importeren' });
+  const a = top.request.bulk('a', '/api/a');
+  const b = top.request.bulk('b', '/api/b');
+  await flush();
+  const c = dialog.request.bulk('c', '/api/c');
+  await flush();
+  assert.equal(top.calls.length + dialog.calls.length, 2, 'the frame waits for a free slot of the two');
+  top.calls[0].respond({ a: 1 });
+  await a;
+  await dialog.advance(250);
+  assert.equal(dialog.calls.length, 1);
+  top.calls[1].respond({});
+  dialog.calls[0].respond({ c: 1 });
+  await Promise.all([b, c]);
+
+  // 3 done; 17 more fit in the minute, over both frames.
+  for (let i = 0; i < 17; i += 1) {
+    const frame = i % 2 ? top : dialog;
+    const answer = frame.request.bulk(`k:${i}`, `/api/k/${i}`);
+    await flush();
+    frame.calls.at(-1).respond({});
+    await answer;
+  }
+  const late = top.request.bulk('late', '/api/late');
+  await flush();
+  assert.equal(top.calls.length + dialog.calls.length, 20);
+  assert.equal(top.request.stats().queued, 1, 'the 21st waits, although this frame made only 10');
+  await top.advance(60_000);
+  assert.equal(top.calls.length + dialog.calls.length, 21);
+  top.calls.at(-1).respond({});
+  await late;
+});
+
+test('a 429 in one frame pauses the other frames too', async () => {
+  const shared = sharedBudget();
+  const top = sandbox({ shared });
+  const other = sandbox({ shared, url: 'https://secure20.e-boekhouden.nl/boekhouden/facturen' });
+  const first = outcome(top.request.bulk('a', '/api/a'));
+  await flush();
+  top.calls[0].respond('', { status: 429, headers: { 'retry-after': '30' } });
+  assert.equal((await first).error.status, 429);
+  await flush();
+  const waiting = other.request.bulk('b', '/api/b');
+  await flush();
+  await other.advance(29_000);
+  assert.equal(other.calls.length, 0, 'the other frame waits for Retry-After as well');
+  await other.advance(1_000);
+  assert.equal(other.calls.length, 1);
+  other.calls[0].respond({ b: 1 });
+  assert.deepEqual(await waiting, { b: 1 });
+});
+
+test('without the service worker (an orphaned script) nothing is sent', async () => {
+  const s = sandbox({ worker: false });
+  assert.equal((await outcome(s.request.bulk('a', '/api/a'))).error.code, 'unavailable');
+  assert.equal(s.calls.length, 0);
 });
