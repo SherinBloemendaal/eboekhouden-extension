@@ -11,6 +11,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const files = [
   ...readdirSync(join(root, 'src')).filter((name) => /\.(js|css)$/.test(name)).map((name) => join('src', name)),
   ...readdirSync(join(root, 'src/popup')).filter((name) => /\.(js|css|html)$/.test(name)).map((name) => join('src/popup', name)),
+  ...readdirSync(join(root, 'src/features')).filter((name) => /\.js$/.test(name)).map((name) => join('src/features', name)),
+  ...readdirSync(join(root, 'src/options')).filter((name) => /\.(js|css|html)$/.test(name)).map((name) => join('src/options', name)),
 ];
 
 test('no hover rule switches display or visibility', () => {

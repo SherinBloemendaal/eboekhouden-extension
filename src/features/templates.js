@@ -729,29 +729,8 @@
     return node;
   }
 
-  // TODO-merge: arrow-up and arrow-down are not in src/icons.js yet (see the
-  // report, "Shared changes requested"). Until then the same Lucide paths
-  // (lucide-static 1.63.0, ISC) are built here the way icons.js builds them.
-  const LOCAL_ICONS = {
-    'arrow-up': ['m5 12 7-7 7 7', 'M12 19V5'],
-    'arrow-down': ['M12 5v14', 'm19 12-7 7-7-7'],
-  };
-
   function icon(name, options = {}) {
-    if (EBS.icon.has(name)) return EBS.icon(name, options);
-    const paths = LOCAL_ICONS[name];
-    if (!paths) return EBS.icon(name, options);
-    const NS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(NS, 'svg');
-    const size = String(options.size ?? 16);
-    for (const [key, value] of [['width', size], ['height', size], ['viewBox', '0 0 24 24'], ['fill', 'none'], ['stroke', 'currentColor'], ['stroke-width', '2'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round'], ['focusable', 'false'], ['aria-hidden', 'true']]) svg.setAttribute(key, value);
-    svg.setAttribute('class', `ebs-icon lucide lucide-${name}`);
-    for (const d of paths) {
-      const path = document.createElementNS(NS, 'path');
-      path.setAttribute('d', d);
-      svg.append(path);
-    }
-    return svg;
+    return EBS.icon(name, options);
   }
 
   function screenOf() {
