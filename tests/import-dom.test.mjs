@@ -24,11 +24,11 @@ const html = (rows = 6) => `<!doctype html><html><head></head><body>
 </ul></app-grid-bulk-actions></app-grid-footer></app-grid>
 <span id="clock">0</span></div></body></html>`;
 
-// In manifest order: import.js uses the shared dialog.
-const SCRIPTS = ['shared.js', 'icons.js', 'dialog.js', 'import.js'];
+// In manifest order: import.js uses the store and the shared dialog.
+const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'import.js'];
 
 async function importPage(options = {}) {
-  const p = page(html(options.rows), { url: 'https://secure20.e-boekhouden.nl/boekhouden/importeren', store: { settings: { betterDesign: true } } });
+  const p = page(html(options.rows), { url: 'https://secure20.e-boekhouden.nl/boekhouden/importeren', store: { settings: { betterDesign: true }, ...options.store } });
   p.load(...SCRIPTS);
   await p.settle();
   return p;
@@ -85,7 +85,7 @@ test('Naam wijzigen renames the group it was opened for', async () => {
   await p.settle(1);
   [...document.querySelectorAll('.ebs-tab')].find((tab) => tab.textContent.startsWith('Groep A')).click();
   await submit('B hernoemd');
-  assert.deepEqual(p.store['import:123'].groups, ['Groep A', 'B hernoemd']);
+  assert.deepEqual(p.store['store:123/import/prefs'].v.groups, ['Groep A', 'B hernoemd']);
   p.close();
 });
 
@@ -115,13 +115,23 @@ test('hiding a line fades the row that is on screen, then drops it', async () =>
   await new Promise((resolve) => setTimeout(resolve, 200));
   await p.settle();
   assert.equal(document.querySelectorAll('.ebs-body .ebs-row').length, 5);
-  assert.equal(p.store['import:123'].hidden.length, 1);
+  assert.equal(p.store['store:123/import/prefs'].v.hidden.length, 1);
   p.close();
 });
 
 test('an empty import says so instead of blaming the filters', async () => {
   const p = await importPage({ rows: 0 });
   assert.equal(p.document.querySelector('.ebs-empty').textContent, 'Er staan geen afschriftregels klaar om te verwerken.');
+  p.close();
+});
+
+test('the groups and hidden lines of 0.2.x come along, and the old copy stays', async () => {
+  const old = { hidden: [], groups: ['Bank'], groupOf: {} };
+  const p = await importPage({ store: { 'import:123': old } });
+  await p.settle();
+  assert.ok([...p.document.querySelectorAll('.ebs-tab')].some((tab) => tab.textContent.startsWith('Bank')), 'the group is back as a tab');
+  assert.deepEqual(p.store['import:123'], old, 'the old key is untouched');
+  assert.deepEqual(p.store['store:123/import/prefs'].v, old);
   p.close();
 });
 

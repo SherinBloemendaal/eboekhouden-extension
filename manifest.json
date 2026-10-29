@@ -46,6 +46,7 @@
       ],
       "js": [
         "src/shared.js",
+        "src/store.js",
         "src/icons.js",
         "src/dialog.js",
         "src/bridge.js",

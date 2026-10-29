@@ -485,7 +485,9 @@
     grid: null,
     rows: [],
     prefs: { hidden: [], groups: [], groupOf: {} },
-    prefsKey: null,
+    // EBS.store keys of this administration's import screen; the number comes
+    // from the page header ('default' without one).
+    prefsStore: null,
     ui: { query: '', direction: 'all', period: 'all', size: 'all', showHidden: false, group: null },
     leaving: new Set(),
     // Signature of the line whose box was clicked last (the shift-select anchor).
@@ -493,16 +495,18 @@
 
     async loadPrefs() {
       const number = document.querySelector('app-header-identity-b .administratieId, app-header-identity #administratieId')?.textContent.trim();
-      const key = `import:${/^\d+$/.test(number ?? '') ? number : 'default'}`;
-      if (key === this.prefsKey) return;
-      this.prefsKey = key;
-      const { [key]: stored } = await chrome.storage.local.get(key);
+      const administration = /^\d{1,12}$/.test(number ?? '') ? number : 'default';
+      if (this.prefsStore?.prefix === `${administration}/import/`) return;
+      const store = EBS.store.feature('import', { administration });
+      this.prefsStore = store;
+      const stored = await store.get('prefs').catch(() => null);
+      if (this.prefsStore !== store) return;
       this.prefs = { hidden: [], groups: [], groupOf: {}, ...(stored ?? {}) };
       schedule();
     },
 
     savePrefs() {
-      if (this.prefsKey) chrome.storage.local.set({ [this.prefsKey]: this.prefs });
+      this.prefsStore?.set('prefs', this.prefs).catch((error) => console.warn('EB Sessions: import view not saved', error?.message ?? error));
     },
 
     mount(grid, rows) {

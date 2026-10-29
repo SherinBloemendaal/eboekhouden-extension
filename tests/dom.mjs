@@ -44,8 +44,20 @@ function fakeChrome(window, { store, answer, answerDelay, sent }) {
           Object.assign(store, structuredClone(values));
           for (const listener of [...listeners]) listener(changes, 'local');
         },
+        async remove(keys) {
+          const list = [].concat(keys).filter((key) => key in store);
+          const changes = Object.fromEntries(list.map((key) => [key, { oldValue: store[key] }]));
+          for (const key of list) delete store[key];
+          if (list.length) for (const listener of [...listeners]) listener(changes, 'local');
+        },
       },
-      onChanged: { addListener: (listener) => listeners.push(listener) },
+      onChanged: {
+        addListener: (listener) => listeners.push(listener),
+        removeListener: (listener) => {
+          const at = listeners.indexOf(listener);
+          if (at >= 0) listeners.splice(at, 1);
+        },
+      },
     },
     runtime: {
       id: 'ebs-test',

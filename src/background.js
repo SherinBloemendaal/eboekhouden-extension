@@ -19,7 +19,10 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 //          avatar:<id>    data URL, 128 px
 //          view           { activeSlotId, loggedIn, ready: [id] }, mirrored for pages
 //          settings       feature switches, see SETTINGS_DEFAULTS
-//          import:<number> { hidden, groups, groupOf } for the import screen
+//          store:<number>/<feature>/<name>  { v, at, by } records of EBS.store (store.js);
+//                         the import screen keeps <number>/import/prefs there
+//          import:<number> { hidden, groups, groupOf }, the 0.2.x copy, kept as it was
+//          storeMigrations [name], migrations of store.js that have run
 // session: cookies:<id>   [chrome.cookies.Cookie]           (the session itself)
 //          activeSlotId, loggedIn, pendingCheck
 //          pendingUsername, pendingLoginFor  (the login in progress)
