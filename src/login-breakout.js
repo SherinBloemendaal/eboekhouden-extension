@@ -25,9 +25,10 @@
 //               mainframe frame. With v2Url (e-Boekhouden's own entry into
 //               the app) do nothing unless the service worker asks (the
 //               session turned out to be gone and mainframe shows v1login).
-//   login host  the swapped iframe: when inloggen.asp comes back without a
-//               login form (already logged in, or the response to a login),
-//               tell the service worker, which opens the app via /bh?v2Url=.
+//   login host  the swapped iframe: when inloggen.asp says "reeds ingelogd",
+//               or the answer to a login stays put after loading, tell the
+//               service worker, which opens the app via /bh?v2Url=. A login
+//               answer that moves on is caught by the top frame's load handler.
 //
 // The service worker owns the rest (see background.js): it knows which tabs
 // are in breakout mode, opens the app after login, keeps the re-login return
@@ -42,6 +43,9 @@
   const LOGIN_SRC = /\/v1login(?:[?#]|$)|\/bh\/inloggen\.asp/i;
   const TOP_PATHS = ['/bh', '/bh/', '/bh/index.asp', '/bh/default.asp'];
   const HOST_ID = 'ebs-login-host';
+  // How long the answer to a login may sit still before the extension opens
+  // the app itself (see runLoginHost).
+  const LOGIN_ANSWER_SETTLE_MS = 3000;
 
   const isTop = window === window.top;
   const parentIsTop = !isTop && window.parent === window.top;
@@ -219,13 +223,26 @@
     if (!hosted) return;
 
     // "U bent reeds ingelogd" (a session was still valid; the page shows a
-    // login form under that text) or inloggen.asp without its form (the
-    // answer to a successful login) both mean: open the app. The bare form
-    // is left to content.js (re-login dialog, 1Password labels).
+    // login form under that text) means: open the app. The bare form is left
+    // to content.js (re-login dialog, 1Password labels).
+    //
+    // inloggen.asp without its form is the answer to a login, and not yet the
+    // end of it: e-Boekhouden's own script moves on from there to set up the
+    // session, and the top frame's load handler sees that next page. Opening
+    // the app right away cut that step off: the tab reloaded into a session
+    // that did not exist yet and showed the login again. DacTecTools never
+    // treats an inloggen.asp URL as done either. Only an answer that stays put
+    // after it has fully loaded opens the app from here; a navigation away
+    // ends this document and its timer.
     onReady(() => {
-      const already = /reeds ingelogd/i.test(document.body?.innerText ?? '');
-      if (!already && document.getElementById('txtEmail')) return;
-      send({ type: 'login:done', url: location.href });
+      if (/reeds ingelogd/i.test(document.body?.innerText ?? '')) {
+        send({ type: 'login:done', url: location.href });
+        return;
+      }
+      if (document.getElementById('txtEmail')) return;
+      const settle = () => window.setTimeout(() => send({ type: 'login:done', url: location.href }), LOGIN_ANSWER_SETTLE_MS);
+      if (document.readyState === 'complete') settle();
+      else window.addEventListener('load', settle, { once: true });
     });
   }
 })();

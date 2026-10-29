@@ -890,7 +890,13 @@
 
     /* Better design: hide the native table, keep pagination and the native machinery. */
     html.ebs-better-import app-grid-header, html.ebs-better-import app-grid-body, html.ebs-better-import app-grid-bulk-actions { display: none !important; }
-    .ebs-import { margin: 0 0 16px; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; display: flex; flex-direction: column; gap: 14px; }
+    /* The page has no content padding of its own (the native grid insets itself), so the view and the
+       remaining footer share one gutter. The footer only holds pagination now: without pages
+       (app-pagination renders no div) it would be an empty white bar. */
+    html.ebs-better-import app-grid { display: block; width: auto !important; margin: 0 32px 16px; }
+    html.ebs-better-import app-grid-footer:not(:has(app-pagination > div)) { display: none !important; }
+    html.ebs-better-import app-grid-footer .grid-footer { padding: 0 !important; background: transparent !important; overflow: visible !important; }
+    .ebs-import { box-sizing: border-box; margin: 24px 32px 16px; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; display: flex; flex-direction: column; gap: 14px; }
     .ebs-import button { font-family: inherit; }
     .ebs-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
     .ebs-titles { display: flex; flex-direction: column; gap: 4px; }
