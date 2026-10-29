@@ -381,7 +381,7 @@
       onClose: (reason) => finish(session, reason),
     });
     session.handle.body.classList.add('ebs-popup-body');
-    underNavbar(session.handle.host);
+    underNavbar(session.handle);
 
     sessions.add(session);
     byFrame.set(frame, session);
@@ -424,12 +424,17 @@
   }
 
   // The dialog starts under e-Boekhouden's navbar, as on the board: on a
-  // classic page the frame of the page is already below it.
-  function underNavbar(host) {
+  // classic page the frame of the page is already below it. The panel then
+  // fits in what is left of the viewport, with the dialog's own 24 px margin
+  // above and below.
+  function underNavbar(handle) {
     const header = document.querySelector('#navHeader, app-eb-header');
     if (!header) return;
     const rect = header.getBoundingClientRect();
-    if (rect.top <= 0 && rect.bottom > 0 && rect.bottom < window.innerHeight / 3) host.style.top = `${Math.round(rect.bottom)}px`;
+    if (rect.top > 0 || rect.bottom <= 0 || rect.bottom >= window.innerHeight / 3) return;
+    const top = Math.round(rect.bottom);
+    handle.host.style.top = `${top}px`;
+    handle.panel.style.maxHeight = `calc(100vh - ${top + 48}px)`;
   }
 
   function tellFrame(session, kind) {

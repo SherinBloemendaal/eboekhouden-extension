@@ -200,6 +200,18 @@ test('a print preview the page writes: Afdrukken prints the frame, close() close
   p.close();
 });
 
+test('under the navbar the dialog fits in the rest of the viewport', { timeout: T }, async () => {
+  const p = await popupPage({ html: HTML.replace('<main id="app">', '<div id="navHeader"></div><main id="app">') });
+  p.document.getElementById('navHeader').getBoundingClientRect = () => ({ top: 0, bottom: 76, left: 0, right: 1280, width: 1280, height: 76 });
+  p.gesture.active = true;
+  p.window.open('/bh/herinnering.asp?ID=demo', '_blank', 'width=770,height=2000');
+  const host = p.document.querySelector('.ebs-dialog-backdrop');
+  assert.equal(host.style.top, '76px', 'below the navbar, as on the board');
+  assert.match(p.dialog().style.height, /^min\(2000px, /);
+  assert.equal(p.dialog().style.maxHeight, 'calc(100vh - 124px)', 'never taller than what is left, with the 24 px margins');
+  p.close();
+});
+
 test('inside the dialog: opener, title, messages to the page, Escape and close()', { timeout: T }, async () => {
   const popupHtml = '<!doctype html><html><head><title>Herinnering versturen</title></head><body><button id="save">Opslaan</button></body></html>';
   const p = await popupPage({ serve: { [`${APP}/bh/herinnering.asp?ID=demo`]: popupHtml, [`${APP}/bh/herinnering.asp?ID=2`]: popupHtml } });
