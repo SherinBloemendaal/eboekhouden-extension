@@ -67,20 +67,7 @@
     return null;
   }
 
-  // -------------------------------------------------------------------------
-  // 1Password: label the login fields for what they are, so password managers
-  // match and save the right fields. This does not fix the inline menu that
-  // closes on e-Boekhouden; see the README for what is known about that.
-  // -------------------------------------------------------------------------
-
-  function labelLoginFields() {
-    const user = document.getElementById('txtEmail');
-    const password = document.getElementById('txtWachtwoord');
-    user?.setAttribute('autocomplete', 'username');
-    password?.setAttribute('autocomplete', 'current-password');
-  }
-
-  if (location.pathname.toLowerCase() === '/bh/inloggen.asp') onReady(labelLoginFields);
+  // The login fields themselves are handled by password-fields.js.
 
   // -------------------------------------------------------------------------
   // Roles
@@ -381,7 +368,7 @@
       this.host.id = 'ebs-nav';
       this.host.style.cssText = variant === 'new'
         ? 'display:flex;align-items:center;flex:none;'
-        : 'display:flex;align-self:stretch;flex:none;height:100%;';
+        : 'display:flex;align-self:stretch;flex:none;height:100%;margin-right:16px;';
       const root = this.host.attachShadow({ mode: 'closed' });
       const style = el('style');
       style.textContent = NAV_CSS;

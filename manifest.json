@@ -11,17 +11,30 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["cookies", "storage"],
-  "host_permissions": ["https://*.e-boekhouden.nl/*"],
+  "permissions": [
+    "cookies",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.e-boekhouden.nl/*"
+  ],
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["https://*.e-boekhouden.nl/*"],
-      "include_globs": ["https://secure*.e-boekhouden.nl/*"],
-      "js": ["src/login-breakout.js", "src/content.js"],
+      "matches": [
+        "https://*.e-boekhouden.nl/*"
+      ],
+      "include_globs": [
+        "https://secure*.e-boekhouden.nl/*"
+      ],
+      "js": [
+        "src/login-breakout.js",
+        "src/password-fields.js",
+        "src/content.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     }

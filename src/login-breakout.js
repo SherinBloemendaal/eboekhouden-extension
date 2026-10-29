@@ -131,8 +131,50 @@
       frameset.replaceWith(body);
       swapped = true;
       send({ type: 'login:host', active: true });
+
+      // As in DacTecTools: after a login the iframe lands on a page that is
+      // no longer a login page. Same-origin pages are checked here; a landing
+      // on secure20 (cross-origin) is reported by content.js in that frame.
+      let lastInnerUrl = iframe.src;
+      iframe.addEventListener('load', () => {
+        let inner = '';
+        try {
+          inner = iframe.contentWindow?.location.href ?? '';
+        } catch {
+          return;
+        }
+        if (!inner || inner === lastInnerUrl) return;
+        lastInnerUrl = inner;
+        if (/uitloggen\.asp/i.test(inner)) {
+          // Logged out from inside the iframe: show the login again.
+          location.replace('/bh/');
+          return;
+        }
+        if (!/inloggen\.asp|v1login|vergeten/i.test(inner)) send({ type: 'login:done', url: inner });
+      });
       return true;
     }
+
+    // Also from DacTecTools: logging out does not reload the top page, it only
+    // sends mainframe to a login page. Watch for that and swap then. Only a
+    // URL we can read counts: on /bh?v2Url= the frame's src attribute also
+    // says v1login while the app is loading, so the attribute proves nothing.
+    // A secure20 login screen (cross-origin) is reported through the service
+    // worker instead (login:swap).
+    const watch = window.setInterval(() => {
+      if (swapped || document.getElementById(HOST_ID)) {
+        window.clearInterval(watch);
+        return;
+      }
+      const frame = document.querySelector('frame#mainframe, frame[name="mainframe"]');
+      let url = '';
+      try {
+        url = frame?.contentWindow?.location.href ?? '';
+      } catch {
+        return;
+      }
+      if (/\/bh\/inloggen\.asp/i.test(url)) swap('request');
+    }, 1000);
 
     if (!entersApp) {
       const observer = new MutationObserver(() => {
