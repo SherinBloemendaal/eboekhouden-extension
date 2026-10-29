@@ -262,6 +262,20 @@ describe('a folder change always ends', { concurrency: true }, () => {
     assert.equal(state(p), 'failed');
   });
 
+  test('an answer that cannot be read replaces the folder\'s older one: an emptied folder is empty, not an error', async () => {
+    const unreadable = [];
+    const p = await archivePage({ unreadable });
+    assert.equal(state(p), 'rows');
+    // The files go, and from now on the observe hook cannot read the answer.
+    p.data.files[12] = [];
+    unreadable.push(12);
+    trusted(p, p.$('.ebs-ar-tools .ebs-ar-refresh'));
+    await settleAll(p, 6);
+    await wait(400);
+    await settleAll(p);
+    assert.equal(state(p), 'empty', 'not "Kon de map niet laden" for files the old answer had');
+  });
+
   test('the screen\'s own first list that never comes ends in the error', async () => {
     const never = new Promise(() => {});
     const p = await archivePage({ gate: gates([[/\/folder\/12\/filelist$/, 1, never]]) });

@@ -242,10 +242,11 @@
         observed.error = { folderId, message: str(answer?.message, 300) || 'Er is iets misgegaan.', at: now };
       } else {
         const answer = parseJson(data.body);
-        if (Array.isArray(answer)) {
-          observed.error = null;
-          observed.lists = [{ folderId, items: answer.map(cleanItem).filter(Boolean), at: now }, ...observed.lists.filter((one) => one.folderId !== folderId)].slice(0, 4);
-        }
+        const others = observed.lists.filter((one) => one.folderId !== folderId);
+        observed.error = null;
+        // An answer that cannot be read also replaces this folder's older
+        // one: those files may be gone (no "files to come" wait, no old ids).
+        observed.lists = Array.isArray(answer) ? [{ folderId, items: answer.map(cleanItem).filter(Boolean), at: now }, ...others].slice(0, 4) : others;
       }
       observed.answered.set(folderId, now);
       observed.lastAt = now;
