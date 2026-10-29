@@ -15,6 +15,7 @@ function referencedFiles() {
     ...Object.values(manifest.action?.default_icon ?? {}),
     manifest.action?.default_popup,
     manifest.background?.service_worker,
+    manifest.options_ui?.page,
   ];
   for (const script of manifest.content_scripts ?? []) files.push(...(script.js ?? []), ...(script.css ?? []));
   for (const entry of manifest.web_accessible_resources ?? []) files.push(...(entry.resources ?? []));
@@ -38,7 +39,7 @@ test('every script and stylesheet the popup loads exists', () => {
 test('the manifest is MV3 with the minimum host access', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.deepEqual(manifest.host_permissions, ['https://*.e-boekhouden.nl/*']);
-  assert.deepEqual([...manifest.permissions].sort(), ['cookies', 'storage']);
+  assert.deepEqual([...manifest.permissions].sort(), ['cookies', 'offscreen', 'storage']);
 });
 
 const [mainWorld, isolated] = manifest.content_scripts;
@@ -68,9 +69,18 @@ test('shared modules load before the scripts that use them, every feature file i
   assert.ok(list.slice(firstFeature).every((file) => file.startsWith('src/features/')));
 });
 
-test('AI providers are optional hosts, asked for at runtime; no offscreen permission yet', () => {
+test('AI providers are optional hosts, asked for at runtime; offscreen is for the AI writing help', () => {
   assert.deepEqual(manifest.optional_host_permissions, ['https://openrouter.ai/*', 'https://api.openai.com/*', 'https://api.anthropic.com/*']);
-  assert.equal(manifest.permissions.includes('offscreen'), false);
+  assert.ok(manifest.permissions.includes('offscreen'));
+  assert.equal(readFileSync(join(root, 'src/bg/ai.js'), 'utf8').includes("'src/offscreen/offscreen.html'"), true, 'the worker opens the document the manifest allows');
+});
+
+test('the AI settings page is the options page, in a tab, and its files exist', () => {
+  assert.deepEqual(manifest.options_ui, { page: 'src/options/options.html', open_in_tab: true });
+  const file = join(root, manifest.options_ui.page);
+  const refs = [...readFileSync(file, 'utf8').matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(refs, ['options.css', '../shared.js', '../icons.js', 'main.js']);
+  assert.ok(refs.every((ref) => existsSync(join(dirname(file), ref))));
 });
 
 test('the offscreen document stub loads files that exist', () => {

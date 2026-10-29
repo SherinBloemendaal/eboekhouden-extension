@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-schrijfhulp · EB Sessions</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<main class="page" id="page">
+  <header class="top">
+    <span class="mark" id="mark"></span>
+    <span class="heading"><h1>AI-schrijfhulp</h1><span class="sub">EB Sessions · instellingen</span></span>
+    <span class="grow"></span>
+    <button type="button" class="switch" id="enabled" role="switch" aria-checked="false" aria-label="AI-schrijfhulp aan"><span class="knob"></span></button>
+  </header>
+
+  <section class="card" id="setup" aria-labelledby="provider-title">
+    <h2 id="provider-title">Aanbieder</h2>
+    <div class="providers" role="radiogroup" aria-labelledby="provider-title" id="providers"></div>
+    <div class="field">
+      <label for="key">API-sleutel</label>
+      <span class="row">
+        <input type="password" id="key" autocomplete="off" spellcheck="false" maxlength="400">
+        <button type="button" class="btn" id="test">Sleutel testen</button>
+      </span>
+      <span class="note" id="key-note" role="status" aria-live="polite"></span>
+    </div>
+    <div class="field">
+      <label for="model">Model</label>
+      <input id="model" list="models" autocomplete="off" spellcheck="false" maxlength="200">
+      <datalist id="models"></datalist>
+      <span class="hint" id="model-hint"></span>
+    </div>
+    <div class="consent" id="consent" role="status" aria-live="polite"><span class="consent-text" id="consent-text"></span><span class="consent-wait" id="consent-wait">Wacht op Chrome…</span></div>
+  </section>
+
+  <section class="card" aria-labelledby="sent-title">
+    <h2 id="sent-title">Wat wordt verstuurd</h2>
+    <p>Alleen als jij op een AI-knop klikt: de tekst die je bewerkt (of je selectie), de lijst met variabelen voor dat soort sjabloon en je opdracht. Geen klantgegevens uit e-Boekhouden, geen bedragen uit je administratie, geen wachtwoorden. Het voorbeeld met de gegevens van een factuur die jij kiest, blijft in je browser en gaat nooit naar de AI.</p>
+    <p>De sleutel staat alleen in deze browser, in een opslag van de extensie die alleen haar eigen pagina's kunnen openen. De pagina's van e-Boekhouden kunnen hem niet lezen, ook de delen van de extensie in die pagina's niet; alleen de extensie zelf praat met de aanbieder.</p>
+    <p>De AI draait in de extensie zelf (een verborgen pagina van de extensie die alleen bestaat zolang je hem gebruikt), niet in de pagina van e-Boekhouden. De AI-bibliotheek zit als één bestand in de extensie; er wordt geen code van buiten geladen.</p>
+    <p class="small">Kosten en limieten lopen via je eigen account bij de aanbieder.</p>
+  </section>
+
+  <div class="actions">
+    <button type="button" class="btn danger" id="remove">Sleutel verwijderen</button>
+    <button type="button" class="btn primary" id="save">Opslaan</button>
+  </div>
+</main>
+<script src="../shared.js"></script>
+<script src="../icons.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

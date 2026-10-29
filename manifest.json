@@ -13,7 +13,8 @@
   },
   "permissions": [
     "cookies",
-    "storage"
+    "storage",
+    "offscreen"
   ],
   "host_permissions": [
     "https://*.e-boekhouden.nl/*"
@@ -75,6 +76,10 @@
       "all_frames": true
     }
   ],
+  "options_ui": {
+    "page": "src/options/options.html",
+    "open_in_tab": true
+  },
   "action": {
     "default_title": "EB Sessions",
     "default_popup": "src/popup/popup.html",
