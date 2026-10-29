@@ -458,7 +458,57 @@ test('the entry\'s own account logs in as before, in any case and with spaces, a
   assert.equal(button.disabled, true);
   assert.equal(button.value, 'Bezig met inloggen…');
   assert.equal(button.getAttribute('aria-busy'), 'true');
-  assert.deepEqual(JSON.parse(JSON.stringify(p.sent.filter((sent) => sent.type === 'login:username'))), [{ type: 'login:username', username: '  Sherin@Vitrion.Example ' }]);
+  // The entry's own spelling is what is sent and matched: the service worker
+  // compares usernames exactly, so '  Sherin@Vitrion.Example ' would start
+  // the session on another entry.
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.deepEqual(JSON.parse(JSON.stringify(p.sent.filter((sent) => sent.type === 'login:username'))), [{ type: 'login:username', username: 'sherin@vitrion.example' }]);
+});
+
+test('Enter in the password field (the implicit click on Inloggen) with another account is stopped as well', async () => {
+  const p = await lockPage({ password: 'x' });
+  const user = p.document.getElementById('txtEmail');
+  user.value = 'iemand@anders.nl';
+  // Chrome turns Enter into a click on the form's default button.
+  assert.equal(click(p, p.document.getElementById('submit1')).defaultPrevented, true);
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.ok(p.document.querySelector('.ebs-userlock-msg').classList.contains('on'));
+  // Clicks elsewhere in the form are no login: nothing is stopped there.
+  user.value = 'iemand@anders.nl';
+  assert.equal(click(p, p.document.getElementById('txtWachtwoord')).defaultPrevented, false);
+});
+
+test('after Ander account, picking the entry again locks it again; an entry without a username clears the row', async () => {
+  const p = await lockPage({ list: known.map((slot) => ({ ...slot, expired: true })) });
+  const { document } = p;
+  const user = document.getElementById('txtEmail');
+  const chip = (name) => [...document.querySelectorAll('#ebs-sessions .chip')].find((button) => button.textContent.startsWith(name));
+  document.querySelector('.ebs-userlock-other').click();
+  assert.equal(user.readOnly, false);
+  chip('Vitrion B.V.').click();
+  await p.settle();
+  assert.equal(user.readOnly, true, 'locked again');
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion B.V.');
+  assert.equal(document.querySelector('.ebs-userlock-other').disabled, false);
+  document.querySelector('.ebs-userlock-other').click();
+  user.value = 'zelf@getypt.nl';
+  chip('Oud Archief').click();
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-userlock'), null, 'no unlocked row left for an entry that locks nothing');
+  assert.equal(user.value, 'zelf@getypt.nl', 'what the user typed stays');
+});
+
+test('the lock follows a new stored username for the same entry', async () => {
+  const p = await lockPage();
+  const user = p.document.getElementById('txtEmail');
+  await p.window.chrome.storage.local.set({ slots: known.map((slot) => (slot.id === 'b' ? { ...slot, name: 'Vitrion Holding', username: 'nieuw@vitrion.example' } : slot)) });
+  await p.settle();
+  assert.equal(user.value, 'nieuw@vitrion.example');
+  assert.equal(p.document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion Holding');
+  user.value = 'sherin@vitrion.example';
+  assert.equal(submit(p).defaultPrevented, true, 'the old username is no longer the entry\'s');
+  assert.equal(user.value, 'nieuw@vitrion.example');
 });
 
 test('Ander account unlocks and empties the field, after which any account logs in', async () => {
@@ -545,5 +595,16 @@ test('the expired re-login dialog locks the username to the entry whose session 
     assert.equal(submit(p).defaultPrevented, true, 'the other entry\'s account is stopped too');
     assert.equal(user.value, 'sherin@vitrion.example');
     assert.equal(document.getElementById('txtWachtwoord').outerHTML, before, 'the password field is untouched');
+    // Renamed in the popup while the dialog is open: the row follows.
+    await p.window.chrome.storage.local.set({ slots: known.map((slot) => (slot.id === 'b' ? { ...slot, name: 'Vitrion Holding' } : slot)) });
+    await p.settle();
+    assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion Holding');
+    assert.equal(user.readOnly, true);
+    // Removed: nothing to lock to any more.
+    await p.window.chrome.storage.local.set({ slots: known.filter((slot) => slot.id !== 'b') });
+    await p.settle();
+    assert.equal(document.querySelector('.ebs-userlock'), null);
+    assert.equal(user.readOnly, false);
+    assert.equal(user.value, '', 'the filled-in username goes with it');
   }
 });

@@ -152,17 +152,23 @@
     // The re-login dialog (content.js) shows this same form on its own:
     // leave the page as it is then, apart from the username lock.
     if (state.relogin && state.settings.relogin) {
-      lock.set(lockedSlot(state, state.reloginFor), 'classic');
+      // The entry renamed, given another username or removed (the popup)
+      // while the dialog is open: the lock follows.
+      const reloginFor = state.reloginFor;
+      lock.set(lockedSlot(state, reloginFor), { variant: 'classic' });
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.slots) lock.set(lockedSlot({ slots: Array.isArray(changes.slots.newValue) ? changes.slots.newValue : [] }, reloginFor));
+      });
       return;
     }
     const better = state.settings.betterDesign && inLoginHost();
     const page = better ? betterLayout(form, user) : classicLayout(form);
     page.render(state);
-    lock.set(lockedSlot(state, state.pendingLoginFor), better ? 'better' : 'classic');
-    refresh = async () => {
+    lock.set(lockedSlot(state, state.pendingLoginFor), { variant: better ? 'better' : 'classic' });
+    refresh = async (picked = false) => {
       state = await loadState();
       page.render(state);
-      lock.set(lockedSlot(state, state.pendingLoginFor));
+      lock.set(lockedSlot(state, state.pendingLoginFor), { picked });
     };
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local') refresh();
@@ -223,7 +229,7 @@
   // 1Password's menu has something to fill.
   async function chooseForLogin(slot) {
     await send({ type: 'login:for', slotId: slot.id });
-    await refresh();
+    await refresh(true);
     const user = document.getElementById('txtEmail');
     if (user?.readOnly) document.getElementById('frm')?.querySelector('input[type="password"]')?.focus();
     else user?.focus();
@@ -401,10 +407,13 @@
       if (event.type === 'submit') {
         if (event.target !== form) return;
       } else {
-        const button = event.target instanceof Element ? event.target.closest('input[type="submit"], button[type="submit"], button:not([type])') : null;
-        if (!button || button.form !== form) return;
+        const button = event.target instanceof Element ? event.target.closest('input, button') : null;
+        if (!button || button.form !== form || !['submit', 'image'].includes(button.type)) return;
       }
       if (sameUsername(user.value, slot.username)) {
+        // Another case or spaces (1Password, a retyped name): the entry's own
+        // spelling goes, so the service worker matches the login to it.
+        if (user.value !== filled) user.value = filled;
         showMessage(false);
         return;
       }
@@ -417,25 +426,33 @@
     window.addEventListener('submit', guard, true);
 
     return {
-      // The entry this form is for now (null: none), and the layout.
-      set(next, nextVariant) {
+      // The entry this form is for now (null: none), and the layout. picked:
+      // the user chose it again in the list, which locks it again after
+      // "Ander account".
+      set(next, { variant: nextVariant, picked = false } = {}) {
         if (nextVariant) variant = nextVariant;
         const id = next?.id ?? null;
-        if (slot && id === slot.id) {
+        if (picked && id === unlockedFor) unlockedFor = null;
+        if (slot && id === slot.id && sameUsername(next.username, slot.username)) {
           text.textContent = `Vastgezet voor ${next.name}`;
           slot = next;
+          filled = slot.username.trim();
+          if (!message.classList.contains('on')) message.lastChild.textContent = messageText();
           return;
         }
         if (id && id === unlockedFor) return;
         if (!next) {
-          if (slot) {
-            release(true);
+          // No entry (any more): no row, also not the unlocked one.
+          if (slot) release(true);
+          unlockedFor = null;
+          if (box) {
             box.closest('.ebs-userlock-tr')?.remove();
             box.remove();
             box = null;
           }
           return;
         }
+        // Another entry, or the same one with another stored username.
         if (slot) release(true);
         lockTo(next);
       },
