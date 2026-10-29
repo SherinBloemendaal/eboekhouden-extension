@@ -313,9 +313,9 @@
         settle(job, new RequestError('abort', 'EBS.request: aborted'));
         pump();
       } else {
-        // Other frames or tabs used the budget: back to the front, later.
+        // Other frames or tabs used the budget: back in its place, later.
         job.state = 'queued';
-        queue.unshift(job);
+        requeue(job);
         schedule(grant.waitMs);
       }
       return;
@@ -361,6 +361,15 @@
     release(grant.lease, status, retryAfter);
     settle(job, error, value);
     pump();
+  }
+
+  // Items before bulk loads, each in the order it came; a job that has to
+  // wait again goes back to where it was.
+  function requeue(job) {
+    const rank = (one) => (one.kind === 'item' ? 0 : 1);
+    const at = queue.findIndex((one) => rank(one) > rank(job) || (rank(one) === rank(job) && one.id > job.id));
+    if (at < 0) queue.push(job);
+    else queue.splice(at, 0, job);
   }
 
   // The screen is the page's URL: e-Boekhouden changes it for every screen.
@@ -428,8 +437,7 @@
     jobs.set(job.id, job);
     const promise = addWaiter(job, settings.signal);
     // An item answers a click: it goes before the bulk loads that wait.
-    if (kind === 'item') queue.unshift(job);
-    else queue.push(job);
+    requeue(job);
     pump();
     return promise;
   }

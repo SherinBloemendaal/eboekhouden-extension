@@ -504,6 +504,32 @@ test('one budget over every frame and tab: 2 at a time and 20 a minute together'
   await late;
 });
 
+test('requests that wait for another frame keep their order, an item first', async () => {
+  const shared = sharedBudget();
+  const top = sandbox({ shared });
+  const other = sandbox({ shared, url: 'https://secure20.e-boekhouden.nl/boekhouden/facturen' });
+  const busy = [top.request.bulk('a', '/api/a'), top.request.bulk('b', '/api/b')];
+  await flush();
+  const waiting = ['x', 'y', 'z'].map((name) => other.request.bulk(name, `/api/${name}`));
+  await flush();
+  other.click();
+  waiting.push(other.request.item('i', '/api/i', { userAction: true }));
+  await flush();
+  assert.equal(other.calls.length, 0);
+  top.calls.forEach((call) => call.respond({}));
+  await Promise.all(busy);
+  for (let i = 0; i < 4; i += 1) {
+    await other.advance(250);
+    other.calls.filter((call) => !call.done).forEach((call) => {
+      call.done = true;
+      call.respond({});
+    });
+    await flush();
+  }
+  await Promise.all(waiting);
+  assert.deepEqual(other.calls.map((call) => new URL(call.url).pathname), ['/api/i', '/api/x', '/api/y', '/api/z']);
+});
+
 test('a 429 in one frame pauses the other frames too', async () => {
   const shared = sharedBudget();
   const top = sandbox({ shared });
