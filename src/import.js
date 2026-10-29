@@ -25,6 +25,8 @@
 
   const PAGE = /^\/boekhouden\/importeren\/?$/;
   const TITLE = 'Niet verwerkte afschriftregels';
+  // Key in classicScreens.
+  const SCREEN = 'import';
   const EDIT_HASH = '#ebs-edit=';
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -52,13 +54,23 @@
 
   let settings = EBS.settingsWithDefaults();
   let settingsLoaded = false;
+  // Per screen: true once the user picked "Klassieke weergave" there. The
+  // popup's Better design switch clears it (see popup.js).
+  let classicScreens = {};
 
   function onImportPage() {
     return PAGE.test(location.pathname);
   }
 
   function useBetter() {
-    return settings.betterDesign && onImportPage() && sessionStorage.getItem('ebs-import-classic') !== '1';
+    return settings.betterDesign && onImportPage() && !classicScreens[SCREEN];
+  }
+
+  function setClassic(classic) {
+    classicScreens = { ...classicScreens, [SCREEN]: classic };
+    chrome.storage.local.set({ classicScreens });
+    applyBetterClass();
+    schedule();
   }
 
   // Set before the grid renders, so the native table never flashes up.
@@ -196,13 +208,17 @@
     if (!grid) {
       bar.hide();
       better.unmount();
+      backToBetter.unmount();
       return;
     }
     const rows = readRows(grid);
     if (useBetter()) {
+      backToBetter.unmount();
       better.mount(grid, rows);
     } else {
       better.unmount();
+      if (settings.betterDesign) backToBetter.mount(grid);
+      else backToBetter.unmount();
     }
     bar.update(grid, rows);
   }
@@ -402,11 +418,7 @@
       titles.append(this.subtitle);
       const classic = el('button', 'ebs-link', 'Klassieke weergave');
       classic.type = 'button';
-      classic.addEventListener('click', () => {
-        sessionStorage.setItem('ebs-import-classic', '1');
-        applyBetterClass();
-        schedule();
-      });
+      classic.addEventListener('click', () => setClassic(true));
       head.append(titles, classic);
 
       this.cards = el('div', 'ebs-cards');
@@ -709,6 +721,29 @@
     },
   };
 
+  // The way back on the classic screen, in e-Boekhouden's own link style, at
+  // the spot where the new view has "Klassieke weergave".
+  const backToBetter = {
+    node: null,
+    mount(grid) {
+      if (!this.node) {
+        this.node = el('div', 'ebs-native-toggle');
+        const link = el('a', '', 'Nieuwe weergave');
+        link.href = '#';
+        link.setAttribute('role', 'button');
+        link.addEventListener('click', (event) => {
+          event.preventDefault();
+          setClassic(false);
+        });
+        this.node.append(link);
+      }
+      if (this.node.nextElementSibling !== grid) grid.before(this.node);
+    },
+    unmount() {
+      this.node?.remove();
+    },
+  };
+
   // Tooltips: a short fade for the first one, then instant while moving
   // across the buttons.
   const tooltip = {
@@ -803,7 +838,15 @@
   function runEditFrame(signature) {
     const style = document.createElement('style');
     // Only the page content: the shell's header and menus are already around the dialog.
-    style.textContent = 'app-eb-header, app-site-navigation, app-site-navigation-b, app-header-identity, app-header-identity-b, app-notification-bar { display: none !important; }';
+    // The page itself is projected inside app-site-navigation(-b) (#navBody), so hide the
+    // header and sidebar within it and drop its grid, the way e-Boekhouden's own print
+    // stylesheet does.
+    style.textContent = `
+      app-eb-header, app-header-identity, app-header-identity-b, app-notification-bar,
+      :is(app-site-navigation, app-site-navigation-b) :is(#navHeader, #navSidebar, .sidebar-menu-overlay) { display: none !important; }
+      :is(app-site-navigation, app-site-navigation-b) .nav { display: block !important; width: auto !important; height: auto !important; overflow: visible !important; }
+      :is(app-site-navigation, app-site-navigation-b) #navBody { display: block !important; }
+    `;
     document.documentElement.append(style);
 
     const started = Date.now();
@@ -896,6 +939,8 @@
     html.ebs-better-import app-grid { display: block; width: auto !important; margin: 0 32px 16px; }
     html.ebs-better-import app-grid-footer:not(:has(app-pagination > div)) { display: none !important; }
     html.ebs-better-import app-grid-footer .grid-footer { padding: 0 !important; background: transparent !important; overflow: visible !important; }
+    .ebs-native-toggle { width: 93%; margin: 0 0 6px; text-align: right; font-size: 13px; }
+    .ebs-native-toggle a { color: var(--colorPrimary, #30395f); text-decoration: underline; cursor: pointer; }
     .ebs-import { box-sizing: border-box; margin: 24px 32px 16px; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; display: flex; flex-direction: column; gap: 14px; }
     .ebs-import button { font-family: inherit; }
     .ebs-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
@@ -989,20 +1034,24 @@
   // Started last, once every declaration in this file exists.
   function start() {
     injectStyle();
-    chrome.storage.local.get('settings').then(({ settings: stored }) => {
+    // The old one-way switch of 0.2.0 lived in sessionStorage.
+    sessionStorage.removeItem('ebs-import-classic');
+    chrome.storage.local.get(['settings', 'classicScreens']).then(({ settings: stored, classicScreens: storedClassic }) => {
       settings = EBS.settingsWithDefaults(stored);
+      classicScreens = storedClassic ?? {};
       settingsLoaded = true;
       applyBetterClass();
       schedule();
     });
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.settings) return;
-      settings = EBS.settingsWithDefaults(changes.settings.newValue);
+      if (area !== 'local' || !(changes.settings || changes.classicScreens)) return;
+      if (changes.settings) settings = EBS.settingsWithDefaults(changes.settings.newValue);
+      if (changes.classicScreens) classicScreens = changes.classicScreens.newValue ?? {};
       applyBetterClass();
       schedule();
     });
     // Our own drawing must not wake the loop, or it would redraw forever.
-    const OURS = '.ebs-import, .ebs-bar, .ebs-dialog-backdrop, #ebs-import-style';
+    const OURS = '.ebs-import, .ebs-native-toggle, .ebs-bar, .ebs-dialog-backdrop, #ebs-import-style';
     new MutationObserver((records) => {
       const native = records.some((record) => {
         const node = record.target.nodeType === Node.ELEMENT_NODE ? record.target : record.target.parentElement;

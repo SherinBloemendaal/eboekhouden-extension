@@ -137,7 +137,9 @@ function renderSettings() {
     toggle.append(el('span', 'knob'));
     toggle.addEventListener('click', async () => {
       const settings = { ...state.settings, [key]: !state.settings[key] };
-      await chrome.storage.local.set({ settings });
+      // Flipping Better design starts every screen fresh: no screen stays on
+      // a "Klassieke weergave" picked earlier.
+      await chrome.storage.local.set(key === 'betterDesign' ? { settings, classicScreens: {} } : { settings });
     });
     line.append(text, toggle);
     list.append(line);

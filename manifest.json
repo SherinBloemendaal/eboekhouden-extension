@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "EB Sessions",
   "short_name": "EB Sessions",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Unofficial helper for e-Boekhouden.nl: 1Password on the login page, a session switcher, an in-page re-login dialog, faster importing and an optional redesign.",
   "minimum_chrome_version": "116",
   "icons": {
