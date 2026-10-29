@@ -120,30 +120,37 @@ function renderConfirm() {
   box.append(inner);
 }
 
+// Built once and updated in place: a rebuilt switch would jump instead of
+// sliding, and keyboard focus would fall off it.
+const switches = new Map();
+
 function renderSettings() {
   const list = document.getElementById('settings');
-  list.replaceChildren();
-  for (const [key, title, hint] of SETTINGS) {
-    const line = el('div', 'setting');
-    const text = el('span', 'setting-text');
-    const label = el('span', 'setting-title', title);
-    label.id = `setting-${key}`;
-    text.append(label, el('span', 'setting-hint', hint));
-    const toggle = el('button', 'switch');
-    toggle.type = 'button';
-    toggle.setAttribute('role', 'switch');
-    toggle.setAttribute('aria-checked', String(Boolean(state.settings[key])));
-    toggle.setAttribute('aria-labelledby', label.id);
-    toggle.append(el('span', 'knob'));
-    toggle.addEventListener('click', async () => {
-      const settings = { ...state.settings, [key]: !state.settings[key] };
-      // Flipping Better design starts every screen fresh: no screen stays on
-      // a "Klassieke weergave" picked earlier.
-      await chrome.storage.local.set(key === 'betterDesign' ? { settings, classicScreens: {} } : { settings });
-    });
-    line.append(text, toggle);
-    list.append(line);
+  if (!switches.size) {
+    for (const [key, title, hint] of SETTINGS) {
+      // The whole line is the label, so a click on the text flips the switch too.
+      const line = el('label', 'setting');
+      const text = el('span', 'setting-text');
+      const label = el('span', 'setting-title', title);
+      label.id = `setting-${key}`;
+      text.append(label, el('span', 'setting-hint', hint));
+      const toggle = el('button', 'switch');
+      toggle.type = 'button';
+      toggle.setAttribute('role', 'switch');
+      toggle.setAttribute('aria-labelledby', label.id);
+      toggle.append(el('span', 'knob'));
+      toggle.addEventListener('click', async () => {
+        const settings = { ...state.settings, [key]: !state.settings[key] };
+        // Flipping Better design starts every screen fresh: no screen stays on
+        // a "Klassieke weergave" picked earlier.
+        await chrome.storage.local.set(key === 'betterDesign' ? { settings, classicScreens: {} } : { settings });
+      });
+      line.append(text, toggle);
+      list.append(line);
+      switches.set(key, toggle);
+    }
   }
+  for (const [key, toggle] of switches) toggle.setAttribute('aria-checked', String(Boolean(state.settings[key])));
 }
 
 function render() {

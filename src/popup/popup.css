@@ -32,7 +32,7 @@ button { font: inherit; cursor: pointer; }
 .confirm { margin: 6px 8px; padding: 10px 12px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
 .confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .settings { display: flex; flex-direction: column; padding: 0 16px; }
-.setting { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid #f0f2f7; }
+.setting { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid #f0f2f7; cursor: pointer; }
 .setting-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .setting-title { font-size: 13px; font-weight: 500; }
 .setting-hint { font-size: 11px; color: #5d6584; }
