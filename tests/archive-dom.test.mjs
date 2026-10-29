@@ -232,6 +232,7 @@ test('shift-click selects a range on e-Boekhouden\'s checkboxes; the bar counts 
   assert.equal(p.$('.ebs-ar-bar').classList.contains('show'), true);
   assert.equal(p.$('.ebs-ar-bar-count').textContent, '5 bestanden geselecteerd');
   assert.equal(p.$('.ebs-ar-bar-sub').textContent, '2 zonder koppeling');
+  assert.equal(p.$('.ebs-ar').dataset.bar, 'on', 'room after the last row while the bar floats over the list');
   // Shift-click back to the anchor's state: the range is cleared.
   click(p, check('Huur kantoor november.pdf'));
   await settleAll(p);
@@ -243,6 +244,7 @@ test('shift-click selects a range on e-Boekhouden\'s checkboxes; the bar counts 
   await settleAll(p);
   assert.equal(p.window.__archive.state.selected.size, 0);
   assert.equal(p.$('.ebs-ar-bar').classList.contains('show'), false);
+  assert.equal(p.$('.ebs-ar').dataset.bar, 'off');
 
   // "Alles in beeld": only what the filter shows.
   click(p, p.$$('.ebs-ar-chip').find((node) => node.textContent.startsWith('Zonder koppeling')));

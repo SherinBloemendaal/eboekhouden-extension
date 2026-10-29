@@ -12,7 +12,7 @@ export const API = '/v1/api/';
 
 // The page around the component: the header with the administration number.
 export function shellHtml({ adminNumber = '1000001' } = {}) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Digitaal archief</title></head><body>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Digitaal archief</title><style>[custom-hidden] { display: none !important; } app-digitaal-archief-upload app-file-upload { display: block; padding: 16px; background: #fff; }</style></head><body>
 <app-header-identity-b><div class="header-identity"><div class="userInfo"><span class="userName">Voorbeeld B.V.</span><span class="administratieId">${adminNumber}</span></div></div></app-header-identity-b>
 <div id="app" style="height:900px"></div></body></html>`;
 }
