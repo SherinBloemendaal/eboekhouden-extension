@@ -1,22 +1,26 @@
 // Service worker: owns the saved sessions, the cookie swap and the per-tab
-// re-login state. Cookie values never leave this context: content scripts only
-// ever receive labels and flags.
+// re-login state. Cookie values never leave this context. Pages only see what
+// it mirrors into chrome.storage.local: names, numbers, statuses and pictures.
 
 const COOKIE_DOMAIN = 'e-boekhouden.nl';
 const EB_TAB_PATTERN = 'https://*.e-boekhouden.nl/*';
 const LOGIN_TITLE = /^inloggen\b/i;
+const AVATAR_PATTERN = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/=]+$/;
+const AVATAR_MAX_LENGTH = 96 * 1024;
 
 // chrome.storage.session lives in memory only and is wiped when Chrome quits.
 // Restrict it to extension pages so content scripts can never read it.
 chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 
 // ---------------------------------------------------------------------------
-// Storage helpers
+// Storage
 //
-// local:   slots         [{ id, title, label }]   (names only, no secrets)
-// session: cookies:<id>  [chrome.cookies.Cookie]  (the session itself)
-//          activeSlotId, loggedIn
-//          tab:<tabId>   { mainFrameId, returnUrl, relogin, innerUrl, innerFor, restoreInner, header }
+// local:   slots          [{ id, name, number, expired }]   (no secrets)
+//          avatar:<id>    data URL, 128 px                  (no secrets)
+//          view           { activeSlotId, loggedIn, ready: [id] }, mirrored for pages
+// session: cookies:<id>   [chrome.cookies.Cookie]           (the session itself)
+//          activeSlotId, loggedIn, pendingCheck
+//          tab:<tabId>    { mainFrameId, returnUrl, relogin, innerUrl, innerFor, restoreInner }
 // ---------------------------------------------------------------------------
 
 async function getSlots() {
@@ -28,9 +32,17 @@ async function setSlots(slots) {
   await chrome.storage.local.set({ slots });
 }
 
+async function updateSlot(slotId, changes) {
+  const slots = await getSlots();
+  const slot = slots.find((candidate) => candidate.id === slotId);
+  if (!slot) return;
+  Object.assign(slot, changes);
+  await setSlots(slots);
+}
+
 async function getSessionState() {
-  const { activeSlotId = null, loggedIn = false } = await chrome.storage.session.get(['activeSlotId', 'loggedIn']);
-  return { activeSlotId, loggedIn };
+  const { activeSlotId = null, loggedIn = false, pendingCheck = null } = await chrome.storage.session.get(['activeSlotId', 'loggedIn', 'pendingCheck']);
+  return { activeSlotId, loggedIn, pendingCheck };
 }
 
 async function getTab(tabId) {
@@ -45,12 +57,10 @@ async function setTab(tabId, tab) {
 
 async function clearAllTabStates() {
   const all = await chrome.storage.session.get(null);
-  const keys = Object.keys(all).filter((key) => key.startsWith('tab:'));
-  // Keep the frame registry, drop everything that would trigger a re-login return.
   const updates = {};
-  for (const key of keys) {
-    const { mainFrameId, header } = all[key];
-    updates[key] = { mainFrameId, header };
+  for (const key of Object.keys(all).filter((name) => name.startsWith('tab:'))) {
+    // Keep the frame registry, drop everything that would trigger a re-login return.
+    updates[key] = { mainFrameId: all[key].mainFrameId };
   }
   await chrome.storage.session.set(updates);
 }
@@ -58,6 +68,18 @@ async function clearAllTabStates() {
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab:${tabId}`);
 });
+
+// The mirror pages render from. Rebuilt after every change and on startup,
+// when the in-memory sessions are gone.
+async function publishView() {
+  const [slots, { activeSlotId, loggedIn }] = await Promise.all([getSlots(), getSessionState()]);
+  const stored = await chrome.storage.session.get(slots.map((slot) => `cookies:${slot.id}`));
+  const ready = slots.filter((slot) => stored[`cookies:${slot.id}`]?.length).map((slot) => slot.id);
+  await chrome.storage.local.set({ view: { activeSlotId, loggedIn, ready } });
+}
+
+chrome.runtime.onStartup.addListener(() => { publishView(); });
+chrome.runtime.onInstalled.addListener(() => { publishView(); });
 
 // ---------------------------------------------------------------------------
 // Cookies
@@ -112,33 +134,72 @@ async function snapshotActiveSlot() {
 }
 
 // ---------------------------------------------------------------------------
-// Login detection
+// Login, logout and expiry
 //
 // The top-level /bh/ frameset carries the administration name as its title
 // once logged in, and "Inloggen | e-Boekhouden.nl" on the login screen. That
-// title is the identity we match slots on.
+// name is the identity slots are matched on.
 // ---------------------------------------------------------------------------
 
-async function onTopTitle(title) {
-  const trimmed = (title || '').trim();
-  if (!trimmed) return;
+async function markExpired(slotId) {
+  await updateSlot(slotId, { expired: true });
+  await chrome.storage.session.remove(`cookies:${slotId}`);
+  await chrome.storage.session.set({ loggedIn: false, pendingCheck: null });
+}
 
-  if (LOGIN_TITLE.test(trimmed)) {
-    await chrome.storage.session.set({ loggedIn: false });
-    await broadcastState();
+async function onTopTitle(title) {
+  const name = (title || '').trim();
+  if (!name) return;
+  const { pendingCheck } = await getSessionState();
+
+  if (LOGIN_TITLE.test(name)) {
+    // A switch restored a session and e-Boekhouden answered with its login screen.
+    if (pendingCheck) await markExpired(pendingCheck);
+    else await chrome.storage.session.set({ loggedIn: false });
+    await publishView();
     return;
   }
 
   const slots = await getSlots();
-  let slot = slots.find((candidate) => candidate.title === trimmed);
+  let slot = slots.find((candidate) => candidate.name === name);
   if (!slot) {
-    slot = { id: crypto.randomUUID(), title: trimmed, label: trimmed };
+    slot = { id: crypto.randomUUID(), name, number: null, expired: false };
     slots.push(slot);
-    await setSlots(slots);
   }
-  await chrome.storage.session.set({ activeSlotId: slot.id, loggedIn: true });
+  slot.expired = false;
+  await setSlots(slots);
+  await chrome.storage.session.set({ activeSlotId: slot.id, loggedIn: true, pendingCheck: null });
   await snapshotActiveSlot();
-  await broadcastState();
+  await publishView();
+}
+
+// The header shows the administration number; keep it for the dropdown.
+async function onHeaderIdentity({ name, number }) {
+  const { activeSlotId, loggedIn } = await getSessionState();
+  if (!activeSlotId || !loggedIn || !/^\d{1,12}$/.test(String(number ?? ''))) return;
+  const slots = await getSlots();
+  const slot = slots.find((candidate) => candidate.id === activeSlotId);
+  if (!slot || (name && slot.name !== name.trim()) || slot.number === String(number)) return;
+  slot.number = String(number);
+  await setSlots(slots);
+}
+
+async function onLogout(tabId, frameId) {
+  const { activeSlotId } = await getSessionState();
+  await setTab(tabId, { mainFrameId: frameId });
+  // The stored cookies belong to a session the server just ended.
+  if (activeSlotId) await chrome.storage.session.remove(`cookies:${activeSlotId}`);
+  await chrome.storage.session.set({ loggedIn: false, pendingCheck: null });
+  await publishView();
+}
+
+// A login or "session expired" page while the active session was logged in
+// means the server dropped it.
+async function onLoginPage() {
+  const { activeSlotId, loggedIn } = await getSessionState();
+  if (!activeSlotId || !loggedIn) return;
+  await markExpired(activeSlotId);
+  await publishView();
 }
 
 // ---------------------------------------------------------------------------
@@ -167,98 +228,89 @@ async function reloadEbTabs(originHint, loggedIn) {
   }));
 }
 
-async function switchTo(slotId, originHint) {
+// With other e-Boekhouden tabs open, a switch reloads them too: ask first.
+async function needsConfirm(confirmed) {
+  if (confirmed) return null;
+  const tabs = await ebTabs();
+  return tabs.length > 1 ? { needsConfirm: true, tabCount: tabs.length } : null;
+}
+
+async function switchTo(slotId, originHint, confirmed) {
+  const ask = await needsConfirm(confirmed);
+  if (ask) return ask;
+
   await snapshotActiveSlot();
   const { [`cookies:${slotId}`]: cookies } = await chrome.storage.session.get(`cookies:${slotId}`);
 
   await removeAllCookies();
   if (cookies?.length) await restoreCookies(cookies);
 
-  // loggedIn is confirmed again by the title of the reloaded page.
-  await chrome.storage.session.set({ activeSlotId: slotId, loggedIn: false });
+  // loggedIn is confirmed again by the title of the reloaded page; until then
+  // a login screen means the restored session had expired.
+  await chrome.storage.session.set({ activeSlotId: slotId, loggedIn: false, pendingCheck: cookies?.length ? slotId : null });
   await clearAllTabStates();
+  await publishView();
   await reloadEbTabs(originHint, Boolean(cookies?.length));
+  return {};
 }
 
-async function addSession(originHint) {
+async function addSession(originHint, confirmed) {
+  const ask = await needsConfirm(confirmed);
+  if (ask) return ask;
+
   await snapshotActiveSlot();
   await removeAllCookies();
-  await chrome.storage.session.set({ activeSlotId: null, loggedIn: false });
+  await chrome.storage.session.set({ activeSlotId: null, loggedIn: false, pendingCheck: null });
   await clearAllTabStates();
+  await publishView();
   await reloadEbTabs(originHint, false);
-}
-
-async function renameSlot(slotId, label) {
-  const clean = String(label || '').trim().slice(0, 60);
-  if (!clean) return;
-  const slots = await getSlots();
-  const slot = slots.find((candidate) => candidate.id === slotId);
-  if (!slot) return;
-  slot.label = clean;
-  await setSlots(slots);
+  return {};
 }
 
 async function removeSlot(slotId) {
-  const slots = (await getSlots()).filter((slot) => slot.id !== slotId);
-  await setSlots(slots);
+  await setSlots((await getSlots()).filter((slot) => slot.id !== slotId));
   await chrome.storage.session.remove(`cookies:${slotId}`);
+  await chrome.storage.local.remove(`avatar:${slotId}`);
   const { activeSlotId } = await getSessionState();
   if (activeSlotId === slotId) await chrome.storage.session.set({ activeSlotId: null });
+  await publishView();
 }
 
-// ---------------------------------------------------------------------------
-// View model for the switcher UI (labels and flags only)
-// ---------------------------------------------------------------------------
-
-async function viewModel() {
-  const [slots, { activeSlotId, loggedIn }, tabs] = await Promise.all([getSlots(), getSessionState(), ebTabs()]);
-  const stored = await chrome.storage.session.get(slots.map((slot) => `cookies:${slot.id}`));
-  return {
-    loggedIn,
-    tabCount: tabs.length,
-    activeLabel: slots.find((slot) => slot.id === activeSlotId)?.label ?? null,
-    slots: slots.map((slot) => ({
-      id: slot.id,
-      label: slot.label,
-      active: slot.id === activeSlotId,
-      ready: Boolean(stored[`cookies:${slot.id}`]?.length),
-    })),
-  };
-}
-
-async function broadcastState() {
-  const view = await viewModel();
-  const tabs = await ebTabs();
-  await Promise.all(tabs.map((tab) => chrome.tabs.sendMessage(tab.id, { type: 'state:changed', view }).catch(() => {})));
+async function setAvatar(slotId, dataUrl) {
+  const slots = await getSlots();
+  if (!slots.some((slot) => slot.id === slotId)) return { error: 'unknown slot' };
+  if (typeof dataUrl !== 'string' || dataUrl.length > AVATAR_MAX_LENGTH || !AVATAR_PATTERN.test(dataUrl)) {
+    return { error: 'invalid image' };
+  }
+  await chrome.storage.local.set({ [`avatar:${slotId}`]: dataUrl });
+  return {};
 }
 
 // ---------------------------------------------------------------------------
 // Re-login: per tab we remember the last page shown in mainframe. When the
 // mainframe lands on a login or session-expired page while a page was known,
-// the login page switches to dialog mode, and the first app page after login
+// the login form switches to dialog mode, and the first app page after login
 // is sent back to that page.
 // ---------------------------------------------------------------------------
 
 async function onMainPage(tabId, frameId, { url, kind }) {
   const tab = await getTab(tabId);
   tab.mainFrameId = frameId;
-  let response = {};
 
   if (kind === 'logout') {
-    await setTab(tabId, { mainFrameId: frameId, header: tab.header });
-    await chrome.storage.session.set({ loggedIn: false });
-    await broadcastState();
-    return response;
+    await onLogout(tabId, frameId);
+    return {};
   }
 
   if (kind === 'login' || kind === 'expired') {
     if (tab.returnUrl) tab.relogin = true;
-    response = { relogin: Boolean(tab.relogin), headerPresent: Boolean(tab.header) };
     await setTab(tabId, tab);
-    return response;
+    await onLoginPage();
+    return { relogin: Boolean(tab.relogin) };
   }
 
   // kind === 'app'
+  const response = {};
   if (tab.relogin && tab.returnUrl) {
     const target = tab.returnUrl;
     tab.relogin = false;
@@ -271,7 +323,6 @@ async function onMainPage(tabId, frameId, { url, kind }) {
     }
     tab.returnUrl = url;
   }
-  response.headerPresent = Boolean(tab.header);
   await setTab(tabId, tab);
   await snapshotActiveSlot();
   return response;
@@ -280,10 +331,17 @@ async function onMainPage(tabId, frameId, { url, kind }) {
 async function onInnerPage(tabId, { url, kind }) {
   const tab = await getTab(tabId);
 
+  if (kind === 'logout') {
+    // Logging out from the new design loads uitloggen.asp inside the shell.
+    await onLogout(tabId, tab.mainFrameId);
+    return {};
+  }
+
   if (kind === 'login' || kind === 'expired') {
     // The login form of secure20/v1login lives in this inner frame.
     if (tab.returnUrl) tab.relogin = true;
     await setTab(tabId, tab);
+    await onLoginPage();
     return { relogin: Boolean(tab.relogin) };
   }
 
@@ -302,7 +360,7 @@ async function onInnerPage(tabId, { url, kind }) {
 
 async function cancelRelogin(tabId) {
   const tab = await getTab(tabId);
-  await setTab(tabId, { mainFrameId: tab.mainFrameId, header: tab.header });
+  await setTab(tabId, { mainFrameId: tab.mainFrameId });
 }
 
 // ---------------------------------------------------------------------------
@@ -311,34 +369,15 @@ async function cancelRelogin(tabId) {
 
 const handlers = {
   'top:title': (message) => onTopTitle(message.title),
+  'header:identity': (message) => onHeaderIdentity(message),
   'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message),
   'inner:page': (message, sender) => onInnerPage(sender.tab.id, message),
   'relogin:cancel': (message, sender) => cancelRelogin(sender.tab.id),
-  'header:hello': async (message, sender) => {
-    const tab = await getTab(sender.tab.id);
-    tab.header = true;
-    await setTab(sender.tab.id, tab);
-    return viewModel();
-  },
-  'state:get': () => viewModel(),
-  'tab:info': async (message, sender) => ({ headerPresent: Boolean((await getTab(sender.tab.id)).header) }),
-  'switcher:toggle': async (message, sender) => {
-    const tab = await getTab(sender.tab.id);
-    if (tab.mainFrameId === undefined) return {};
-    const view = await viewModel();
-    await chrome.tabs.sendMessage(sender.tab.id, { type: 'switcher:toggle', anchorRight: message.anchorRight, view }, { frameId: tab.mainFrameId }).catch(() => {});
-    return {};
-  },
-  'switcher:switch': (message) => switchTo(message.slotId, message.origin),
-  'switcher:add': (message) => addSession(message.origin),
-  'switcher:rename': async (message) => {
-    await renameSlot(message.slotId, message.label);
-    await broadcastState();
-  },
-  'switcher:remove': async (message) => {
-    await removeSlot(message.slotId);
-    await broadcastState();
-  },
+  'switcher:switch': (message) => switchTo(message.slotId, message.origin, message.confirmed),
+  'switcher:add': (message) => addSession(message.origin, message.confirmed),
+  'switcher:remove': (message) => removeSlot(message.slotId),
+  'avatar:set': (message) => setAvatar(message.slotId, message.dataUrl),
+  'avatar:remove': (message) => chrome.storage.local.remove(`avatar:${message.slotId}`),
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

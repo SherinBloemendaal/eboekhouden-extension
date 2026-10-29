@@ -2,13 +2,13 @@
 // <frameset> on secure.e-boekhouden.nl/bh/ with these frames that matter here:
 //
 //   top        /bh/                       frameset, title = administration name
-//   topframe   /bh/top.asp                header strip (logo, menu items)
-//   mainframe  secure20.../v1page|v1login  Angular shell around an <iframe> with the classic ASP page
+//   mainframe  secure20.../v1page|v1login  Angular shell (with the navbar) around an <iframe> with the classic ASP page
 //              or /bh/*.asp                classic pages loaded directly
 //   inner      iframe inside mainframe     the classic ASP page, including the login form /bh/inloggen.asp
 //
 // Each frame picks its role below and talks to the service worker. Cookie
-// values never reach this script.
+// values never reach this script: the switcher renders from the names,
+// statuses and pictures the service worker mirrors into chrome.storage.local.
 
 (() => {
   if (window.__ebSessionsLoaded) return;
@@ -58,8 +58,8 @@
 
   function role() {
     const path = location.pathname.toLowerCase();
+    if (isTop && location.hostname === SECURE20) return 'shell';
     if (isTop) return ['/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
-    if (parentIsTop && window.name === 'topframe') return 'header';
     if (parentIsTop && window.name === 'mainframe') return 'main';
     try {
       if (window.parent.parent === window.top && window.parent === window.top.frames.mainframe) return 'inner';
@@ -86,11 +86,15 @@
   // Roles
   // -------------------------------------------------------------------------
 
-  const myRole = role();
-  if (myRole === 'top') runTop();
-  if (myRole === 'header') runHeader();
-  if (myRole === 'main') runMain();
-  if (myRole === 'inner') runInner();
+  // Started at the end of this file, once every declaration below exists.
+  function boot() {
+    const myRole = role();
+    if (myRole === 'top') runTop();
+    if (myRole === 'main') runMain();
+    if (myRole === 'inner') runInner();
+    // The navbar lives in the secure20 shell: in mainframe, or opened on its own.
+    if ((myRole === 'main' && location.hostname === SECURE20) || myRole === 'shell') startSwitcher();
+  }
 
   function runTop() {
     const report = () => send({ type: 'top:title', title: document.title });
@@ -133,21 +137,12 @@
           return;
         }
         if (kind === 'login' && response?.relogin) onReady(showReloginDialog);
-        scheduleFloatingButton();
       });
     };
 
     handle();
     // The secure20 shell is a single-page app: routes change without a page load.
     if (location.hostname === SECURE20) setInterval(handle, 500);
-
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message?.type === 'switcher:toggle') onReady(() => panel.toggle(message.anchorRight, message.view));
-      if (message?.type === 'state:changed') {
-        panel.update(message.view);
-        floating.update(message.view);
-      }
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -233,323 +228,120 @@
   }
 
   // -------------------------------------------------------------------------
-  // Session switcher: a menu item in the header strip (topframe). The header
-  // frame is only as tall as the header, so the dropdown itself renders in
-  // mainframe, right under the header.
+  // Session switcher: a navbar item in e-Boekhouden's own header, in the style
+  // of whichever design is active.
+  //
+  //   new design     app-header-identity-b > .header-identity: the item goes
+  //                  before .userInfo (name and number); .userCircle is the avatar
+  //   legacy design  app-header-identity > .container: the item goes before
+  //                  .identity (name and number), next to the power button
+  //
+  // It mounts from a MutationObserver started at document_start, in the same
+  // task that renders the header, so it is there in the first frame.
   // -------------------------------------------------------------------------
 
-  function runHeader() {
-    onReady(async () => {
-      // The frameset gives topframe zero height in the current e-Boekhouden
-      // layout. Only hook in when the classic header strip is actually shown.
-      if (window.innerHeight < 20) return;
-      const items = [...document.querySelectorAll('td.mnuItem')];
-      if (!items.length) return;
+  const state = { slots: [], view: { activeSlotId: null, loggedIn: false, ready: [] }, avatars: {} };
+  const renderers = new Set();
 
-      const cell = document.createElement('td');
-      cell.className = 'mnuItem';
-      cell.id = 'ebs-switcher';
-      cell.setAttribute('align', 'right');
-      cell.style.cssText = 'cursor:pointer;white-space:nowrap;padding:0 12px;';
-      const label = document.createElement('span');
-      label.className = 'tdMnu';
-      label.style.cssText = 'font-family:Ubuntu,sans-serif;font-size:13px;color:#30395f;';
-      cell.append(label);
-      items[0].before(cell);
-
-      const render = (view) => {
-        label.textContent = `${view?.activeLabel ?? 'Sessies'} ▾`;
-        cell.title = 'Wissel van e-Boekhouden-sessie';
-      };
-      render(await send({ type: 'header:hello' }));
-
-      cell.addEventListener('click', (event) => {
-        event.stopPropagation();
-        const anchorRight = document.documentElement.clientWidth - cell.getBoundingClientRect().right;
-        send({ type: 'switcher:toggle', anchorRight: Math.max(8, anchorRight) });
-      });
-      chrome.runtime.onMessage.addListener((message) => {
-        if (message?.type === 'state:changed') render(message.view);
-      });
-    });
-  }
-
-  // In mainframe the switcher button goes into the Angular header of the
-  // secure20 shell when there is one. Classic pages and the login screen have
-  // no header of their own, so they get a small floating pill instead.
-  let floatingTimer = null;
-  let headerWatch = null;
-  function scheduleFloatingButton() {
-    if (location.hostname === SECURE20 && !headerWatch) {
-      onReady(() => {
-        const inject = () => {
-          if (injectAngularHeader()) floating.hide();
-        };
-        inject();
-        headerWatch = new MutationObserver(inject);
-        headerWatch.observe(document.body, { childList: true, subtree: true });
-      });
+  async function loadState() {
+    const all = await chrome.storage.local.get(null);
+    state.slots = Array.isArray(all.slots) ? all.slots : [];
+    state.view = all.view ?? { activeSlotId: null, loggedIn: false, ready: [] };
+    state.avatars = {};
+    for (const [key, value] of Object.entries(all)) {
+      if (key.startsWith('avatar:')) state.avatars[key.slice(7)] = value;
     }
-    clearTimeout(floatingTimer);
-    floatingTimer = setTimeout(async () => {
-      if (document.getElementById('ebs-header-item')) return;
-      const info = await send({ type: 'tab:info' });
-      if (info?.headerPresent) return;
-      onReady(async () => floating.show(await send({ type: 'state:get' })));
-    }, 1500);
+    for (const render of renderers) render();
   }
 
-  function injectAngularHeader() {
-    if (document.getElementById('ebs-header-item')) return true;
-
-    const identity = document.querySelector('app-header-identity .container');
-    const supportItem = [...document.querySelectorAll('app-main-layout li, app-eb-header li')]
-      .find((item) => /\bsupport\b/i.test(item.textContent));
-    if (!identity && !supportItem) return false;
-
-    // <li> cannot host a shadow root, so the button always lives in a <span>.
-    const host = document.createElement('span');
-    host.style.cssText = 'display:flex;align-items:center;margin:0 6px;';
-    const button = switcherButton(host, 'header');
-    const slot = document.createElement(identity ? 'div' : 'li');
-    slot.id = 'ebs-header-item';
-    slot.style.cssText = 'display:flex;align-items:center;list-style:none;';
-    slot.append(host);
-    if (identity) {
-      identity.insertBefore(slot, identity.querySelector('.logout'));
-    } else {
-      supportItem.before(slot);
-    }
-    send({ type: 'state:get' }).then((view) => setButtonLabel(button, view));
-    floating.buttons.add(button);
-    return true;
+  function statusOf(slot) {
+    if (slot.id === state.view.activeSlotId && state.view.loggedIn) return 'active';
+    if (slot.expired) return 'expired';
+    if (state.view.ready?.includes(slot.id)) return 'ready';
+    return 'login';
   }
 
-  function switcherButton(host, variant) {
-    const root = host.attachShadow({ mode: 'closed' });
-    const style = document.createElement('style');
-    style.textContent = `
-      button { font: 500 12px/1 Ubuntu, system-ui, sans-serif; color: #30395f; background: #fff;
-        border: 1px solid #d6d9e3; border-radius: 999px; padding: 7px 12px; cursor: pointer;
-        white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
-      button:hover { border-color: #68ab32; }
-      button.floating { box-shadow: 0 2px 8px rgba(20, 26, 48, .12); }
-    `;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = variant;
-    button.title = 'Wissel van e-Boekhouden-sessie';
-    button.textContent = 'Sessies ▾';
-    button.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const rect = host.getBoundingClientRect();
-      panel.toggle(Math.max(8, document.documentElement.clientWidth - rect.right), null, rect.bottom + 6);
-    });
-    root.append(style, button);
-    return button;
-  }
-
-  function setButtonLabel(button, view) {
-    if (view && !view.error) button.textContent = `${view.activeLabel ?? 'Sessies'} ▾`;
-  }
-
-  const floating = {
-    host: null,
-    buttons: new Set(),
-    show(view) {
-      if (this.host || document.getElementById('ebs-header-item')) return;
-      if (document.documentElement.classList.contains('ebs-relogin')) return;
-      this.host = document.createElement('div');
-      this.host.style.cssText = 'position:fixed;top:8px;right:12px;z-index:2147482000;';
-      const button = switcherButton(this.host, 'floating');
-      this.buttons.add(button);
-      document.documentElement.append(this.host);
-      setButtonLabel(button, view);
-    },
-    hide() {
-      this.host?.remove();
-      this.host = null;
-    },
-    update(view) {
-      for (const button of this.buttons) setButtonLabel(button, view);
-    },
+  const STATUS_LABEL = {
+    new: { active: 'Actief', ready: 'Klaar', expired: 'Verlopen', login: 'Inloggen' },
+    legacy: { active: 'actief', ready: 'klaar', expired: 'verlopen', login: 'inloggen' },
   };
 
-  const panel = {
-    host: null,
-    root: null,
-    view: null,
-    anchorRight: 12,
-    top: 6,
-    confirmSlotId: null,
-    renamingSlotId: null,
+  // Same initials as e-Boekhouden's own avatar (getAbbreviation in the shell).
+  function initials(name) {
+    try {
+      if (typeof name !== 'string' || !name) return 'EB';
+      let clean = name.replace(/[^0-9a-zA-Z ]+/g, '');
+      for (const form of ['BV', 'NV', 'CV', 'VOF']) clean = clean.replace(new RegExp(form, 'gi'), '');
+      clean = clean.trim();
+      if (!clean) return 'EB';
+      const capitals = [...clean].filter((char) => char >= 'A' && char <= 'Z');
+      let result = (capitals.length > 1 ? capitals[0] + capitals[1] : clean[0] + (capitals[0] || '')).toUpperCase();
+      if (!['SD', 'SS'].includes(result)) return result;
+      const words = clean.split(' ').map((word) => word[0]).filter(Boolean);
+      result = (words.length >= 2 ? words[0] + words[1] : clean.substring(0, 2)).toUpperCase();
+      return ['SD', 'SS'].includes(result) ? clean[0].toUpperCase() : result;
+    } catch {
+      return 'EB';
+    }
+  }
 
-    async toggle(anchorRight, view, top = 6) {
-      if (this.host) {
-        this.close();
-        return;
-      }
-      this.anchorRight = anchorRight ?? 12;
-      this.top = top;
-      this.view = view ?? await send({ type: 'state:get' });
-      this.open();
-    },
+  function startSwitcher() {
+    // The avatar picture replaces the initials circle of the new design. The
+    // data URL was validated by the service worker, so it is safe inside url().
+    const avatarStyle = document.createElement('style');
+    avatarStyle.id = 'ebs-avatar-style';
+    document.documentElement.append(avatarStyle);
+    renderers.add(() => {
+      const url = state.view.loggedIn ? state.avatars[state.view.activeSlotId] : null;
+      avatarStyle.textContent = url
+        ? `app-header-identity-b .header-identity .identity .userCircle { background: #fff center / cover no-repeat url("${url}") !important; color: transparent !important; font-size: 0 !important; }`
+        : '';
+      nav.render();
+      menu.render();
+    });
+    loadState();
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local') loadState();
+    });
 
-    open() {
-      this.host = document.createElement('div');
-      this.host.style.cssText = `position:fixed;top:${this.top}px;right:${this.anchorRight}px;z-index:2147483600;`;
-      this.root = this.host.attachShadow({ mode: 'closed' });
-      document.documentElement.append(this.host);
-      this.onOutside = (event) => {
-        if (!event.composedPath().includes(this.host)) this.close();
-      };
-      this.onKey = (event) => {
-        if (event.key === 'Escape') this.close();
-      };
-      setTimeout(() => {
-        document.addEventListener('mousedown', this.onOutside, true);
-        document.addEventListener('keydown', this.onKey, true);
-      });
-      this.render();
-    },
+    const observer = new MutationObserver(mountNav);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    mountNav();
+  }
 
-    close() {
-      document.removeEventListener('mousedown', this.onOutside, true);
-      document.removeEventListener('keydown', this.onKey, true);
-      this.host?.remove();
-      this.host = null;
-      this.confirmSlotId = null;
-      this.renamingSlotId = null;
-    },
+  let lastIdentity = '';
+  function mountNav() {
+    const fresh = document.querySelector('app-header-identity-b .header-identity');
+    const legacy = !fresh && document.querySelector('app-header-identity .container');
+    const container = fresh || legacy;
+    if (!container) return;
+    const variant = fresh ? 'new' : 'legacy';
 
-    update(view) {
-      this.view = view;
-      if (this.host) this.render();
-    },
+    if (!nav.host || nav.variant !== variant || nav.host.parentElement !== container) {
+      nav.create(variant);
+      const anchor = fresh
+        ? container.querySelector(':scope > .userInfo')
+        : container.querySelector(':scope > .identity') ?? container.querySelector(':scope > .logout');
+      container.insertBefore(nav.host, anchor);
+    }
 
-    action(type, extra = {}) {
-      return send({ type, origin: aspOrigin(), ...extra });
-    },
+    const name = container.querySelector(fresh ? '.userName' : '.username')?.textContent.trim();
+    const number = container.querySelector(fresh ? '.administratieId' : '#administratieId')?.textContent.trim();
+    const identity = `${name}|${number}`;
+    if (name && number && identity !== lastIdentity) {
+      lastIdentity = identity;
+      send({ type: 'header:identity', name, number });
+    }
+  }
 
-    choose(slot) {
-      if (slot.active && this.view.loggedIn) {
-        this.close();
-        return;
-      }
-      if (this.view.tabCount > 1 && this.confirmSlotId !== slot.id) {
-        this.confirmSlotId = slot.id;
-        this.render();
-        return;
-      }
-      this.action('switcher:switch', { slotId: slot.id });
-      this.close();
-    },
-
-    render() {
-      const view = this.view ?? { slots: [], tabCount: 1 };
-      const root = this.root;
-      root.replaceChildren();
-
-      const style = document.createElement('style');
-      style.textContent = PANEL_CSS;
-      const card = el('div', 'card');
-      const heading = el('div', 'heading', 'Sessies');
-
-      const list = el('div', 'list');
-      if (!view.slots.length) {
-        list.append(el('p', 'empty', 'Nog geen sessies. Log in, dan verschijnt de administratie hier vanzelf.'));
-      }
-      for (const slot of view.slots) list.append(this.row(slot, view));
-
-      const add = el('button', 'add', '+ Sessie toevoegen');
-      add.type = 'button';
-      add.title = 'Bewaart de huidige sessie en opent een leeg inlogscherm';
-      add.addEventListener('click', () => {
-        if (view.tabCount > 1 && this.confirmSlotId !== 'new') {
-          this.confirmSlotId = 'new';
-          this.render();
-          return;
-        }
-        this.action('switcher:add');
-        this.close();
-      });
-
-      card.append(heading, list, add);
-      if (this.confirmSlotId === 'new') card.append(this.confirm(view, () => { this.action('switcher:add'); this.close(); }));
-      card.append(el('p', 'note', 'Wachtwoorden blijven in 1Password. Sessies staan alleen in het werkgeheugen van Chrome.'));
-      root.append(style, card);
-    },
-
-    row(slot, view) {
-      const wrap = el('div', 'row-wrap');
-      const row = el('div', `row${slot.active ? ' active' : ''}`);
-
-      if (this.renamingSlotId === slot.id) {
-        const input = document.createElement('input');
-        input.className = 'rename';
-        input.value = slot.label;
-        input.maxLength = 60;
-        const commit = () => {
-          this.renamingSlotId = null;
-          this.action('switcher:rename', { slotId: slot.id, label: input.value });
-        };
-        input.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') commit();
-          if (event.key === 'Escape') {
-            event.stopPropagation();
-            this.renamingSlotId = null;
-            this.render();
-          }
-        });
-        input.addEventListener('blur', commit);
-        row.append(input);
-        wrap.append(row);
-        setTimeout(() => input.select());
-        return wrap;
-      }
-
-      const main = el('button', 'pick');
-      main.type = 'button';
-      const dot = el('span', `dot ${slot.active && view.loggedIn ? 'on' : slot.ready ? 'ready' : 'off'}`);
-      const name = el('span', 'name', slot.label);
-      const status = el('span', 'status', slot.active && view.loggedIn ? 'actief' : slot.ready ? 'opgeslagen' : 'inloggen');
-      main.append(dot, name, status);
-      main.addEventListener('click', () => this.choose(slot));
-
-      const rename = iconButton('✎', 'Naam wijzigen', () => {
-        this.renamingSlotId = slot.id;
-        this.render();
-      });
-      const remove = iconButton('×', 'Verwijderen', () => this.action('switcher:remove', { slotId: slot.id }));
-      row.append(main, rename, remove);
-      wrap.append(row);
-      if (this.confirmSlotId === slot.id) {
-        wrap.append(this.confirm(view, () => {
-          this.action('switcher:switch', { slotId: slot.id });
-          this.close();
-        }));
-      }
-      return wrap;
-    },
-
-    confirm(view, onConfirm) {
-      const box = el('div', 'confirm');
-      box.append(el('span', '', `Alle ${view.tabCount} e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.`));
-      const ok = el('button', 'ok', 'Doorgaan');
-      ok.type = 'button';
-      ok.addEventListener('click', onConfirm);
-      const no = el('button', 'no', 'Annuleren');
-      no.type = 'button';
-      no.addEventListener('click', () => {
-        this.confirmSlotId = null;
-        this.render();
-      });
-      const buttons = el('div', 'confirm-buttons');
-      buttons.append(no, ok);
-      box.append(buttons);
-      return box;
-    },
-  };
+  const SWAP_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></svg>';
+  const CHEVRON_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+  const CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>';
+  const CLOCK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+  const CAMERA_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>';
+  const IMAGE_OFF_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 20L20 4"/></svg>';
+  const TRASH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14"/><path d="M10 7V5h4v2"/><path d="M7 7l1 12h8l1-12"/></svg>';
+  const PLUS_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 
   function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -558,46 +350,405 @@
     return node;
   }
 
-  function iconButton(glyph, label, onClick) {
-    const button = el('button', 'icon', glyph);
+  // Icons are fixed strings from this file; user text always goes in via textContent.
+  function icon(markup) {
+    const wrap = el('span', 'icon');
+    wrap.innerHTML = markup;
+    return wrap;
+  }
+
+  const nav = {
+    host: null,
+    variant: null,
+    button: null,
+
+    create(variant) {
+      this.host?.remove();
+      this.variant = variant;
+      this.host = el('span');
+      this.host.id = 'ebs-nav';
+      this.host.style.cssText = variant === 'new'
+        ? 'display:flex;align-items:center;flex:none;'
+        : 'display:flex;align-self:stretch;flex:none;height:100%;';
+      const root = this.host.attachShadow({ mode: 'closed' });
+      const style = el('style');
+      style.textContent = NAV_CSS;
+      this.button = el('button', variant);
+      this.button.type = 'button';
+      this.button.setAttribute('aria-haspopup', 'menu');
+      this.button.setAttribute('aria-expanded', 'false');
+      this.button.title = 'Wissel van administratie';
+      this.button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        menu.toggle(variant, this.host);
+      });
+      root.append(style, this.button);
+      if (variant === 'new') root.append(el('span', 'divider'));
+      this.render();
+    },
+
+    render() {
+      if (!this.button) return;
+      this.button.replaceChildren();
+      this.button.setAttribute('aria-expanded', String(menu.open));
+      this.button.classList.toggle('open', menu.open);
+      if (this.variant === 'new') {
+        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Wissel'));
+        if (state.slots.length) this.button.append(el('span', 'badge', String(state.slots.length)));
+      } else {
+        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Sessies'), icon(CHEVRON_ICON));
+      }
+    },
+  };
+
+  const menu = {
+    open: false,
+    host: null,
+    root: null,
+    anchor: null,
+    variant: null,
+    confirm: null,
+    avatarTarget: null,
+
+    toggle(variant, anchor) {
+      if (this.open) {
+        this.close();
+        return;
+      }
+      this.variant = variant;
+      this.anchor = anchor;
+      this.open = true;
+      this.host = el('div');
+      this.host.id = 'ebs-menu';
+      this.root = this.host.attachShadow({ mode: 'closed' });
+      document.documentElement.append(this.host);
+      this.onOutside = (event) => {
+        if (!event.composedPath().some((node) => node === this.host || node === nav.host)) this.close();
+      };
+      this.onKey = (event) => {
+        if (event.key === 'Escape') this.close();
+      };
+      this.onResize = () => this.place();
+      document.addEventListener('mousedown', this.onOutside, true);
+      document.addEventListener('keydown', this.onKey, true);
+      window.addEventListener('resize', this.onResize);
+      this.render();
+      nav.render();
+    },
+
+    close() {
+      document.removeEventListener('mousedown', this.onOutside, true);
+      document.removeEventListener('keydown', this.onKey, true);
+      window.removeEventListener('resize', this.onResize);
+      this.host?.remove();
+      this.host = null;
+      this.open = false;
+      this.confirm = null;
+      nav.render();
+    },
+
+    // Under the navbar, right edge on the item's right edge.
+    place() {
+      if (!this.host || !this.anchor?.isConnected) return;
+      const rect = this.anchor.getBoundingClientRect();
+      let bar = this.anchor;
+      while (bar.parentElement && bar.getBoundingClientRect().height < 48) bar = bar.parentElement;
+      const top = Math.max(rect.bottom, bar.getBoundingClientRect().bottom) + (this.variant === 'new' ? 6 : 0);
+      const right = Math.max(8, document.documentElement.clientWidth - rect.right);
+      this.host.style.cssText = `position:fixed;top:${top}px;right:${right}px;z-index:2147483600;`;
+    },
+
+    origin() {
+      return aspOrigin();
+    },
+
+    async act(type, extra) {
+      const response = await send({ type, origin: this.origin(), confirmed: Boolean(this.confirm?.accepted), ...extra });
+      if (response?.needsConfirm) {
+        this.confirm = { type, extra, tabCount: response.tabCount, accepted: false };
+        this.render();
+        return;
+      }
+      this.close();
+    },
+
+    choose(slot) {
+      if (statusOf(slot) === 'active') {
+        this.close();
+        return;
+      }
+      this.confirm = null;
+      this.act('switcher:switch', { slotId: slot.id });
+    },
+
+    pickAvatar(slot) {
+      this.avatarTarget = slot.id;
+      this.fileInput.value = '';
+      this.fileInput.click();
+    },
+
+    render() {
+      if (!this.open || !this.root) return;
+      const variant = this.variant;
+      const root = this.root;
+      root.replaceChildren();
+      const style = el('style');
+      style.textContent = MENU_CSS;
+
+      this.fileInput = el('input');
+      this.fileInput.type = 'file';
+      this.fileInput.accept = 'image/*';
+      this.fileInput.hidden = true;
+      this.fileInput.addEventListener('change', async () => {
+        const file = this.fileInput.files?.[0];
+        if (!file || !this.avatarTarget) return;
+        try {
+          await send({ type: 'avatar:set', slotId: this.avatarTarget, dataUrl: await toAvatar(file) });
+        } catch (error) {
+          console.warn('EB Sessions: could not read the picture', error);
+        }
+      });
+
+      const card = el('div', `card ${variant}`);
+      card.setAttribute('role', 'menu');
+      card.setAttribute('aria-label', 'Wissel van administratie');
+
+      const head = el('div', 'head');
+      head.append(el('span', 'title', variant === 'new' ? 'Wissel van administratie' : 'Sessies'));
+      if (variant === 'new') head.append(el('span', 'count', `${state.slots.length} ${state.slots.length === 1 ? 'sessie' : 'sessies'}`));
+      card.append(head);
+
+      const list = el('div', 'list');
+      if (!state.slots.length) list.append(el('p', 'empty', 'Nog geen sessies. Log in, dan verschijnt de administratie hier vanzelf.'));
+      for (const slot of state.slots) list.append(this.row(slot));
+      card.append(list);
+
+      if (this.confirm) card.append(this.confirmBox());
+
+      const foot = el('div', 'foot');
+      const add = el('button', 'add');
+      add.type = 'button';
+      add.setAttribute('role', 'menuitem');
+      if (variant === 'new') {
+        add.append(icon(PLUS_ICON), el('span', '', 'Administratie toevoegen'));
+      } else {
+        add.textContent = '+ Sessie toevoegen';
+      }
+      add.addEventListener('click', () => {
+        this.confirm = null;
+        this.act('switcher:add', {});
+      });
+      foot.append(add);
+      card.append(foot);
+      card.append(el('div', 'note', 'Wachtwoorden blijven in 1Password. Sessies staan alleen in het geheugen van Chrome.'));
+
+      root.append(style, this.fileInput, card);
+      this.place();
+    },
+
+    row(slot) {
+      const variant = this.variant;
+      const status = statusOf(slot);
+      const row = el('div', `row ${status}`);
+      const pick = el('button', 'pick');
+      pick.type = 'button';
+      pick.setAttribute('role', 'menuitemradio');
+      pick.setAttribute('aria-checked', String(status === 'active'));
+      pick.addEventListener('click', () => this.choose(slot));
+
+      if (variant === 'new') {
+        const picture = state.avatars[slot.id];
+        if (picture) {
+          const image = el('img', 'avatar photo');
+          image.src = picture;
+          image.alt = '';
+          pick.append(image);
+        } else {
+          pick.append(el('span', `avatar ${status}`, initials(slot.name)));
+        }
+      } else {
+        pick.append(el('span', `dot ${status}`));
+      }
+
+      const text = el('span', 'text');
+      text.append(el('span', 'name', slot.name));
+      if (slot.number) text.append(el('span', 'number', slot.number));
+      pick.append(text);
+
+      const label = el('span', `status ${status}`);
+      if (variant === 'new' && status === 'active') label.append(icon(CHECK_ICON));
+      if (variant === 'new' && status === 'expired') label.append(icon(CLOCK_ICON));
+      label.append(document.createTextNode(STATUS_LABEL[variant][status]));
+      pick.append(label);
+      row.append(pick);
+
+      const actions = el('span', 'actions');
+      if (variant === 'new') {
+        const hasPicture = Boolean(state.avatars[slot.id]);
+        actions.append(actionButton(CAMERA_ICON, hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot)));
+        if (hasPicture) actions.append(actionButton(IMAGE_OFF_ICON, 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id })));
+      }
+      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => send({ type: 'switcher:remove', slotId: slot.id })));
+      row.append(actions);
+      return row;
+    },
+
+    confirmBox() {
+      const box = el('div', 'confirm');
+      box.append(el('span', '', `Alle ${this.confirm.tabCount} e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.`));
+      const buttons = el('div', 'confirm-buttons');
+      const no = el('button', 'no', 'Annuleren');
+      no.type = 'button';
+      no.addEventListener('click', () => {
+        this.confirm = null;
+        this.render();
+      });
+      const ok = el('button', 'ok', 'Doorgaan');
+      ok.type = 'button';
+      ok.addEventListener('click', () => {
+        this.confirm.accepted = true;
+        this.act(this.confirm.type, this.confirm.extra);
+      });
+      buttons.append(no, ok);
+      box.append(buttons);
+      return box;
+    },
+  };
+
+  function actionButton(markup, label, onClick) {
+    const button = el('button', 'action');
     button.type = 'button';
     button.title = label;
     button.setAttribute('aria-label', label);
-    button.addEventListener('click', onClick);
+    button.append(icon(markup));
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      onClick();
+    });
     return button;
   }
 
-  const PANEL_CSS = `
+  // A square 128 px crop, compressed; the original file never leaves the page.
+  async function toAvatar(file) {
+    const bitmap = await createImageBitmap(file);
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const side = Math.min(bitmap.width, bitmap.height);
+    canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, size, size);
+    bitmap.close();
+    const webp = canvas.toDataURL('image/webp', 0.82);
+    return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', 0.85);
+  }
+
+  const NAV_CSS = `
     :host { all: initial; }
-    .card {
-      width: 300px; box-sizing: border-box; padding: 10px;
-      font: 13px/1.35 Ubuntu, system-ui, -apple-system, sans-serif; color: #30395f;
-      background: #fff; border: 1px solid #dfe2ea; border-radius: 12px;
-      box-shadow: 0 18px 48px rgba(20, 26, 48, 0.22);
+    button { display: flex; align-items: center; cursor: pointer; font-family: Ubuntu, system-ui, sans-serif; }
+    .icon { display: flex; }
+    button.new {
+      height: 44px; gap: 8px; padding: 0 12px; border: 0; border-radius: 8px;
+      background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 13px; font-weight: 500;
     }
-    .heading { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: #8a90a6; padding: 4px 8px 8px; }
-    .list { display: flex; flex-direction: column; gap: 2px; }
-    .row { display: flex; align-items: center; border-radius: 8px; }
-    .row:hover { background: #f3f5f9; }
-    .row.active { background: #eef6e7; }
-    .pick { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-    .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-    .status { font-size: 11px; color: #8a90a6; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-    .dot.on { background: #68ab32; box-shadow: 0 0 0 3px rgba(104, 171, 50, .2); }
-    .dot.ready { background: #9fb3d9; }
-    .dot.off { background: transparent; border: 1.5px solid #b9bfd0; box-sizing: border-box; }
-    .icon { border: 0; background: none; color: #9aa0b4; cursor: pointer; font-size: 14px; width: 26px; height: 26px; border-radius: 6px; }
-    .icon:hover { color: #30395f; background: #e6e9f1; }
-    .rename { flex: 1; margin: 4px; padding: 6px 8px; font: inherit; color: inherit; border: 1px solid #68ab32; border-radius: 6px; outline: none; }
-    .add { width: 100%; margin-top: 6px; padding: 9px 8px; border: 1px dashed #c9cede; border-radius: 8px; background: none; font: inherit; font-weight: 500; color: #30395f; cursor: pointer; text-align: left; }
-    .add:hover { border-color: #68ab32; background: #f7fbf3; }
-    .empty { margin: 4px 8px 8px; color: #6b7187; }
-    .note { margin: 10px 8px 2px; font-size: 11px; color: #8a90a6; }
-    .confirm { margin: 4px 0 6px; padding: 8px 10px; border-radius: 8px; background: #fff8e6; color: #6b5310; font-size: 12px; }
-    .confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
-    .confirm button { font: inherit; font-weight: 500; padding: 5px 10px; border-radius: 6px; cursor: pointer; }
-    .confirm .no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
-    .confirm .ok { border: 0; background: #30395f; color: #fff; }
+    button.new:hover, button.new.open { background: rgba(255, 255, 255, 0.22); }
+    button.new:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .badge {
+      min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px;
+      background: #5d9e35; color: #fff; font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .divider { width: 1px; height: 28px; background: rgba(255, 255, 255, 0.18); margin: 0 10px 0 12px; }
+    button.legacy {
+      height: 100%; gap: 6px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent;
+      background: transparent; color: #30395f; font-size: 14px; box-sizing: border-box;
+    }
+    button.legacy:hover, button.legacy.open { background: #f3f4f8; border-bottom-color: #68ab32; }
+    button.legacy:focus-visible { outline: 2px solid #30395f; outline-offset: -2px; }
   `;
+
+  const MENU_CSS = `
+    :host { all: initial; }
+    * { box-sizing: border-box; }
+    button { font-family: inherit; cursor: pointer; }
+    .icon { display: flex; }
+    .card { font-family: Ubuntu, system-ui, sans-serif; background: #fff; overflow: hidden; }
+    .row { display: flex; align-items: center; }
+    .pick { flex: 1; min-width: 0; display: flex; align-items: center; border: 0; background: transparent; text-align: left; }
+    .text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .actions { display: none; align-items: center; gap: 2px; }
+    .row:hover .actions, .row:focus-within .actions { display: flex; }
+    .action { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; display: flex; align-items: center; justify-content: center; }
+    .confirm { margin: 6px 8px; padding: 10px 12px; background: #fff8e6; color: #6b5310; font-size: 12px; line-height: 17px; }
+    .confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+    .confirm button { font-size: 12px; font-weight: 500; padding: 6px 12px; }
+    .confirm .no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
+    .confirm .ok { border: 0; color: #fff; }
+    .empty { margin: 4px 16px 12px; font-size: 12px; color: #5d6584; }
+
+    /* New design */
+    .new.card { width: 340px; border-radius: 10px; box-shadow: 0 16px 40px rgba(20, 26, 48, 0.22), 0 0 0 1px rgba(20, 26, 48, 0.06); color: #232c4f; }
+    .new .head { padding: 14px 16px 10px; display: flex; align-items: baseline; justify-content: space-between; }
+    .new .title { font-size: 14px; font-weight: 700; }
+    .new .count { font-size: 11px; color: #5d6584; }
+    .new .list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 8px; }
+    .new .row { border-radius: 8px; }
+    .new .row:hover { background: #f5f6fa; }
+    .new .row.active { background: #eef1f8; }
+    .new .pick { gap: 12px; padding: 10px; border-radius: 8px; color: #232c4f; }
+    .new .avatar { width: 34px; height: 34px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+    .new .avatar.photo { object-fit: cover; }
+    .new .avatar.active { background: #232c4f; color: #fff; }
+    .new .avatar.ready { background: #dfe4f1; color: #232c4f; }
+    .new .avatar.expired { background: #fbe9e9; color: #b42318; }
+    .new .avatar.login { background: #fff; border: 1.5px dashed #9aa3bf; color: #5d6584; }
+    .new .text { gap: 2px; }
+    .new .name { font-size: 14px; font-weight: 700; }
+    .new .number { font-size: 11px; color: #5d6584; }
+    .new .status { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #5d6584; white-space: nowrap; }
+    .new .status.active { color: #3f7f22; font-weight: 500; }
+    .new .status.expired { color: #b42318; font-weight: 500; }
+    .new .actions { padding-right: 6px; }
+    .new .action { color: #5d6584; }
+    .new .action:hover { background: #e6e9f1; color: #232c4f; }
+    .new .foot { border-top: 1px solid #e6e9f1; padding: 8px; }
+    .new .add { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px; border: 0; border-radius: 8px; background: #fff; font-size: 14px; font-weight: 500; color: #232c4f; text-align: left; }
+    .new .add:hover { background: #f5f6fa; }
+    .new .add .icon { width: 34px; height: 34px; border-radius: 50%; background: #f1f7ec; color: #3f7f22; align-items: center; justify-content: center; }
+    .new .note { background: #f6f7fb; padding: 10px 16px; font-size: 11px; line-height: 16px; color: #5d6584; }
+    .new .confirm { border-radius: 8px; }
+    .new .confirm button { border-radius: 6px; }
+    .new .confirm .ok { background: #232c4f; }
+
+    /* Legacy design */
+    .legacy.card { width: 300px; border: 1px solid #d3d3d3; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12); color: #30395f; }
+    .legacy .head { padding: 10px 14px 8px; border-bottom: 2px solid #68ab32; }
+    .legacy .title { font-size: 15px; font-weight: 700; }
+    .legacy .row { border-bottom: 1px solid #ececec; }
+    .legacy .row:hover { background: #f5f5f5; }
+    .legacy .row.active { background: #eff0e2; }
+    .legacy .pick { gap: 10px; padding: 10px 14px; color: #30395f; }
+    .legacy .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .legacy .dot.active { background: #68ab32; }
+    .legacy .dot.ready { background: #9aa3bf; }
+    .legacy .dot.expired { background: #c0392b; }
+    .legacy .dot.login { border: 1.5px solid #9aa3bf; }
+    .legacy .text { gap: 1px; }
+    .legacy .name { font-size: 13px; }
+    .legacy .row.active .name { font-weight: 700; }
+    .legacy .number { font-size: 11px; color: #7a7a7a; }
+    .legacy .status { font-size: 11px; color: #7a7a7a; }
+    .legacy .status.active { color: #3f7f22; font-weight: 700; }
+    .legacy .status.expired { color: #c0392b; font-weight: 700; }
+    .legacy .actions { padding-right: 8px; }
+    .legacy .action { color: #7a7a7a; border-radius: 3px; }
+    .legacy .action:hover { background: #e3e3e3; color: #30395f; }
+    .legacy .foot { padding: 10px 14px; }
+    .legacy .add { border: 0; background: none; padding: 0; font-size: 13px; color: #30395f; text-decoration: underline; }
+    .legacy .note { padding: 8px 14px 10px; border-top: 1px solid #ececec; font-size: 11px; line-height: 16px; color: #7a7a7a; }
+    .legacy .confirm button { border-radius: 3px; }
+    .legacy .confirm .ok { background: #30395f; }
+  `;
+
+  boot();
 })();

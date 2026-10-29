@@ -74,6 +74,8 @@ export function createFakeChrome() {
     },
     runtime: {
       onMessage: { addListener: (listener) => listeners.message.push(listener) },
+      onStartup: { addListener: () => {} },
+      onInstalled: { addListener: () => {} },
     },
     dispatch(message, sender) {
       return new Promise((resolve) => {
