@@ -386,10 +386,11 @@ test('the invoice form: e-Boekhouden\'s own rows in the new layout, and back in 
   assert.ok(view.querySelector('.ebs-b-more #factOm1'), 'the rest under Meer velden');
   assert.ok(view.querySelector('.ebs-b-more #uitersteBetaaldatum'));
   assert.ok(view.querySelector('.ebs-b-hidden-slot #inEx'), 'Bedragen is our toggle');
+  assert.equal(view.querySelector('.ebs-b-hidden-slot #nummer'), null, 'only the part with inEx is out of sight, not the row of Factuurnummer it sits in');
   assert.equal(view.querySelector('.ebs-b-due-note').textContent, '· vervalt 12-11-2026');
-  const emailLabel = [...view.querySelectorAll('.ebs-b-check-label')].find((label) => /Per e-mail/.test(label.textContent));
-  assert.equal(emailLabel.htmlFor, 'emailen');
-  assert.ok(emailLabel.closest('.ebs-b-check-row').querySelector('#emailen'), 'e-Boekhouden\'s own checkbox in the card');
+  const emailBlock = [...view.querySelectorAll('.ebs-b-check-row')].find((block) => /Per e-mail/.test(block.textContent));
+  assert.equal(emailBlock.tagName, 'LABEL');
+  assert.equal(emailBlock.control, document.getElementById('emailen'), 'the block is the label of e-Boekhouden\'s own checkbox');
   assert.equal(view.querySelector('.ebs-b-small-title').textContent, 'Versturen (twee aparte vinkjes, ook samen)');
 
   // Lines and totals, read from e-Boekhouden's list.
@@ -426,7 +427,10 @@ test('the invoice form: e-Boekhouden\'s own rows in the new layout, and back in 
   [...view.querySelectorAll('.ebs-b-link')].find((node) => node.textContent === 'Klassieke weergave').click();
   await p.settle();
   assert.equal(document.querySelector('.ebs-b-edit'), null);
-  assert.deepEqual(order(), ['relatieId-AutocompletePickerInput', 'nummer', 'inEx', 'datum', 'kenmerk', 'termijn', 'uitersteBetaaldatum', 'factuurtekst', 'factuursjabloonId', 'emailsjabloonId', 'factOm1', 'emailen', 'printen', 'incasso', 'directVerwerken', 'mutOmschrijving']);
+  assert.deepEqual(order(), ['relatieId-AutocompletePickerInput', 'nummer', 'datum', 'kenmerk', 'termijn', 'uitersteBetaaldatum', 'factuurtekst', 'factuursjabloonId', 'emailsjabloonId', 'incasso',
+    'machtigingSoort', 'machtigingId', 'machtigingDatum', 'iban', 'tenNameVan', 'plaats', 'factOm1', 'factOm2', 'factOm3', 'directVerwerken', 'mutOmschrijving', 'printen', 'emailen']);
+  assert.ok(document.querySelector('.form-row #nummer').closest('.form-row').querySelector('span.float-right #inEx'), 'inEx back in the row of Factuurnummer');
+  assert.equal(document.querySelectorAll('.ebs-b-native-icon').length, 0, 'the date pickers have their own icons again');
   assert.ok(document.querySelector('app-factuur-form > div > app-form > form > .form-body'), 'the form is home');
   assert.ok(document.querySelector('app-factuur-form app-form app-factuurregel-list'));
   assert.equal(document.querySelectorAll('[data-ebs-native]').length, 0);

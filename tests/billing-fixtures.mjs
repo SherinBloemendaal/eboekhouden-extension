@@ -10,7 +10,24 @@ const identity = '<app-header-identity-b><div class="header-identity"><div class
 const checkbox = (id, label, checked = false) => `<div class="form-row"><div class="form-component"><app-form-label><label for="${id}">${label}</label></app-form-label><app-checkbox><div class="form-control form-check"><div class="form-check"><input type="checkbox" id="${id}"${checked ? ' checked' : ''}><span></span></div><label for="${id}"> ${label} </label></div></app-checkbox></div></div>`;
 const textRow = (id, label, value = '') => `<div class="form-row"><div class="form-component"><app-form-label><label for="${id}">${label}</label></app-form-label><app-text-input><div class="form-control"><input id="${id}" class="displayValue form-input" value="${value}"></div></app-text-input></div></div>`;
 const selectRow = (id, label, options, value) => `<div class="form-row"><div class="form-component"><app-form-label><label for="${id}">${label}</label></app-form-label><app-selectlist><div class="form-control"><select class="form-input fixed" id="${id}" name="${id}">${options.map(([v, l]) => `<option value="${v}"${v === value ? ' selected' : ''}>${l}</option>`).join('')}</select></div></app-selectlist></div></div>`;
-export const autocompleteRow = (id, label, value = '') => `<div class="form-row"><div class="form-component"><app-form-label><label>${label}</label></app-form-label><app-autocomplete><div class="form-control"><div id="${id}-AutocompleteInput"><input autocomplete="off" class="displayValue skipinitfocus form-input" id="${id}-AutocompletePickerInput" value="${value}"></div></div><input type="text" readonly class="unfocus"></app-autocomplete></div></div>`;
+// app-autocomplete as its template renders it: with showAdd an app-icon
+// "plus" (ng-icon with its svg) right after the input, inside the same div.
+export const autocomplete = (id, value = '', { add = false } = {}) => `<app-autocomplete><div class="form-control fixed-width"><div id="${id}-AutocompleteInput"><input autocomplete="off" class="displayValue skipinitfocus form-input show-arrow${add ? ' flat-right show-add' : ''}" id="${id}-AutocompletePickerInput" value="${value}">${add ? '<app-icon name="plus" class="add-button"><ng-icon name="lucidePlus"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M5 12h14"></path><path d="M12 5v14"></path></svg></ng-icon></app-icon>' : ''}</div></div><input type="text" readonly tabindex="-1" class="unfocus"></app-autocomplete>`;
+export const autocompleteRow = (id, label, value = '', options = {}) => `<div class="form-row"><div class="form-component"><app-form-label><label for="${id}">${label}</label></app-form-label>${autocomplete(id, value, options)}</div></div>`;
+
+// app-date-picker (mydatepicker) as its template renders it: a day back,
+// the input, a day on, and the calendar button with its font icon.
+export const datePicker = (id, value = '') => `<app-date-picker><div class="date-picker form-control"><div class="selection-group"><div class="form-inline-group">
+  <button type="button" tabindex="-1" class="btn-decrease form-arrow" aria-label="Vorige dag"><app-icon name="chevron-left" size="small"><ng-icon class="small"><svg width="16" height="16"></svg></ng-icon></app-icon></button>
+  <input ngtype="text" autocomplete="off" spellcheck="false" autocorrect="off" class="form-input selection skipinitfocus" id="${id}" value="${value}">
+  <button type="button" tabindex="-1" class="btn-increase form-arrow" aria-label="Volgende dag"><app-icon name="chevron-right" size="small"><ng-icon class="small"><svg width="16" height="16"></svg></ng-icon></app-icon></button>
+  </div><button type="button" tabindex="-1" class="btn-picker" aria-label="Kalender openen"><i class="eb-icon-calendar"></i></button></div></div></app-date-picker>`;
+const hidden = (on) => ` custom-hidden="${on ? 'true' : 'false'}"`;
+const row = (body, { simple = true, advanced = true } = {}) => `<div class="form-row"${hidden(!advanced && !simple)}><div class="form-component">${body}</div></div>`;
+const label = (id, text) => `<app-form-label><label for="${id}" title="">${text}</label></app-form-label>`;
+const text = (id, value = '') => `<app-text-input><div class="form-control"><input id="${id}" class="displayValue form-input" value="${value}"></div></app-text-input>`;
+const select = (id, options, value) => `<app-selectlist><div class="form-control"><select class="form-input fixed" id="${id}" name="${id}">${options.map(([v, l]) => `<option value="${v}"${v === value ? ' selected' : ''}>${l}</option>`).join('')}</select></div></app-selectlist>`;
+const check = (id, text, checked = false, { disabled = false } = {}) => `<app-checkbox><div class="form-control form-check"><div class="form-check"><input type="checkbox" id="${id}"${checked ? ' checked' : ''}${disabled ? ' disabled' : ''}><span></span></div><label for="${id}"> ${text} </label></div></app-checkbox>`;
 
 // ---------------------------------------------------------------------------
 // The invoice list
@@ -131,50 +148,114 @@ export const LINES = [
   { qty: '3', text: 'Licentie per gebruiker', price: '10,00', excl: '30,00', vat: 'Btw hoog 21%' },
 ];
 
-const form = (body) => `<app-form><form class="form"><div class="form-header custom">Factuur</div><div class="form-body">${body}</div>
-  <div class="form-footer"><div class="form-buttons"><div class="form-submit"><button type="submit" class="button form-submit">Opslaan</button></div><div class="form-cancel"><button type="button" class="button form-cancel">Annuleren</button></div></div></div></form></app-form>`;
+// app-form: its <form> with a header, the projected rows in .form-body and
+// its footer (div.hr, the buttons, div.clear).
+const footer = '<div class="form-footer"><div class="hr"></div><div class="form-buttons"><div class="form-submit"><button type="submit" class="button form-submit">Opslaan</button></div><div class="form-cancel"><button type="button" class="button form-cancel">Annuleren</button></div><div class="clear"></div></div></div>';
 
-export function invoiceEditHtml(lines = LINES) {
-  return `<!doctype html><html><head></head><body>${identity}<app-notification-bar></app-notification-bar>
+// The invoice form (app-factuur-form) as its template renders it. advanced:
+// e-Boekhouden's "Meer opties"; off, the rows outside its simpleFields carry
+// custom-hidden="true". incassoModule: the factuur-incasso block (machtiging,
+// IBAN, t.n.v., plaats, omschrijving regels 1 tot 3). peppol: its checkbox,
+// shown only in advanced mode. debiteurenRekeningen: more than one, so
+// direct verwerken asks for one (in the verwerken wrapper). klaargezet: the
+// date of e-Boekhouden's "klaargezet voor incasso" message.
+export function invoiceEditHtml(lines = LINES, { advanced = true, incassoModule = true, peppol = false, debiteurenRekeningen = false, klaargezet = '' } = {}) {
+  const a = { advanced };
+  const off = { advanced, simple: false };
+  const incasso = incassoModule ? `<div custom-hidden="false"><div class="hr"></div>
+      ${row(`${label('machtigingSoort', 'Soort machtiging')}${select('machtigingSoort', [['E', 'SEPA éénmalige machtiging'], ['D', 'SEPA doorlopende machtiging']], 'D')}`)}
+      ${row(`${label('machtigingId', 'Kenmerk machtiging(ID)')}${text('machtigingId')}`)}
+      ${row(`${label('machtigingDatum', 'Datum ondertekening')}${datePicker('machtigingDatum')}`)}<div class="hr"></div>
+      ${row(`${label('iban', 'IBAN')}${text('iban')}`)}${row(`${label('tenNameVan', 'T.n.v.')}${text('tenNameVan')}`)}${row(`${label('plaats', 'Plaats')}${text('plaats')}`)}
+      ${row(`${label('factOm1', 'Omschrijving regel 1')}${text('factOm1', 'Factuur: [FACTUUR]')}`)}${row(`${label('factOm2', 'Omschrijving regel 2')}${text('factOm2')}`)}${row(`${label('factOm3', 'Omschrijving regel 3')}${text('factOm3')}`)}
+    </div>` : '';
+  return `<!doctype html><html><head><style>[custom-hidden="true"] { display: none !important; }</style></head><body>${identity}<app-notification-bar></app-notification-bar>
   <div id="content"><app-factuur-form><div><div class="middle-top-container"><app-goback><a id="goback">Terug</a></app-goback></div>
-  ${form(`${autocompleteRow('relatieId', 'Relatie', 'DEMO Demo Klant B.V.')}${textRow('nummer', 'Factuurnummer', 'VB-F000000234')}${selectRow('inEx', 'Deze factuur is', [['EX', 'Excl btw'], ['IN', 'Incl btw']], 'EX')}
-    ${textRow('datum', 'Factuurdatum', '29-10-2026')}${textRow('kenmerk', 'Uw kenmerk')}
-    <div class="form-row"><div class="form-component"><app-form-label><label for="termijn">Betalingstermijn</label></app-form-label><app-number-input><div class="form-control"><input type="text" class="form-input" id="termijn" value="14"></div></app-number-input> dagen</div></div>
-    ${textRow('uitersteBetaaldatum', 'Uiterste betaaldatum', '12-11-2026')}${textRow('factuurtekst', 'Factuurtekst')}
-    ${selectRow('factuursjabloonId', 'Factuursjabloon', [['1', 'Factuursjabloon']], '1')}${selectRow('emailsjabloonId', 'E-mailsjabloon', [['2', 'Factuur']], '2')}
-    ${textRow('factOm1', 'Omschrijving regel 1')}${checkbox('emailen', 'Factuur per e-mail versturen', true)}${checkbox('printen', 'Factuur per reguliere post versturen')}
-    ${checkbox('incasso', 'Factuurbedrag incasseren')}${checkbox('directVerwerken', 'Factuur direct verwerken in de boekhouding', true)}${textRow('mutOmschrijving', 'Mutatie-omschrijving')}
-    <div class="title-group">Producten / Diensten</div>${lineList(lines)}`)}
-  </div></app-factuur-form></div></body></html>`;
+  <app-form class="form" custom-hidden="false"><form class="form"><div class="form-header form-header-custom"><div formheader="" class="form-header-w"><h1 class="f-h"> Factuur toevoegen </h1><div class="form-options"><span class="a-label">Meer opties</span><i class="a-icon"></i></div></div></div>
+  <div class="form-body">
+    ${row(`${label('relatieId', 'Relatie')}${autocomplete('relatieId', 'DEMO Demo Klant B.V.', { add: true })}`, a)}
+    ${row(`${label('nummer', 'Factuurnummer')}${text('nummer', 'VB-F000000234')}<span class="float-right">${label('inEx', 'Deze factuur is')}${select('inEx', [['EX', 'Excl btw'], ['IN', 'Incl btw']], 'EX')}</span>`, off)}
+    ${row(`${label('datum', 'Factuurdatum')}${datePicker('datum', '29-10-2026')}`, a)}
+    ${row(`${label('kenmerk', 'Uw kenmerk')}${text('kenmerk')}`, off)}
+    ${row(`${label('termijn', 'Betalingstermijn')}<app-number-input><div class="form-control"><input type="text" class="form-input" id="termijn" value="14"></div></app-number-input><label>&nbsp;dagen</label>`, off)}
+    ${row(`${label('uitersteBetaaldatum', 'Uiterste betaaldatum')}${datePicker('uitersteBetaaldatum', '12-11-2026')}`, off)}
+    ${row(`${label('factuurtekst', 'Factuurtekst')}<app-textarea-input><div class="form-control"><textarea class="form-input" id="factuurtekst"></textarea></div></app-textarea-input>`, a)}
+    ${row(`${label('factuursjabloonId', 'Factuursjabloon')}${select('factuursjabloonId', [['1', 'Factuursjabloon']], '1')}`, a)}
+    ${row(`${label('emailsjabloonId', 'E-mailsjabloon')}${select('emailsjabloonId', [['2', 'Factuur']], '2')}`, a)}
+    ${row(`<app-form-label></app-form-label>${check('incasso', 'Factuurbedrag incasseren')}`, a)}
+    ${incasso}
+    <div${hidden(!advanced)}>${row(`<app-form-label></app-form-label>${check('directVerwerken', 'Factuur direct verwerken in de boekhouding', true)}`)}${row(`${label('mutOmschrijving', 'Mutatie-omschrijving')}${text('mutOmschrijving')}`)}${debiteurenRekeningen ? row(`${label('grootboekrekeningId', 'Debiteurenrekening')}${autocomplete('grootboekrekeningId', '1300 Debiteuren')}`) : ''}</div>
+    <h4 class="title-group"> Verzendwijze </h4>
+    ${row(`<app-form-label></app-form-label>${check('printen', 'Factuur per reguliere post versturen')}`, off)}
+    ${row(`<app-form-label></app-form-label>${check('emailen', 'Factuur per e-mail versturen', true)}`, off)}
+    ${peppol ? `<div>${row(`<app-form-label></app-form-label>${check('versturenViaPeppol', 'Factuur via Peppol versturen')}`, off)}</div>` : ''}
+    ${klaargezet ? row(`<app-form-label></app-form-label><app-form-value class="form-value"> Deze factuur is op ${klaargezet} klaargezet voor incasso. </app-form-value>`) : ''}
+    <h4 class="title-group"> Producten / Diensten </h4>${lineList(lines)}
+  </div>${footer}</form></app-form><div id="infoDiv"></div></div></app-factuur-form></div></body></html>`;
 }
 
-export function subscriptionEditHtml(lines = LINES.slice(1)) {
+// The subscription form (app-abonnement-form): app-form is its root, with
+// e-Boekhouden's standard header.
+export function subscriptionEditHtml(lines = LINES.slice(1), { incassoModule = false, peppol = false } = {}) {
+  const incasso = incassoModule ? `<div><div><hr class="line-color"></div>
+      ${row(`${label('machtigingSoort', 'Soort machtiging')}${select('machtigingSoort', [['E', 'SEPA éénmalige machtiging'], ['D', 'SEPA doorlopende machtiging']], 'D')}`)}
+      ${row(`${label('machtigingId', 'Kenmerk machtiging(ID)')}${text('machtigingId')}`)}${row(`${label('machtigingDatum', 'Datum ondertekening')}${datePicker('machtigingDatum')}`)}<div><hr class="line-color"></div>
+      ${row(`${label('iban', 'IBAN')}${text('iban')}`)}${row(`${label('tenNameVan', 'T.n.v.')}${text('tenNameVan')}`)}${row(`${label('plaats', 'Plaats')}${text('plaats')}`)}
+      ${row(`${label('factOm1', 'Omschrijving regel 1')}${text('factOm1')}`)}${row(`${label('factOm2', 'Omschrijving regel 2')}${text('factOm2')}`)}${row(`${label('factOm3', 'Omschrijving regel 3')}${text('factOm3')}`)}
+    </div>` : '';
+  const info = '<span class="float-right pad-info"><app-form-info><span class="info"></span></app-form-info></span>';
   return `<!doctype html><html><head></head><body>${identity}<app-notification-bar></app-notification-bar>
   <div id="content"><app-abonnement-form><div class="middle-top-container"><app-goback><a id="goback">Terug</a></app-goback></div>
-  ${form(`${textRow('nummer', 'Naam abonnement', 'Licenties')}${autocompleteRow('relatieId', 'Relatie', 'STUDIO Studio Noord')}
-    ${textRow('startDatum', 'Startdatum', '01-02-2024')}${textRow('expiratieDatum', 'Prolongatiedatum', '31-01-2027')}${textRow('eindDatum', 'Einddatum', '')}
-    ${selectRow('per', 'Betaling per', [['M', 'Maand'], ['2M', '2 maanden'], ['K', 'Kwartaal'], ['H', 'Halfjaar'], ['J', 'Jaar'], ['W', 'Week'], ['2W', '2 weken'], ['4W', '4 weken'], ['2J', '2 jaar']], 'M')}
-    ${textRow('termijn', 'Betalingstermijn', '14')}${textRow('kenmerk', 'Kenmerk')}${textRow('opmerking', 'Opmerkingen')}
-    ${selectRow('factuursjabloonId', 'Factuursjabloon', [['1', 'Factuursjabloon']], '1')}${selectRow('emailsjabloonId', 'E-mailsjabloon', [['2', 'Factuur']], '2')}
-    ${checkbox('autoVerwerk', 'Automatisch factureren', true)}${checkbox('emailen', 'Per e-mail versturen', true)}${checkbox('printen', 'Per post versturen')}${checkbox('incasso', 'Factuurbedrag incasseren')}${checkbox('geenFactuur', 'Tijdelijk niet factureren')}
-    ${textRow('factOm1', 'Omschrijving regel 1')}${lineList(lines)}`)}
-  </app-abonnement-form></div></body></html>`;
+  <app-form><form class="form"><div class="form-header"><div class="form-header-left"><h1> Abonnement wijzigen </h1></div></div><div class="form-body">
+    ${row(`${label('relatieId', 'Relatie')}${autocomplete('relatieId', 'STUDIO Studio Noord', { add: true })}`)}
+    ${row(`${label('nummer', 'Naam abonnement')}${text('nummer', 'Licenties')}<span class="float-right">${label('inEx', 'Deze factuur is')}${select('inEx', [['EX', 'Excl btw'], ['IN', 'Incl btw']], 'EX')}</span>`)}
+    ${row(`${label('startDatum', 'Startdatum')}${datePicker('startDatum', '01-02-2024')}`)}
+    ${row(`${label('expiratieDatum', 'Prolongatiedatum')}${datePicker('expiratieDatum', '31-01-2027')}${info}`)}
+    ${row(`${label('eindDatum', 'Einddatum')}${datePicker('eindDatum')}${info}`)}
+    ${row(`${label('per', 'Betaling per')}${select('per', [['M', 'Maand'], ['2M', '2 maanden'], ['K', 'Kwartaal'], ['H', 'Halfjaar'], ['J', 'Jaar'], ['2J', '2 jaar'], ['W', 'Week'], ['2W', '2 weken'], ['4W', '4 weken']], 'M')}`)}
+    ${row(`${label('termijn', 'Betalingstermijn')}<app-number-input><div class="form-control"><input type="text" class="form-input" id="termijn" value="14"></div></app-number-input><label>&nbsp;dagen</label>`)}
+    ${row(`<app-form-label><label for="kenmerk"> Uw kenmerk <i>(optioneel)</i></label></app-form-label>${text('kenmerk')}`)}
+    ${row(`${label('opmerking', 'Opmerkingen')}<app-textarea-input><div class="form-control"><textarea class="form-input" id="opmerking"></textarea></div></app-textarea-input>`)}
+    ${row(`${label('factuursjabloonId', 'Factuursjabloon')}${select('factuursjabloonId', [['1', 'Factuursjabloon']], '1')}`)}
+    ${row(`${label('emailsjabloonId', 'E-mailsjabloon')}${select('emailsjabloonId', [['2', 'Factuur']], '2')}`)}
+    ${row(`<app-form-label></app-form-label>${check('incasso', 'Factuurbedrag incasseren')}`)}
+    ${incasso}
+    <h4 class="title-group">Acties</h4>
+    ${row(`<app-form-label></app-form-label>${check('geenFactuur', 'Tijdelijk niet factureren')}`)}
+    ${row(`<app-form-label></app-form-label>${check('autoVerwerk', 'Automatisch factureren, verwerken en versturen', true)}`)}
+    ${row(`<app-form-label></app-form-label>${check('printen', 'Per post versturen')}`)}
+    ${row(`<app-form-label></app-form-label>${check('emailen', 'Per e-mail versturen', true)}`)}
+    ${peppol ? `<div>${row(`<app-form-label></app-form-label>${check('versturenViaPeppol', 'Factuur via Peppol versturen')}`)}</div>` : ''}
+    <h4 class="title-group"> Producten / Diensten </h4>${lineList(lines)}
+  </div>${footer}</form></app-form></app-abonnement-form></div></body></html>`;
 }
 
 // e-Boekhouden's line window: opened by its list, with two autocompletes.
 // Opening one (mousedown) renders its rows; a row click picks it.
-export function openLineWindow(document, { add = true, vat = 'Btw laag 9%', ledger = '0100 Deelneming Voorbeeld' } = {}) {
+export function openLineWindow(document, { add = true, vat = 'Btw laag 9%', ledger = '0100 Deelneming Voorbeeld', uitleg = false, artikelen = true, eenheid = true, korting = true, btwPlichtig = true } = {}) {
   const list = document.querySelector('app-factuurregel-list');
   const overlay = document.createElement('app-form-overlay');
-  overlay.innerHTML = `<div class="overlay overlay-scroll overlayBody"><div class="overlay-outer"><div class="overlay-center"><div class="overlay-inner">
+  const r = (body, extra = '') => `<div class="form-row${extra}"><div class="form-component">${body}</div></div>`;
+  const number = (id, value = '') => `<app-number-input><div class="form-control" style="width: 80px;"><input type="text" class="form-input" id="${id}" value="${value}" autocomplete=""></div></app-number-input>`;
+  // e-Boekhouden's line form (app-factuurregel-form) with its app-form:
+  // the rows go into .form-body, "Opslaan en nieuw" (footerEnd) into the footer.
+  overlay.innerHTML = `<div class="overlay overlay-scroll overlayBody"><div class="overlay-outer"><div class="overlay-center"><div class="overlay-inner pad-top pad-right pad-bottom pad-left" style="min-width: 600px; min-height: 116px;">
   <div class="close-div"><a class="close-btn">×</a><br></div><div class="no-top-margin"><app-factuurregel-form><div><app-form><form class="form">
-  <div class="form-header"><div class="form-header-left">${add ? 'Product/dienst toevoegen' : 'Product/dienst wijzigen'}</div></div><div class="form-body">
-    <div class="form-row"><div class="form-component"><app-form-label><label>Aantal</label></app-form-label><app-number-input><div class="form-control"><input class="form-input" id="aantal" value="1"></div></app-number-input></div></div>
-    <div class="form-row"><div class="form-component"><app-form-label><label>Omschrijving</label></app-form-label><app-textarea-input><textarea id="omschrijving">Nieuwe regel</textarea></app-textarea-input></div></div>
-    <div class="form-row block"><div class="form-component"><app-number-input><div class="form-control"><input class="form-input" id="prijsExcl" value="25,00"></div></app-number-input></div></div>
-    ${autocompleteRow('btw', 'Btw percentage', vat)}${autocompleteRow('grootboekrekeningId', 'Tegenrekening', ledger)}
-  </div><div class="form-footer"><div class="form-buttons"><button type="submit" class="button form-submit">Opslaan</button><button type="button" class="button form-cancel">Annuleren</button></div></div>
-  </form></app-form></div></app-factuurregel-form></div></div></div></div></div>`;
+  <div class="form-header"><div class="form-header-left"><h1>${add ? 'Product/dienst toevoegen' : 'Product/dienst wijzigen'}</h1></div></div><div class="form-body">
+    <div${artikelen ? '' : ' custom-hidden="true"'}><div class="form-component"><span class="paddingLeft"> Selecteer hier een product of dienst of voer hieronder een nieuwe in. </span></div><br>
+      ${r(`<app-form-label><label for="artikelId">Product/dienst</label></app-form-label>${autocomplete('artikelId')}`)}<br><br></div>
+    ${r(`<app-form-label><label for="aantal">Aantal</label></app-form-label>${number('aantal', '1')}`)}
+    ${eenheid ? r(`<app-form-label><label for="eenheidId">Eenheid</label></app-form-label>${autocomplete('eenheidId', 'stuk', { add: true })}`) : ''}
+    ${r(`<app-form-label><label for="code">Code</label></app-form-label>${text('code')}`)}
+    ${r(`<app-form-label><label for="omschrijving">Omschrijving</label></app-form-label><app-textarea-input><div class="form-control"><textarea class="form-input" id="omschrijving" rows="5" cols="68">Nieuwe regel</textarea></div></app-textarea-input>`)}
+    ${r(`<app-form-label><label for="prijsExcl"> Prijs per eenheid </label></app-form-label>${number('prijsExcl', '25,00')}${btwPlichtig ? `<app-form-label><label for="prijsExcl">(excl btw)</label></app-form-label>${number('prijsIncl', '30,25')}<app-form-label><label for="prijsIncl">(incl btw)</label></app-form-label>` : ''}`, ' block')}
+    ${btwPlichtig ? r(`<app-form-label><label for="btw">Btw percentage</label></app-form-label>${autocomplete('btw', vat)}`) : ''}
+    ${korting ? r(`<app-form-label><label for="korting">Korting</label></app-form-label>${number('korting')}<app-form-label id="kortingSoort"><label for="kortingSoort"></label></app-form-label>${select('kortingSoort', [['bd', 'Bedrag'], ['perc', 'Percentage']], 'perc')}`) : ''}
+    ${r(`<app-form-label><label for="grootboekrekeningId">Tegenrekening</label></app-form-label>${autocomplete('grootboekrekeningId', ledger, { add: true })}`)}
+    <br><br>
+    ${r(`<app-form-label></app-form-label>${check('opslaanAlsStandaard', 'Opslaan als standaard product/dienst')}`)}
+  </div><div class="form-footer"><div class="hr"></div><div class="form-buttons"><div class="form-submit"><button type="submit" class="button form-submit">Opslaan</button></div><div footerend="" class="footer-next"><button type="button" class="plain-btn">Opslaan en nieuw</button></div><div class="form-cancel"><button type="button" class="button form-cancel">Annuleren</button></div><div class="clear"></div></div></div>
+  </form></app-form>${uitleg ? '<div class="uitleg"> U kunt in de omschrijving de periode van de factuur aangeven met [START] en [EIND]. Bijvoorbeeld: <br> Periode: [START] t/m [EIND]. De velden [START] en [EIND] worden bij het maken van de facturen automatisch vervangen door de data. </div>' : ''}</div></app-factuurregel-form></div></div></div></div></div>`;
   list.append(overlay);
   const options = {
     btw: ['Btw hoog 21%', 'Btw laag 9%', 'Geen btw'],

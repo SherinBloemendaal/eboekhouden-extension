@@ -296,7 +296,7 @@
     stateListeners.add(schedule);
     new MutationObserver((records) => {
       if (records.some((record) => !isOwnMutation(record))) schedule();
-    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'class', 'style'] });
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'class', 'style', 'custom-hidden'] });
     // Typing in a field changes no markup; a due date or a total may follow it.
     document.addEventListener('input', schedule, true);
     document.addEventListener('change', schedule, true);
@@ -861,6 +861,17 @@
     return control(scope, name)?.closest('.form-row') ?? null;
   }
 
+  // What moves for a field: its row, or only its own part of a row it
+  // shares. e-Boekhouden puts "Deze factuur is" (inEx) in a
+  // <span class="float-right"> inside the row of Factuurnummer (Naam
+  // abonnement): moving the row would take that field along.
+  function fieldNode(scope, name) {
+    const node = control(scope, name);
+    const row = node?.closest('.form-row') ?? null;
+    const part = node?.closest('.form-row > .form-component > span');
+    return part && row?.contains(part) ? part : row;
+  }
+
   // Puts native nodes into a slot in this order; only what is not there
   // already moves, so a second call changes nothing. A comment marks where
   // each one came from, so restore() puts it back in the same spot.
@@ -1094,9 +1105,15 @@
       const ledgerRow = ledger?.closest('.form-row');
       let help = form.querySelector('.ebs-b-modal-help');
       if (ledgerRow && !help) {
-        help = own(el('div', 'ebs-b-modal-help', 'Btw en tegenrekening zijn de zoekvelden van e-Boekhouden. Overnemen typt en kiest daarin voor je; opslaan doe je zelf.'));
+        help = own(el('div', 'ebs-b-modal-help'));
+        help.append(icon('info', { size: 16 }), el('span', '', 'Btw en tegenrekening zijn de zoekvelden van e-Boekhouden. Overnemen typt en kiest daarin voor je; opslaan doe je zelf.'));
         ledgerRow.after(help);
       }
+      // Lucide icons in e-Boekhouden's own close and kostenplaats buttons;
+      // the buttons and their clicks stay e-Boekhouden's.
+      const inner = form.closest('.overlay-inner');
+      addNativeIcon(inner?.querySelector(':scope > .close-div .close-btn'), 'x', 18);
+      addNativeIcon(form.querySelector('.form-row .icon-container'), 'search', 16);
       const values = this.values();
       if (!current.matched) {
         const signature = this.signature();
@@ -1221,27 +1238,49 @@
   // The edit layout, shared by invoice and subscription
   // ---------------------------------------------------------------------------
 
+  // e-Boekhouden's date picker (app-date-picker): its own buttons stay, with
+  // their own clicks (a day back, a day on, the calendar). They get a Lucide
+  // icon of ours each; their native glyphs (a small chevron, the
+  // eb-icon-calendar font icon) step aside in the CSS.
+  const DATE_BUTTONS = [['.btn-decrease', 'chevron-left'], ['.btn-increase', 'chevron-right'], ['.btn-picker', 'calendar']];
+
+  function addNativeIcon(target, name, size) {
+    if (!target || target.querySelector(':scope > .ebs-b-native-icon')) return;
+    const mark = own(el('span', 'ebs-b-native-icon'));
+    mark.setAttribute('aria-hidden', 'true');
+    mark.append(icon(name, { size }));
+    target.append(mark);
+  }
+
+  function decorateDatePickers(scope) {
+    for (const picker of scope?.querySelectorAll('app-date-picker') ?? []) {
+      for (const [selector, name] of DATE_BUTTONS) {
+        addNativeIcon(picker.querySelector(`.selection-group ${selector}`), name, 16);
+      }
+    }
+  }
+
   function section(label, className = '') {
     const node = el('section', `ebs-b-section${className ? ` ${className}` : ''}`);
     node.setAttribute('aria-label', label);
     return node;
   }
 
+  // A checkbox block: a <label> around e-Boekhouden's own checkbox, so a
+  // click anywhere on the block is the label's own activation, which clicks
+  // that checkbox once (a click on the checkbox itself is not repeated). It
+  // names no id: the label takes the checkbox inside it, whatever else on
+  // the page shares that id. No handler of ours toggles anything.
   function checkCard(row, { title, sub = '', iconName = '', indent = false, card: framed = false }) {
-    const wrap = el('div', `ebs-b-check-row${framed ? ' framed' : ''}${indent ? ' indent' : ''}`);
+    const wrap = el('label', `ebs-b-check-row${framed ? ' framed' : ''}${indent ? ' indent' : ''}`);
     const slot = own(el('span', 'ebs-b-check-slot'));
-    const label = el('label', 'ebs-b-check-label');
-    const name = row?.querySelector('input[type="checkbox"]')?.id;
-    if (name) label.htmlFor = name;
-    if (iconName) label.append(icon(iconName));
-    const words = el('span');
-    words.append(sub ? el('b', '', title) : document.createTextNode(title));
-    if (sub) {
-      words.append(el('br'));
-      words.append(el('span', 'ebs-b-muted', sub));
-    }
-    label.append(words);
-    wrap.append(slot, label);
+    const words = el('span', 'ebs-b-check-label');
+    if (iconName) words.append(icon(iconName));
+    const lines = el('span', 'ebs-b-check-words');
+    lines.append(sub ? el('b', '', title) : document.createTextNode(title));
+    if (sub) lines.append(el('span', 'ebs-b-muted', sub));
+    words.append(lines);
+    wrap.append(slot, words);
     wrap.checkSlot = slot;
     return wrap;
   }
@@ -1349,13 +1388,15 @@
       main.insertBefore(view.linesSection, main.children[config.linesAt] ?? null);
 
       // Everything else of the native form: "Meer velden". Closed, its fields
-      // stay rendered (height 0), so a field in there that gets the focus,
+      // stay rendered (no height), so a field in there that gets the focus,
       // by Tab or because e-Boekhouden points at a field it rejected, opens
-      // it. A closed <details> would leave such a field unfocusable.
+      // it. A closed <details> would leave such a field unfocusable. Its
+      // label names the fields that are really in there (drawMore).
       view.more = el('div', 'ebs-b-more');
       const moreId = `ebs-b-more-${config.screen}`;
       view.moreToggle = button('', 'ebs-b-more-toggle', () => setMore(!view.more.classList.contains('open')), { 'aria-expanded': 'false', 'aria-controls': moreId });
-      view.moreToggle.append(icon('chevron-right', { size: 14 }), el('span', '', config.moreLabel));
+      view.moreText = el('span', '', 'Meer velden van e-Boekhouden');
+      view.moreToggle.append(icon('chevron-right', { size: 14 }), view.moreText);
       view.moreSlot = own(el('div', 'ebs-b-more-slot'));
       view.moreSlot.id = moreId;
       view.moreSlot.setAttribute('role', 'region');
@@ -1376,8 +1417,54 @@
     }
 
     function setMore(open) {
+      if (open && view.moreToggle.disabled) return;
       view.more.classList.toggle('open', open);
       view.moreToggle.setAttribute('aria-expanded', String(open));
+    }
+
+    // The fields left under Meer velden, by the name e-Boekhouden gives them.
+    // Which ones exist depends on the administration: omschrijving regels
+    // 1 tot 3, t.n.v., plaats, IBAN and the machtiging only come with
+    // factuur-incasso (hasFactuurIncasso), Peppol only when it is on, and
+    // Standaard factuur selecteren only when there are standaard facturen.
+    function moreNames() {
+      const body = view.formNode?.querySelector(':scope > .form-body');
+      if (!body) return [];
+      const names = [];
+      for (const row of body.querySelectorAll('.form-row')) {
+        if (row.closest(`[${OWN}]`) !== view.moreSlot) continue;
+        // A field by its label; a message of e-Boekhouden (app-form-value,
+        // "Deze factuur is op ... klaargezet voor incasso.") by its own
+        // sentence, never cut off in the middle of a word.
+        const name = text(row.querySelector('app-form-label label'))
+          || text(row.querySelector('app-checkbox label'))
+          || text(row.querySelector('a, button'))
+          || text(row.querySelector('app-form-value')).replace(/\.$/, '')
+          || shortName(text(row));
+        if (!name) continue;
+        const word = /^.[A-Z]/.test(name) ? name : name.charAt(0).toLowerCase() + name.slice(1);
+        if (!names.includes(word)) names.push(word);
+      }
+      return names;
+    }
+
+    // At most 40 characters, on a word boundary.
+    function shortName(words) {
+      if (words.length <= 40) return words;
+      const cut = words.slice(0, 41);
+      const end = cut.lastIndexOf(' ');
+      return `${(end > 0 ? cut.slice(0, end) : words.slice(0, 40)).trim()}…`;
+    }
+
+    function drawMore() {
+      const names = moreNames();
+      const words = names.length ? `Meer velden van e-Boekhouden: ${names.join(', ')}` : `Meer velden van e-Boekhouden: geen bij ${config.moreNoun}`;
+      if (view.moreText.textContent !== words) view.moreText.textContent = words;
+      const empty = names.length === 0;
+      if (view.moreToggle.disabled !== empty) {
+        view.moreToggle.disabled = empty;
+        if (empty) setMore(false);
+      }
     }
 
     // The <form> of app-form itself (its template's root), never the one of
@@ -1520,22 +1607,20 @@
       // Native rows into their slots; the rest of the form under Meer velden.
       for (const [slotName, names] of Object.entries(config.fields)) {
         const slot = view.slots[slotName];
-        if (slot) place(slot, names.map((name) => formRow(host, name)));
+        if (slot) place(slot, names.map((name) => fieldNode(host, name)));
       }
       for (const check of view.checks ?? []) {
         const row = formRow(host, check.name);
         if (row) place(check.node.checkSlot, [row]);
         check.node.hidden = !row;
-        // The label points at e-Boekhouden's own checkbox.
-        const input = control(host, check.name);
-        const label = check.node.querySelector('.ebs-b-check-label');
-        if (input && label.htmlFor !== input.id) label.htmlFor = input.id;
       }
       view.list = host.querySelector('app-factuurregel-list');
       if (view.list) place(view.listSlot, [view.list]);
       view.formNode = nativeForm(form) ?? view.formNode;
       place(view.moreSlot, [view.formNode]);
       form.setAttribute('data-ebs-billing-form', '');
+      drawMore();
+      decorateDatePickers(view.root);
 
       view.title.textContent = config.title(host, form);
       drawInEx(host);
@@ -1559,7 +1644,7 @@
         view.root.remove();
         // The line window looks like e-Boekhouden's own again.
         for (const node of document.querySelectorAll('[data-ebs-line-window]')) node.removeAttribute('data-ebs-line-window');
-        for (const node of document.querySelectorAll('.ebs-b-modal-sub, .ebs-b-modal-help, .ebs-b-modal-warning, .ebs-b-due-note')) node.remove();
+        for (const node of document.querySelectorAll('.ebs-b-modal-sub, .ebs-b-modal-help, .ebs-b-modal-warning, .ebs-b-due-note, .ebs-b-native-icon')) node.remove();
         for (const node of document.querySelectorAll('[data-ebs-risk]')) node.removeAttribute('data-ebs-risk');
         lineWindow.current = null;
       }
@@ -1588,6 +1673,172 @@
     style.textContent = BILLING_CSS;
     document.documentElement.append(style);
   }
+
+  // The line window: app-form-overlay > .overlay > .overlay-outer >
+  // .overlay-center > .overlay-inner > .no-top-margin > app-factuurregel-form
+  // > div > app-form > form > (.form-header, .form-body, .form-footer), and
+  // after app-form the explanation (.uitleg, on the subscription screen).
+  // Child selectors all the way: the windows e-Boekhouden opens on top of it
+  // (a new eenheid, tegenrekening or product) keep their own look.
+  const LINE_WINDOW = 'app-form-overlay[data-ebs-line-window]';
+  const LINE_INNER = `${LINE_WINDOW} > .overlay > .overlay-outer > .overlay-center > .overlay-inner`;
+  const LINE_FORM = `${LINE_INNER} > .no-top-margin > app-factuurregel-form > div`;
+  const LF = `${LINE_FORM} > app-form > form`;
+  const LB = `${LF} > .form-body`;
+  const row = (selector) => `${LB} > .form-row:has(${selector})`;
+  // A row of the edit layout: never one of the line window (it sits in the
+  // layout, in the line list) or of a window on top of it.
+  const ER = '.ebs-b-edit .form-row:not(app-form-overlay .form-row)';
+  // One selector per kind of field, each with its own plain specificity.
+  const fields = (scope, ...kinds) => kinds.map((kind) => `${scope} ${kind}`).join(', ');
+
+  // e-Boekhouden's own fields, in the edit layout and in the line window.
+  const NATIVE_CSS = `
+    /* An autocomplete with its "+" (app-icon.add-button): one control, the
+       button attached to the right of the field. */
+    ${ER} app-autocomplete { display: block; position: relative; min-width: 0; }
+    ${LB} app-autocomplete { display: block; position: relative; min-width: 0; }
+    ${ER} app-autocomplete .form-control > div[id$="-AutocompleteInput"] { display: flex; align-items: stretch; width: 100%; }
+    ${LB} app-autocomplete .form-control > div[id$="-AutocompleteInput"] { display: flex; align-items: stretch; width: 100%; }
+    ${ER} app-autocomplete input.displayValue.show-add { flex: 1 1 auto; min-width: 0; width: auto !important; border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+    ${LB} app-autocomplete input.displayValue.show-add { flex: 1 1 auto; min-width: 0; width: auto !important; border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+    ${ER} app-autocomplete app-icon.add-button { flex: none; display: flex !important; align-items: center; justify-content: center; box-sizing: border-box; width: 42px; height: 42px; margin: 0 !important; padding: 0; border: 1.5px solid #cfd4e2; border-left: 0; border-radius: 0 9px 9px 0; background: #f7f8fb; color: #232c4f; cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
+    ${LB} app-autocomplete app-icon.add-button { flex: none; display: flex !important; align-items: center; justify-content: center; box-sizing: border-box; width: 42px; height: 42px; margin: 0 !important; padding: 0; border: 1.5px solid #cfd4e2; border-left: 0; border-radius: 0 9px 9px 0; background: #f7f8fb; color: #232c4f; cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
+    ${ER} app-autocomplete app-icon.add-button:hover { background: #e3e7f0; }
+    ${LB} app-autocomplete app-icon.add-button:hover { background: #e3e7f0; }
+    ${ER} app-autocomplete app-icon.add-button :is(ng-icon, svg) { display: block; width: 18px !important; height: 18px !important; }
+    ${LB} app-autocomplete app-icon.add-button :is(ng-icon, svg) { display: block; width: 18px !important; height: 18px !important; }
+    /* Its focus catcher (input.unfocus, tabindex -1): out of sight, still focusable. */
+    ${ER} app-autocomplete > input.unfocus { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+    ${LB} app-autocomplete > input.unfocus { position: absolute; left: 0; top: 0; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+    ${ER} app-autocomplete .selector:not(.selector-up) { top: 44px !important; }
+    ${LB} app-autocomplete .selector:not(.selector-up) { top: 44px !important; }
+    ${ER} app-autocomplete .selector.selector-up { bottom: 44px !important; }
+    ${LB} app-autocomplete .selector.selector-up { bottom: 44px !important; }
+
+    /* The date picker: e-Boekhouden's input with its own day back, day on and
+       calendar buttons, drawn as one field with compact buttons inside. */
+    ${ER} app-date-picker { display: block; min-width: 0; }
+    ${ER} app-date-picker .date-picker { position: relative; width: 100% !important; max-width: none !important; }
+    ${ER} app-date-picker .selection-group { display: flex; align-items: stretch; box-sizing: border-box; width: 100%; height: 42px; border: 1.5px solid #cfd4e2; border-radius: 9px; background: #fff; overflow: hidden; transition: border-color 150ms ease; }
+    ${ER} app-date-picker .selection-group:focus-within { border-color: #596aaf; }
+    ${ER} app-date-picker .form-inline-group { display: flex; flex: 1 1 auto; align-items: stretch; min-width: 0; }
+    ${ER} app-date-picker .form-inline-group input.form-input { flex: 1 1 auto; min-width: 0; width: auto !important; height: auto !important; margin: 0; padding: 0 6px; border: 0 !important; border-radius: 0 !important; background: transparent; text-align: center; font-variant-numeric: tabular-nums; }
+    ${ER} app-date-picker .selection-group button { flex: none; display: flex; align-items: center; justify-content: center; box-sizing: border-box; width: 32px; height: auto; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: #4a5272; cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
+    ${ER} app-date-picker .selection-group button.btn-picker { width: 40px; border-left: 1.5px solid #e3e7f0; }
+    ${ER} app-date-picker .selection-group button:hover:not(:disabled) { background: #f3f5fa; color: #232c4f; }
+    ${ER} app-date-picker .selection-group button:disabled { color: #b9c0d4; cursor: default; }
+    ${ER} app-date-picker .selection-group button:focus { outline: none; }
+    ${ER} app-date-picker .selection-group button:focus-visible { box-shadow: inset 0 0 0 2px rgba(89, 106, 175, .45); }
+    ${ER} app-date-picker .selection-group button > :not(.ebs-b-native-icon) { display: none !important; }
+    .ebs-b-native-icon { display: flex; pointer-events: none; }
+
+    /* A checkbox under Meer velden (Factuur via Peppol versturen): the box
+       with its words beside it, as in the line window. */
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox .form-check { display: flex !important; align-items: center; gap: 8px; width: auto !important; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox .form-check > .form-check > span { display: none !important; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox input[type="checkbox"] { position: static !important; width: 16px; height: 16px; margin: 0; opacity: 1 !important; appearance: auto !important; accent-color: #232c4f; }
+    .ebs-b-edit .ebs-b-more-slot .form-row app-checkbox label { margin: 0; font-size: 13px; font-weight: 400; color: #232c4f; cursor: pointer; }
+  `;
+
+  const LINE_WINDOW_CSS = `
+    /* The line window of e-Boekhouden, restyled where it is: one white modal
+       (no inner frame), its fields in a compact grid, its actions on the
+       bottom edge. */
+    ${LINE_INNER} { box-sizing: border-box; width: 620px; max-width: calc(100vw - 48px); min-width: 0 !important; min-height: 0 !important; padding: 0 !important; border: 0 !important; border-radius: 14px; background: #fff; box-shadow: 0 24px 64px rgba(10, 14, 30, .4); overflow: hidden; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; animation: ebs-b-pop 200ms cubic-bezier(0.23, 1, 0.32, 1) both; }
+    ${LINE_INNER} > .close-div { top: 10px; right: 16px; z-index: 1; }
+    ${LINE_INNER} > .close-div > br { display: none; }
+    ${LINE_INNER} > .close-div .close-btn { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; background: #f3f5fa; font-size: 22px !important; line-height: 1; color: #232c4f !important; text-decoration: none; transition: background-color 150ms ease !important; }
+    ${LINE_INNER} > .close-div .close-btn:has(.ebs-b-native-icon) { font-size: 0 !important; }
+    ${LINE_INNER} > .close-div .close-btn:hover { background: #e3e7f0; }
+    ${LINE_INNER} > .no-top-margin { margin: 0 !important; padding: 0 !important; }
+    ${LINE_FORM} { display: flex; flex-direction: column; }
+    ${LINE_FORM} > app-form, ${LF} { display: contents !important; }
+    ${LF} > .form-header { order: 0; display: flex; align-items: center; gap: 12px; box-sizing: border-box; margin: 0; padding: 16px 64px 16px 20px; border: 0; border-bottom: 1px solid #e6e9f1; background: #fff; }
+    ${LF} > .form-header > .form-header-left { flex: 1 1 auto; min-width: 0; }
+    ${LF} > .form-header h1 { margin: 0 !important; padding: 0 !important; border: 0 !important; font: 700 17px/22px Ubuntu, system-ui, sans-serif; color: #232c4f; }
+    .ebs-b-modal-sub { flex: none; margin-left: auto; font-size: 12px; font-weight: 400; color: #5d6584; }
+    ${LB} { order: 1; display: grid !important; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; box-sizing: border-box; margin: 0; padding: 18px 20px 20px !important; border: 0 !important; border-radius: 0 !important; background: #fff !important; box-shadow: none !important; }
+    ${LB} > * { grid-column: 1 / -1; min-width: 0; margin: 0 !important; }
+    ${LB} > br, ${LB} > div > br { display: none; }
+    ${LINE_FORM} > .uitleg { order: 2; margin: -6px 0 0; padding: 0 20px 18px; font-size: 13px; line-height: 1.5; color: #4a5272; }
+    ${LF} > .form-footer { order: 3; box-sizing: border-box; width: 100%; margin: 0 !important; padding: 14px 20px !important; border: 0; border-top: 1px solid #e6e9f1; background: #f7f8fb; }
+    ${LF} > .form-footer > :is(.hr, .clear) { display: none !important; }
+    ${LF} > .form-footer .form-buttons { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0; padding: 0; float: none; }
+    ${LF} > .form-footer .form-buttons > * { float: none !important; margin: 0 !important; padding: 0 !important; }
+    ${LF} > .form-footer .form-buttons > .form-cancel { order: 1; }
+    ${LF} > .form-footer .form-buttons > .footer-next { order: 2; }
+    ${LF} > .form-footer .form-buttons > .form-submit { order: 3; }
+    ${LF} > .form-footer .form-buttons > .clear { display: none !important; }
+    ${LF} > .form-footer button { height: 40px; margin: 0; padding: 0 16px; border: 1px solid #d6dbe8; border-radius: 9px; background: #fff; font: 14px Ubuntu, system-ui, sans-serif; color: #232c4f; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease; }
+    ${LF} > .form-footer button:hover:not(:disabled) { background: #f3f5fa; }
+    ${LF} > .form-footer button.form-submit { border-color: #232c4f; background: #232c4f; color: #fff; font-weight: 700; }
+    ${LF} > .form-footer button.form-submit:hover:not(:disabled) { border-color: #1b2240; background: #1b2240; }
+    ${LF} > .form-footer button:disabled { opacity: .6; cursor: default; }
+    ${LF} > .form-footer button:focus { outline: none; }
+    ${LF} > .form-footer button:focus-visible { box-shadow: 0 0 0 3px rgba(89, 106, 175, .35); }
+
+    /* Rows: the label on top, the field below, all of them in one grid.
+       Aantal, eenheid and code share a line; so do btw and korting. */
+    ${LB} > .form-row { padding: 0 !important; }
+    ${LB} .form-component { display: flex !important; flex-direction: column; align-items: stretch; gap: 6px; padding: 0 !important; }
+    ${LB} app-form-label { display: block; width: auto !important; margin: 0; padding: 0 !important; line-height: 18px; }
+    ${LB} app-form-label label { display: inline; width: auto !important; margin: 0; padding: 0 !important; font-size: 13px; font-weight: 500; color: #232c4f; }
+    ${LB} .form-control { box-sizing: border-box; width: 100% !important; max-width: none !important; }
+    ${fields(LB, 'input.form-input', 'input.displayValue', 'select.form-input', 'textarea')} { box-sizing: border-box; width: 100% !important; height: 42px; margin: 0; padding: 0 12px; border: 1.5px solid #cfd4e2 !important; border-radius: 9px !important; background-color: #fff; font: 14px Ubuntu, system-ui, sans-serif; color: #232c4f; transition: border-color 150ms ease, background-color 150ms ease; }
+    ${fields(LB, 'input:focus', 'select:focus', 'textarea:focus')} { outline: none; border-color: #596aaf !important; }
+    ${LB} textarea { height: 64px; padding: 10px 12px; resize: vertical; }
+    ${LB} app-number-input input.form-input { text-align: right; font-variant-numeric: tabular-nums; }
+    ${LB} app-autocomplete[data-ebs-risk] input.displayValue { border: 2px solid #e08a00 !important; background-color: #fff8ec !important; }
+    ${LB} app-autocomplete[data-ebs-risk] app-icon.add-button { border-color: #e08a00; }
+    ${row('#aantal')} { grid-column: span 3; }
+    ${row('#eenheidId-AutocompletePickerInput')} { grid-column: span 4; }
+    ${row('#code')} { grid-column: span 5; }
+    ${LB}:not(:has(#eenheidId-AutocompletePickerInput)) > .form-row:has(#code) { grid-column: span 9; }
+    ${row('#btw-AutocompletePickerInput')} { grid-column: span 7; }
+    ${row('#korting')} { grid-column: span 5; }
+    ${LB}:not(:has(#korting)) > .form-row:has(#btw-AutocompletePickerInput) { grid-column: 1 / -1; }
+
+    /* Product of dienst: the explanation above its search field. */
+    ${LB} > div:not(.form-row):not([${OWN}]) { display: flex; flex-direction: column; gap: 10px; }
+    ${LB} > div:not(.form-row):not([${OWN}])[custom-hidden]:not([custom-hidden="false"]) { display: none; }
+    ${LB} > div:not(.form-row):not([${OWN}]) > .form-component > span { padding: 0 !important; font-size: 13px; line-height: 1.5; color: #4a5272; }
+
+    /* Prijs: excl and incl btw side by side, each with its own label in the field. */
+    ${row('#prijsExcl')} > .form-component { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; row-gap: 6px; }
+    ${row('#prijsExcl')} > .form-component > app-form-label:first-child { grid-column: 1 / -1; grid-row: 1; }
+    ${row('#prijsExcl')} > .form-component > app-number-input:has(#prijsExcl) { grid-column: 1; grid-row: 2; }
+    ${row('#prijsExcl')} > .form-component > app-number-input:has(#prijsIncl) { grid-column: 2; grid-row: 2; }
+    ${row('#prijsExcl')} > .form-component > app-form-label:not(:first-child) { z-index: 1; grid-row: 2; align-self: center; justify-self: end; padding-right: 12px !important; pointer-events: none; }
+    ${row('#prijsExcl')} > .form-component > app-form-label:not(:first-child):has(label[for="prijsExcl"]) { grid-column: 1; }
+    ${row('#prijsExcl')} > .form-component > app-form-label:not(:first-child):has(label[for="prijsIncl"]) { grid-column: 2; }
+    ${row('#prijsExcl')} > .form-component > app-form-label:not(:first-child) label { font-size: 12px; font-weight: 400; color: #8c93ab; }
+    ${row('#prijsExcl')} app-number-input input.form-input { padding-right: 84px; }
+
+    /* Korting: the amount and its kind (Bedrag, Percentage) on one line. */
+    ${row('#korting')} > .form-component { display: grid !important; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); column-gap: 8px; row-gap: 6px; }
+    ${row('#korting')} > .form-component > app-form-label:first-child { grid-column: 1 / -1; grid-row: 1; }
+    ${row('#korting')} > .form-component > app-form-label:not(:first-child) { display: none; }
+    ${row('#korting')} > .form-component > app-number-input { grid-column: 1; grid-row: 2; }
+    ${row('#korting')} > .form-component > app-selectlist { grid-column: 2; grid-row: 2; }
+
+    /* Kostenplaats: its search button attached, like the "+" of a search field. */
+    ${row('#kostenplaats')} > .form-component { display: grid !important; grid-template-columns: minmax(0, 1fr) 42px; row-gap: 6px; }
+    ${row('#kostenplaats')} > .form-component > app-form-label { grid-column: 1 / -1; }
+    ${row('#kostenplaats')} app-text-input input { border-top-right-radius: 0 !important; border-bottom-right-radius: 0 !important; }
+    ${row('#kostenplaats')} .icon-container { display: flex; align-items: center; justify-content: center; box-sizing: border-box; height: 42px; border: 1.5px solid #cfd4e2; border-left: 0; border-radius: 0 9px 9px 0; background: #f7f8fb; color: #232c4f; cursor: pointer; transition: background-color 150ms ease; }
+    ${row('#kostenplaats')} .icon-container:hover { background: #e3e7f0; }
+    ${row('#kostenplaats')} .icon-container > :not(.ebs-b-native-icon) { display: none !important; }
+
+    /* Opslaan als standaard: a checkbox with its words beside it. */
+    ${LB} app-checkbox .form-check { display: flex !important; align-items: center; gap: 8px; }
+    ${LB} app-checkbox .form-check > .form-check > span { display: none !important; }
+    ${LB} app-checkbox input[type="checkbox"] { position: static !important; width: 16px; height: 16px; margin: 0; opacity: 1 !important; appearance: auto !important; accent-color: #232c4f; }
+    ${LB} app-checkbox label { font-size: 13px; color: #232c4f; cursor: pointer; }
+
+    .ebs-b-modal-help { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 9px; background: #f7f8fb; font-size: 13px; line-height: 1.5; color: #4a5272; }
+    .ebs-b-modal-help svg { flex: none; margin-top: 2px; color: #5d6584; }
+  `;
 
   const BILLING_CSS = `
     /* The native screen under the new view: its machinery stays, out of sight. */
@@ -1740,9 +1991,11 @@
     /* e-Boekhouden's app-form holds the layout: its own width and margin step aside. */
     html.ebs-billing app-form[data-ebs-billing-form] { width: auto !important; min-width: 0 !important; max-width: none !important; margin: 0 !important; }
     html.ebs-billing [data-ebs-billing-form] .ebs-b-more-slot > form > :is(.form-header, .form-footer) { display: none !important; }
-    /* Fields e-Boekhouden hides in its simple mode ("Meer opties") show in the layout. */
-    .ebs-b-edit :is(.ebs-b-slot, .ebs-b-slot-wrap, .ebs-b-check-slot) > .form-row.custom-hidden,
-    .ebs-b-edit .ebs-b-more-slot > form > .form-body > .form-row.custom-hidden { display: block !important; }
+    /* Fields e-Boekhouden hides in its simple mode ("Meer opties") show in the
+       layout. It hides them with an attribute, [attr.custom-hidden], set to
+       "true" or "false"; its wrappers (factuur-incasso, verwerken) too. */
+    .ebs-b-edit :is(.ebs-b-slot, .ebs-b-slot-wrap, .ebs-b-check-slot) > .form-row[custom-hidden],
+    .ebs-b-edit .ebs-b-more-slot > form > .form-body .form-row[custom-hidden] { display: block !important; }
     .ebs-b-edit { box-sizing: border-box; margin: 24px 32px 16px; }
     .ebs-b-edit-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
     .ebs-b-back { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #232c4f; text-decoration: underline; transition: color 150ms ease; }
@@ -1768,30 +2021,40 @@
     .ebs-b-span-all { grid-column: 1 / -1; }
 
     /* e-Boekhouden's rows, moved in: label on top, the field full width. */
-    .ebs-b-edit .form-row { display: block; margin: 0; padding: 0 !important; min-width: 0; }
-    .ebs-b-edit .form-row > br, .ebs-b-edit .form-row ~ br { display: none; }
-    .ebs-b-edit .form-row .form-component { display: flex !important; flex-direction: column; align-items: stretch; gap: 6px; padding: 0 !important; }
-    .ebs-b-edit .form-row app-form-label, .ebs-b-edit .form-row app-form-label label { width: auto !important; padding: 0 !important; font-size: 13px; font-weight: 500; color: #232c4f; }
-    .ebs-b-edit .form-row .form-control { width: 100% !important; max-width: none !important; }
-    .ebs-b-edit .form-row :is(input.form-input, input.displayValue, select.form-input, textarea) { box-sizing: border-box; width: 100% !important; height: 42px; padding: 0 12px; border: 1.5px solid #cfd4e2 !important; border-radius: 9px !important; background: #fff; font: 14px Ubuntu, system-ui, sans-serif; color: #232c4f; transition: border-color 150ms ease; }
-    .ebs-b-edit .form-row textarea { height: 64px; padding: 10px 12px; resize: vertical; }
-    .ebs-b-edit .form-row :is(input, select, textarea):focus { outline: none; border-color: #596aaf !important; }
-    .ebs-b-edit .ebs-b-slot-termijn .form-component, .ebs-b-edit .form-row:has(#termijn) .form-component { flex-direction: row; flex-wrap: wrap; align-items: center; }
-    .ebs-b-edit .form-row:has(#termijn) .form-component { font-size: 13px; color: #5d6584; }
-    .ebs-b-edit .form-row:has(#termijn) app-form-label { flex-basis: 100%; }
-    .ebs-b-edit .form-row:has(#termijn) app-number-input, .ebs-b-edit .form-row:has(#termijn) .form-control { width: 70px !important; }
+    ${ER} { display: block; margin: 0; padding: 0 !important; min-width: 0; }
+    ${ER} > br, ${ER} ~ br { display: none; }
+    ${ER} .form-component { display: flex !important; flex-direction: column; align-items: stretch; gap: 6px; padding: 0 !important; }
+    ${ER} app-form-label, ${ER} app-form-label label { width: auto !important; padding: 0 !important; font-size: 13px; font-weight: 500; color: #232c4f; }
+    ${ER} .form-control { width: 100% !important; max-width: none !important; }
+    ${fields(ER, 'input.form-input', 'input.displayValue', 'select.form-input', 'textarea')} { box-sizing: border-box; width: 100% !important; height: 42px; padding: 0 12px; border: 1.5px solid #cfd4e2 !important; border-radius: 9px !important; background: #fff; font: 14px Ubuntu, system-ui, sans-serif; color: #232c4f; transition: border-color 150ms ease; }
+    ${ER} textarea { height: 64px; padding: 10px 12px; resize: vertical; }
+    ${fields(ER, 'input:focus', 'select:focus', 'textarea:focus')} { outline: none; border-color: #596aaf !important; }
+    .ebs-b-edit .ebs-b-slot-termijn .form-component, ${ER}:has(#termijn) .form-component { flex-direction: row; flex-wrap: wrap; align-items: center; }
+    ${ER}:has(#termijn) .form-component { font-size: 13px; color: #5d6584; }
+    ${ER}:has(#termijn) app-form-label { flex-basis: 100%; }
+    ${ER}:has(#termijn) app-number-input, ${ER}:has(#termijn) .form-control { width: 70px !important; }
     .ebs-b-due-note { font-size: 13px; color: #5d6584; }
     .ebs-b-more { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid #eef0f5; }
-    .ebs-b-more-toggle { display: flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: 500 13px Ubuntu, system-ui, sans-serif; color: #3a4677; text-align: left; cursor: pointer; transition: color 150ms ease; }
-    .ebs-b-more-toggle:hover { color: #232c4f; }
-    .ebs-b-more-toggle:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
-    .ebs-b-more-toggle svg { flex: none; transition: transform 150ms ease; }
+    .ebs-b-more-toggle { display: flex; align-items: center; gap: 6px; margin: 0 -6px; padding: 4px 6px; border: 0; border-radius: 7px; background: none; font: 500 13px Ubuntu, system-ui, sans-serif; color: #3a4677; text-align: left; cursor: pointer; transition: color 150ms ease, background-color 150ms ease, box-shadow 150ms ease; }
+    .ebs-b-more-toggle:hover:not(:disabled) { color: #232c4f; background: #f3f5fa; }
+    .ebs-b-more-toggle:focus { outline: none; }
+    .ebs-b-more-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(89, 106, 175, .3); }
+    .ebs-b-more-toggle:disabled { color: #8c93ab; cursor: default; }
+    .ebs-b-more-toggle svg { flex: none; transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 150ms ease; }
+    .ebs-b-more-toggle:disabled svg { opacity: .4; }
     .ebs-b-more.open .ebs-b-more-toggle svg { transform: rotate(90deg); }
-    .ebs-b-more-slot { margin-top: 12px; transition: opacity 150ms ease, transform 150ms ease; }
-    /* Closed it keeps its fields rendered, so they can still take the focus. */
-    .ebs-b-more:not(.open) .ebs-b-more-slot { height: 0; margin-top: 0; overflow: hidden; opacity: 0; transform: translateY(-4px); }
-    .ebs-b-more-slot > form > .form-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    /* Open and close: its height (a grid row from 0fr to 1fr) and opacity.
+       Closed it keeps its fields rendered, so they can still take the focus. */
+    .ebs-b-more-slot { display: grid; grid-template-rows: 1fr; opacity: 1; transform: none; transition: grid-template-rows 200ms cubic-bezier(0.23, 1, 0.32, 1), opacity 150ms ease, transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-b-more:not(.open) .ebs-b-more-slot { grid-template-rows: 0fr; opacity: 0; transform: translateY(-4px); }
+    .ebs-b-more-slot > form { min-height: 0; overflow: hidden; }
+    /* Open, a date picker or a search list may reach past the edge: unclipped once it is open. */
+    .ebs-b-more.open .ebs-b-more-slot > form { overflow: visible; transition: overflow 0s linear 200ms; transition-behavior: allow-discrete; }
+    .ebs-b-more-slot > form > .form-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px 0 0 !important; background: none !important; }
     .ebs-b-more-slot > form > .form-body > :not(.form-row) { grid-column: 1 / -1; }
+    /* Wrappers (factuur-incasso, verwerken) hand their rows to the grid. */
+    .ebs-b-more-slot > form > .form-body > div:not(.form-row) { display: contents !important; }
+    .ebs-b-more-slot > form > .form-body :is(hr, .hr) { display: none; }
     /* Its headings (Verzendwijze, Producten / Diensten) name rows that moved out. */
     .ebs-b-more-slot > form > .form-body > .title-group { display: none; }
 
@@ -1819,15 +2082,29 @@
     .ebs-b-total-line.grand { padding-top: 10px; border-top: 1px solid #eef0f5; font-size: 18px; font-weight: 700; color: #232c4f; }
     .ebs-b-next { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid #eef0f5; font-size: 12px; color: #4a5272; }
     .ebs-b-note { display: inline-flex; padding: 2px 8px; border: 1px dashed #8c93ab; border-radius: 6px; background: #f7f8fb; color: #4a5272; font-size: 11px; line-height: 16px; }
-    .ebs-b-check-row { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
+    /* A checkbox block is one <label> around e-Boekhouden's own checkbox: the
+       whole block is the hit target. Hover, focus and checked fade. The
+       unframed ones get their padding back as a negative margin, so they
+       sit where the board puts them. */
+    .ebs-b-check-row { display: flex; align-items: flex-start; gap: 10px; margin: -6px -10px; padding: 6px 10px; border: 1.5px solid transparent; border-radius: 9px; font-size: 13px; font-weight: 400; color: #232c4f; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease, opacity 150ms ease; }
     .ebs-b-check-row[hidden] { display: none; }
-    .ebs-b-check-row.indent { padding-left: 26px; }
-    .ebs-b-check-row.framed { align-items: center; padding: 10px 12px; border: 1.5px solid #d6dbe8; border-radius: 9px; transition: border-color 150ms ease; }
-    .ebs-b-check-row.framed:has(input:checked) { border-color: #232c4f; }
-    .ebs-b-check-slot .form-row, .ebs-b-check-slot .form-component, .ebs-b-check-slot .form-control { display: block !important; margin: 0 !important; padding: 0 !important; }
-    .ebs-b-check-slot app-form-label, .ebs-b-check-slot .form-control label { display: none !important; }
-    .ebs-b-check-slot input[type="checkbox"] { width: 16px; height: 16px; margin: 2px 0 0; accent-color: #232c4f; }
-    .ebs-b-check-label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .ebs-b-check-row:hover { background: #f3f5fa; }
+    .ebs-b-check-row:has(input[type="checkbox"]:focus-visible) { box-shadow: 0 0 0 3px rgba(89, 106, 175, .3); }
+    .ebs-b-check-row:has(input[type="checkbox"]:disabled) { opacity: .55; cursor: default; }
+    .ebs-b-check-row:has(input[type="checkbox"]:disabled):hover { background: transparent; }
+    .ebs-b-check-row.indent { margin-left: 16px; }
+    .ebs-b-check-row.framed { align-items: center; margin: 0; padding: 10px 12px; border-color: #d6dbe8; background: #fff; }
+    .ebs-b-check-row.framed:hover { border-color: #b9c0d4; background: #f7f8fb; }
+    .ebs-b-check-row.framed:has(input[type="checkbox"]:checked) { border-color: #232c4f; background: #f5f7fc; }
+    .ebs-b-check-slot { display: flex; flex: none; }
+    .ebs-b-check-slot .form-row, .ebs-b-check-slot .form-component, .ebs-b-check-slot .form-control { display: block !important; width: auto !important; margin: 0 !important; padding: 0 !important; }
+    .ebs-b-check-slot app-form-label, .ebs-b-check-slot .form-control label, .ebs-b-check-slot .form-check > span { display: none !important; }
+    .ebs-b-check-slot input[type="checkbox"] { position: static !important; width: 16px; height: 16px; margin: 1px 0 0; opacity: 1 !important; appearance: auto !important; accent-color: #232c4f; cursor: inherit; }
+    .ebs-b-check-slot input[type="checkbox"]:focus { outline: none; }
+    .ebs-b-check-row.framed .ebs-b-check-slot input[type="checkbox"] { margin-top: 0; }
+    .ebs-b-check-label { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .ebs-b-check-label svg { flex: none; }
+    .ebs-b-check-words { display: flex; flex-direction: column; gap: 2px; }
     .ebs-b-check-label b { font-weight: 700; }
     .ebs-b-small-title { font-size: 13px; font-weight: 500; }
     .ebs-b-warning-summary { padding: 12px 14px; border: 1px solid #f5c98b; border-radius: 12px; background: #fff4e5; color: #7a4a00; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity 150ms ease, transform 150ms ease; }
@@ -1837,24 +2114,8 @@
     .ebs-b-save:hover { background: #1b2240; }
     .ebs-b-save:disabled { background: #8c93ab; cursor: default; }
 
-    /* The line window of e-Boekhouden, restyled where it is. */
-    app-form-overlay[data-ebs-line-window] .overlay-inner { width: 620px; max-width: calc(100vw - 48px); border-radius: 14px; box-shadow: 0 24px 64px rgba(10, 14, 30, .4); overflow: hidden; font-family: Ubuntu, system-ui, sans-serif; color: #232c4f; animation: ebs-b-pop 200ms cubic-bezier(0.23, 1, 0.32, 1) both; }
-    app-form-overlay[data-ebs-line-window] .close-div { top: 12px; right: 16px; z-index: 1; }
-    app-form-overlay[data-ebs-line-window] .close-btn { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 8px; background: #f3f5fa; font-size: 22px !important; color: #232c4f !important; text-decoration: none; transition: background-color 150ms ease !important; }
-    app-form-overlay[data-ebs-line-window] .close-btn:hover { background: #e3e7f0; }
-    app-form-overlay[data-ebs-line-window] .form-header { display: flex; align-items: center; gap: 12px; padding: 16px 64px 16px 20px; border-bottom: 1px solid #e6e9f1; font-size: 17px; font-weight: 700; }
-    .ebs-b-modal-sub { margin-left: auto; font-size: 12px; font-weight: 400; color: #5d6584; }
-    app-form-overlay[data-ebs-line-window] .form-body { padding: 18px 20px; }
-    app-form-overlay[data-ebs-line-window] .form-row { margin-bottom: 12px; }
-    app-form-overlay[data-ebs-line-window] :is(input.form-input, input.displayValue, select.form-input, textarea) { box-sizing: border-box; height: 42px; padding: 0 12px; border: 1.5px solid #cfd4e2; border-radius: 9px; font: 14px Ubuntu, system-ui, sans-serif; color: #232c4f; transition: border-color 150ms ease, background-color 150ms ease; }
-    app-form-overlay[data-ebs-line-window] textarea { height: auto; padding: 10px 12px; }
-    app-form-overlay[data-ebs-line-window] app-autocomplete[data-ebs-risk] input.displayValue { border: 2px solid #e08a00 !important; background: #fff8ec !important; }
-    app-form-overlay[data-ebs-line-window] .form-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid #e6e9f1; background: #f7f8fb; }
-    app-form-overlay[data-ebs-line-window] .form-footer button { height: 40px; padding: 0 16px; border-radius: 9px; font: 14px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: background-color 150ms ease; }
-    app-form-overlay[data-ebs-line-window] .form-footer button.form-submit { border: 0; background: #232c4f; color: #fff; font-weight: 700; }
-    app-form-overlay[data-ebs-line-window] .form-footer button.form-submit:hover { background: #1b2240; }
-    .ebs-b-modal-help { margin: 0 0 12px; font-size: 12px; color: #5d6584; }
-    .ebs-b-modal-warning { display: flex; flex-direction: column; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border: 1px solid #f5c98b; border-radius: 10px; background: #fff4e5; color: #7a4a00; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity 150ms ease, transform 150ms ease; }
+${LINE_WINDOW_CSS}
+    .ebs-b-modal-warning { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 12px 14px; border: 1px solid #f5c98b; border-radius: 10px; background: #fff4e5; color: #7a4a00; font-size: 13px; opacity: 0; transform: translateY(6px); transition: opacity 150ms ease, transform 150ms ease; }
     /* Once shown it keeps its room, so the window does not jump when it fades. */
     .ebs-b-modal-warning:not(.show) { visibility: hidden; pointer-events: none; transition: opacity 150ms ease, transform 150ms ease, visibility 0s linear 150ms; }
     .ebs-b-modal-warning:not(.show):not(.seen) { position: absolute; }
@@ -1871,6 +2132,8 @@
     .ebs-b-take:hover { background: #5f3900; }
     .ebs-b-take:disabled { opacity: .6; cursor: default; }
 
+    /* Last, so its exceptions (a field with its button) follow the general field rules. */
+${NATIVE_CSS}
     @keyframes ebs-b-shimmer { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
     @keyframes ebs-b-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes ebs-b-pop { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
@@ -1882,7 +2145,8 @@
       .ebs-b-toast, .ebs-b-toast.show, .ebs-b-warning-summary, .ebs-b-modal-warning, .ebs-b-more-slot { transform: none !important; }
       .ebs-b-more-toggle svg { transition: none; }
       .ebs-b-message, .ebs-b-row.enter { animation: ebs-b-fade 150ms ease-out both; }
-      app-form-overlay[data-ebs-line-window] .overlay-inner { animation: ebs-b-fade 150ms ease-out both; }
+      ${LINE_INNER} { animation: ebs-b-fade 150ms ease-out both; }
+      .ebs-b-more-slot { transition: grid-template-rows 0s, opacity 150ms ease; }
       .ebs-b-bar-button:active { transform: none; }
     }
   `;
@@ -2453,7 +2717,7 @@
     back: 'Facturen',
     inExLabel: true,
     linesAt: 1,
-    moreLabel: 'Meer velden van e-Boekhouden: omschrijving regels 1 tot 3, plaats, t.n.v., IBAN, uitvoerdatum, standaard factuur, Peppol',
+    moreNoun: 'deze factuur',
     fields: {
       relation: ['relatieId'],
       details: ['nummer', 'datum', 'termijn', 'kenmerk'],
@@ -2490,7 +2754,7 @@
         { heading: 'Versturen (twee aparte vinkjes, ook samen)' },
         { name: 'emailen', options: { title: 'Per e-mail versturen', iconName: 'mail', card: true } },
         { name: 'printen', options: { title: 'Per post versturen', iconName: 'printer', card: true } },
-        { name: 'incasso', options: { title: 'Factuurbedrag incasseren' } },
+        { name: 'incasso', options: { title: 'Factuurbedrag incasseren', iconName: 'euro', card: true } },
       ];
       view.checks = [];
       for (const check of checks) {
