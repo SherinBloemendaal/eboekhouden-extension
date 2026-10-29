@@ -10,9 +10,15 @@
 //
 // The form fields, the hidden fields and the Inloggen button are always
 // e-Boekhouden's own elements: they are restyled or moved, never replaced, and
-// the form posts to e-Boekhouden as before. Nothing here fills in or submits
-// anything. On submit only the username is read, as a key to match the
-// session to its saved entry; the password field is never read.
+// the form posts to e-Boekhouden as before. Nothing here submits anything. On
+// submit only the username is read, as a key to match the session to its
+// saved entry; the password field is never read or written.
+//
+// One exception to "the extension fills in nothing", approved by the owner:
+// a login for a known entry (the re-login after its session expired, or a
+// click on it in the list) gets that entry's own stored username in the
+// Gebruikersnaam field, read-only, so the session cannot start under another
+// name (see usernameLock below). Only the username, only from that entry.
 
 (() => {
   if (window.__ebsLoginPageLoaded) return;
@@ -59,6 +65,7 @@
       settings: EBS.settingsWithDefaults(all.settings),
       pendingLoginFor: context?.pendingLoginFor ?? null,
       relogin: Boolean(context?.relogin),
+      reloginFor: context?.reloginFor ?? null,
     };
   }
 
@@ -140,15 +147,22 @@
       if (user.value) sendUsername();
     });
 
+    const lock = usernameLock(form, user);
     let state = await loadState();
     // The re-login dialog (content.js) shows this same form on its own:
-    // leave the page as it is then.
-    if (state.relogin && state.settings.relogin) return;
-    const page = state.settings.betterDesign && inLoginHost() ? betterLayout(form, user) : classicLayout(form);
+    // leave the page as it is then, apart from the username lock.
+    if (state.relogin && state.settings.relogin) {
+      lock.set(lockedSlot(state, state.reloginFor), 'classic');
+      return;
+    }
+    const better = state.settings.betterDesign && inLoginHost();
+    const page = better ? betterLayout(form, user) : classicLayout(form);
     page.render(state);
+    lock.set(lockedSlot(state, state.pendingLoginFor), better ? 'better' : 'classic');
     refresh = async () => {
       state = await loadState();
       page.render(state);
+      lock.set(lockedSlot(state, state.pendingLoginFor));
     };
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'local') refresh();
@@ -205,10 +219,235 @@
   }
 
   // The choice lives in session storage, which pages cannot watch: redraw here.
+  // With the username locked, on to the password field: that is where
+  // 1Password's menu has something to fill.
   async function chooseForLogin(slot) {
     await send({ type: 'login:for', slotId: slot.id });
     await refresh();
-    document.getElementById('txtEmail')?.focus();
+    const user = document.getElementById('txtEmail');
+    if (user?.readOnly) document.getElementById('frm')?.querySelector('input[type="password"]')?.focus();
+    else user?.focus();
+  }
+
+  // -------------------------------------------------------------------------
+  // The username lock.
+  //
+  // A login for a known entry must not start a session under another name.
+  // Which entry a form is for:
+  //   re-login dialog   the entry whose session expired in this tab
+  //                     (reloginFor, kept by the service worker from the
+  //                     moment the tab fell back to the login form)
+  //   login page        the entry picked in the list or the chips, or the
+  //                     one the popup switched to without a session
+  //                     (pendingLoginFor)
+  // With a stored username for it, the Gebruikersnaam field gets that
+  // username and turns read-only: not disabled, since a disabled field is not
+  // sent and the login would fail. This is the one thing the extension fills
+  // in (owner-approved); the password field is never read or written.
+  //
+  // Read-only is not enough on its own: 1Password's menu lists every account
+  // and a script can still write the field. So the real check is at
+  // Inloggen: the button click (also the one Enter makes) and the submit,
+  // both caught at window level in the capture phase, before e-Boekhouden's
+  // own ValidateForm and before the busy state. A username that is not the
+  // entry's (trimmed, any case) stops the login, gets the entry's username
+  // back and a message. "Ander account" lifts the lock for a deliberate
+  // switch; the login is then whatever account logs in, as without the lock.
+  // An entry without a stored username (older, or never logged in) locks
+  // nothing.
+  // -------------------------------------------------------------------------
+
+  function lockedSlot(state, slotId) {
+    const slot = slotId ? state.slots.find((candidate) => candidate.id === slotId) : null;
+    return typeof slot?.username === 'string' && slot.username.trim() ? slot : null;
+  }
+
+  function sameUsername(a, b) {
+    return String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+  }
+
+  function usernameLock(form, user) {
+    let slot = null;
+    // The entry the user unlocked: a redraw does not lock it again.
+    let unlockedFor = null;
+    let filled = null;
+    let variant = 'classic';
+    // 'early' (seen while the field changed) or 'blocked' (a login stopped).
+    let shownBy = null;
+    let clearTimer = 0;
+    let box = null;
+    let lineIcon = null;
+    let text = null;
+    let other = null;
+    let message = null;
+
+    function messageText() {
+      const name = slot.name.trim();
+      return `Dit is niet het account van ${name}${name.endsWith('.') ? '' : '.'} Kies het juiste account in 1Password, of klik op Ander account.`;
+    }
+
+    // The row under the field: the lock with the entry's name and "Ander
+    // account", and room for the message, which is always laid out (hidden)
+    // so that showing it moves nothing.
+    function build() {
+      if (box) return;
+      ensureStyle();
+      box = el('div', `ebs-userlock ${variant}`);
+      const line = el('div', 'ebs-userlock-line');
+      lineIcon = el('span', 'ebs-userlock-icon');
+      lineIcon.setAttribute('aria-hidden', 'true');
+      text = el('span', 'ebs-userlock-text');
+      text.id = 'ebs-userlock-text';
+      other = el('button', 'ebs-userlock-other', 'Ander account');
+      other.type = 'button';
+      other.addEventListener('click', unlock);
+      line.append(lineIcon, text, other);
+      message = el('div', 'ebs-userlock-msg');
+      message.setAttribute('role', 'alert');
+      message.append(icon('triangle-alert', { size: 14 }), el('span'));
+      box.append(line, message);
+      // Under the field, in the column of the field itself.
+      const row = user.closest('tr.TRNORM');
+      if (row) {
+        const tr = el('tr', 'ebs-userlock-tr');
+        const cell = el('td');
+        tr.append(el('td'), cell);
+        cell.append(box);
+        row.after(tr);
+      } else {
+        user.after(box);
+      }
+      // A row that comes after the page was drawn fades in. The Better design
+      // page is drawn together with it: no animation on load.
+      if (variant !== 'better') box.classList.add('ebs-in');
+      user.setAttribute('aria-describedby', text.id);
+    }
+
+    function showMessage(on, by) {
+      if (!message) return;
+      window.clearTimeout(clearTimer);
+      if (on) {
+        shownBy = shownBy === 'blocked' ? 'blocked' : by;
+        // Set again, so screen readers announce it.
+        message.lastChild.textContent = messageText();
+        message.classList.add('on');
+      } else {
+        shownBy = null;
+        message.classList.remove('on');
+      }
+    }
+
+    function lockTo(next) {
+      slot = next;
+      unlockedFor = null;
+      filled = slot.username.trim();
+      build();
+      box.classList.remove('unlocked');
+      lineIcon.replaceChildren(icon('lock', { size: 14 }));
+      text.textContent = `Vastgezet voor ${slot.name}`;
+      other.disabled = false;
+      other.removeAttribute('aria-hidden');
+      // The message's own text, hidden: its room is reserved from the start.
+      message.lastChild.textContent = messageText();
+      showMessage(false);
+      user.value = filled;
+      user.readOnly = true;
+      user.dataset.ebsLocked = slot.id;
+      // e-Boekhouden puts the caret in the username field; with the name
+      // given, the password is next.
+      if (document.activeElement === user) form.querySelector('input[type="password"]')?.focus();
+    }
+
+    // No lock any more: the field is the user's again.
+    function release(emptyField) {
+      if (emptyField && filled !== null && user.value === filled) user.value = '';
+      slot = null;
+      filled = null;
+      user.readOnly = false;
+      delete user.dataset.ebsLocked;
+      showMessage(false);
+    }
+
+    function unlock() {
+      if (!slot) return;
+      unlockedFor = slot.id;
+      user.value = '';
+      release(false);
+      box.classList.add('unlocked');
+      lineIcon.replaceChildren(icon('user', { size: 14 }));
+      text.textContent = 'Ander account: vul de gebruikersnaam zelf in.';
+      // The link stays in place, faded out: nothing moves.
+      other.disabled = true;
+      other.setAttribute('aria-hidden', 'true');
+      user.focus();
+    }
+
+    // Seen early: 1Password or a script wrote another name into the field.
+    function onValue() {
+      if (!slot) return;
+      if (sameUsername(user.value, slot.username)) {
+        if (shownBy === 'early') showMessage(false);
+      } else if (user.value.trim()) {
+        showMessage(true, 'early');
+      }
+    }
+    user.addEventListener('input', onValue, true);
+    user.addEventListener('change', onValue, true);
+
+    // The check at Inloggen. The value is read from the field itself here,
+    // so a write that fired no event is caught as well.
+    function guard(event) {
+      if (!slot) return;
+      if (event.type === 'submit') {
+        if (event.target !== form) return;
+      } else {
+        const button = event.target instanceof Element ? event.target.closest('input[type="submit"], button[type="submit"], button:not([type])') : null;
+        if (!button || button.form !== form) return;
+      }
+      if (sameUsername(user.value, slot.username)) {
+        showMessage(false);
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      user.value = filled;
+      showMessage(true, 'blocked');
+    }
+    window.addEventListener('click', guard, true);
+    window.addEventListener('submit', guard, true);
+
+    return {
+      // The entry this form is for now (null: none), and the layout.
+      set(next, nextVariant) {
+        if (nextVariant) variant = nextVariant;
+        const id = next?.id ?? null;
+        if (slot && id === slot.id) {
+          text.textContent = `Vastgezet voor ${next.name}`;
+          slot = next;
+          return;
+        }
+        if (id && id === unlockedFor) return;
+        if (!next) {
+          if (slot) {
+            release(true);
+            box.closest('.ebs-userlock-tr')?.remove();
+            box.remove();
+            box = null;
+          }
+          return;
+        }
+        if (slot) release(true);
+        lockTo(next);
+      },
+    };
+  }
+
+  function ensureStyle() {
+    if (document.getElementById('ebs-userlock-style')) return;
+    const style = el('style');
+    style.id = 'ebs-userlock-style';
+    style.textContent = USERLOCK_CSS;
+    document.head.append(style);
   }
 
   function avatar(slot, status, size, state) {
@@ -639,6 +878,41 @@
     return view;
   }
 
+  // The lock row: e-Boekhouden's own look (the classic page and the re-login
+  // dialog), and the Better design one.
+  const USERLOCK_CSS = `
+    #frm input#txtEmail { transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+    #frm input#txtEmail[readonly] { background-color: #f5f5f5; cursor: default; }
+    .ebs-userlock { padding: 2px 0 4px; font: 12px/16px 'Ubuntu', sans-serif; color: #30395f; text-align: left; }
+    .ebs-userlock.ebs-in { animation: ebs-userlock-in 150ms ease-out; }
+    .ebs-userlock-line { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+    .ebs-userlock-icon { flex: none; display: flex; color: #68ab32; }
+    .ebs-userlock.unlocked .ebs-userlock-icon { color: #6b6b6b; }
+    .ebs-userlock-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ebs-userlock-other { flex: none; padding: 0; border: 0; background: none; font: inherit; color: #30395f; text-decoration: underline; cursor: pointer; transition: color 150ms ease, opacity 150ms ease; }
+    .ebs-userlock-other:hover { color: #68ab32; }
+    .ebs-userlock-other:disabled { opacity: 0; cursor: default; pointer-events: none; }
+    .ebs-userlock-other:focus-visible { outline: 2px solid #30395f; outline-offset: 2px; }
+    .ebs-userlock-msg { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; padding: 6px 8px; border-radius: 3px; background: #fbe9e9; color: #b42318; opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 150ms ease, transform 150ms ease, visibility 0s linear 150ms; }
+    .ebs-userlock-msg.on { opacity: 1; visibility: visible; transform: none; transition: opacity 150ms ease, transform 150ms ease, visibility 0s; }
+    .ebs-userlock-msg svg { flex: none; margin-top: 1px; }
+    .ebs-userlock.better { padding: 0; font: 13px/18px Ubuntu, system-ui, sans-serif; color: #5d6584; }
+    .ebs-userlock.better .ebs-userlock-icon { color: #5d9e35; }
+    .ebs-userlock.better.unlocked .ebs-userlock-icon { color: #6b7290; }
+    .ebs-userlock.better .ebs-userlock-other { font-size: 12px; color: #232c4f; }
+    .ebs-userlock.better .ebs-userlock-other:hover { color: #1b2240; }
+    .ebs-userlock.better .ebs-userlock-other:focus-visible { outline-color: #232c4f; }
+    .ebs-userlock.better .ebs-userlock-msg { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 17px; }
+    #ebs-better #frm tr.ebs-userlock-tr { margin: -8px 0 16px !important; }
+    #ebs-better #frm input.INPUTBOX#txtEmail[readonly] { background: #f7f8fb; cursor: default; }
+    @keyframes ebs-userlock-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    @keyframes ebs-userlock-fade { from { opacity: 0; } to { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) {
+      .ebs-userlock.ebs-in { animation-name: ebs-userlock-fade; }
+      .ebs-userlock-msg, .ebs-userlock-msg.on { transform: none; }
+    }
+  `;
+
   const BETTER_CSS = `
     html.ebs-better-login, html.ebs-better-login body { background: #eef0f5 !important; }
     html.ebs-better-login body { margin: 0 !important; }
@@ -667,7 +941,7 @@
     #ebs-better #formWrapper > tbody > tr:first-child { display: none; }
     #ebs-better #frm tr.TRNORM { margin-bottom: 16px !important; }
     #ebs-better #frm tr.TRNORM > td:first-child, #ebs-better #frm tr.TRNORM > td:first-child font { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #232c4f !important; }
-    #ebs-better #frm input.INPUTBOX { box-sizing: border-box; width: 100% !important; height: 46px; padding: 0 14px; border: 1.5px solid #cfd4e2; border-radius: 10px; font: 15px Ubuntu, system-ui, sans-serif; color: #232c4f; background: #fff; transition: border-color 150ms ease, outline-color 150ms ease; }
+    #ebs-better #frm input.INPUTBOX { box-sizing: border-box; width: 100% !important; height: 46px; padding: 0 14px; border: 1.5px solid #cfd4e2; border-radius: 10px; font: 15px Ubuntu, system-ui, sans-serif; color: #232c4f; background: #fff; transition: border-color 150ms ease, outline-color 150ms ease, background-color 150ms ease; }
     #ebs-better #frm input.INPUTBOX:focus { border-color: #232c4f; outline: 3px solid rgba(35, 44, 79, .12); outline-offset: 0; }
     #ebs-better #frm input.act-btn { box-sizing: border-box; width: 100%; height: 48px; margin-top: 4px; border: 0; border-radius: 10px; background: #232c4f; color: #fff; font: 700 15px Ubuntu, system-ui, sans-serif; cursor: pointer; transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     #ebs-better #frm input.act-btn:active { transform: scale(0.98); }

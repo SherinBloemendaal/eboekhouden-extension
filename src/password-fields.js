@@ -12,7 +12,9 @@
 //   3. re-fires input and change events when a password manager writes a
 //      value, so framework-bound forms (the Angular ones on secure20) see it.
 // It never fills or submits anything itself, and never moves the page's
-// elements. (DacTecTools also wrapped loose fields in a new <form>; moving
+// elements. (The one value the extension does fill in, the username of the
+// entry a login is for, is login-page.js's, approved by the owner; never a
+// password.) (DacTecTools also wrapped loose fields in a new <form>; moving
 // Angular's inputs out of their wrappers broke their layout and bindings.)
 
 (() => {
