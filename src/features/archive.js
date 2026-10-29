@@ -160,6 +160,9 @@
     apiBase: null,
     // Newest first, at most a few: { folderId, items, at }.
     lists: [],
+    // The folder of the newest filelist answer, also when it could not be
+    // read: the folder e-Boekhouden shows now.
+    folderId: null,
     // The newest filelist answer failed: { folderId, message, at } or null.
     error: null,
     menhFolderId: null,
@@ -201,6 +204,7 @@
     const list = FILELIST.exec(data.url);
     if (list && data.method === 'GET') {
       const folderId = Number(list[1]);
+      observed.folderId = folderId;
       if (data.status >= 400 || data.status === 0) {
         const answer = parseJson(data.body);
         observed.error = { folderId, message: str(answer?.message, 300) || 'Er is iets misgegaan.', at: Date.now() };
@@ -245,8 +249,14 @@
       observed.on = false;
       EBS.bridge.disable('observe');
       observed.lists = [];
+      observed.folderId = null;
       observed.error = null;
     }
+  }
+
+  // The page's own answer for the folder it shows now, if it could be read.
+  function currentList() {
+    return observed.lists.find((one) => one.folderId === observed.folderId) ?? null;
   }
 
   function apiBase() {
@@ -263,10 +273,12 @@
     return `${two(date.getDate())}-${two(date.getMonth() + 1)}-${date.getFullYear()} ${two(date.getHours())}:${two(date.getMinutes())}`;
   }
 
-  // Id and koppelCount per rendered row, from the page's own filelist answer:
-  // by name, kind and date (minute), then by name and kind, in order.
+  // Id and koppelCount per rendered row, from the page's own filelist answer
+  // for this folder (never another folder's: a file of the same name there
+  // would get the wrong id): by name, kind and date (minute), then by name and
+  // kind, in order.
   function enrich(rows) {
-    const list = observed.lists.find((one) => one.items.length === rows.length) ?? observed.lists[0];
+    const list = currentList();
     if (!list) return;
     const exact = new Map();
     const loose = new Map();
@@ -578,13 +590,13 @@
       if (Date.now() - pending.since > 4000 || (native.header.name === pending.name && (arrived || changed))) ui.pending = null;
       else return 'loading';
     }
-    if (observed.error && observed.error.at >= (observed.lists[0]?.at ?? 0)) return 'error';
+    if (observed.error && observed.error.folderId === observed.folderId && observed.error.at >= (currentList()?.at ?? 0)) return 'error';
     if (!native.ready) return 'loading';
     if (!native.rows.length) {
       // e-Boekhouden empties the list for a moment before it draws the new
       // rows: an empty folder only counts once its answer says so, or after
       // 300 ms without rows.
-      const expected = observed.lists[0]?.items.length ?? null;
+      const expected = currentList()?.items.length ?? null;
       if (expected) return ui.shownState || 'loading';
       if (expected !== 0) {
         ui.emptySince ||= Date.now();
