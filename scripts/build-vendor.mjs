@@ -5,7 +5,11 @@
 //
 // The bundle must run under the extension's CSP (no eval, no new Function)
 // and must not depend on Node: both are checked after the build, and the
-// build fails when either check fails. The licenses of every package that
+// build fails when either check fails. zod compiles its validators with
+// `const F = Function; new F(...)` when it may, and probes that once with
+// new F(""), which the CSP reports as a violation even though zod catches
+// the error. The plugin below swaps that constructor for one that throws,
+// so zod takes its plain path and the bundle holds no Function constructor. The licenses of every package that
 // ended up in the bundle are collected in vendor/ai-sdk.LICENSES.txt.
 
 import { build } from 'esbuild';
@@ -40,6 +44,19 @@ for (const name of PINNED) {
   versions[name] = installed;
 }
 
+const NO_EVAL = 'function () { throw new EvalError("EB Sessions: no code from strings under the extension CSP"); }';
+const zodWithoutEval = {
+  name: 'zod-without-eval',
+  setup(plugin) {
+    plugin.onLoad({ filter: /[\\/]node_modules[\\/]zod[\\/].*\.js$/ }, (args) => {
+      const source = readFileSync(args.path, 'utf8');
+      if (!/\bFunction\b/.test(source)) return null;
+      const patched = source.replace(/\bconst F = Function;/g, `const F = ${NO_EVAL};`);
+      return { contents: patched, loader: 'js' };
+    });
+  },
+};
+
 const result = await build({
   stdin: { contents: ENTRY, resolveDir: root, sourcefile: 'ai-sdk-entry.mjs', loader: 'js' },
   bundle: true,
@@ -51,6 +68,7 @@ const result = await build({
   metafile: true,
   write: false,
   logLevel: 'warning',
+  plugins: [zodWithoutEval],
 });
 
 const code = result.outputFiles[0].text;
@@ -58,6 +76,9 @@ const forbidden = [
   [/\beval\s*\(/, 'eval('],
   [/\bnew\s+Function\s*\(/, 'new Function('],
   [/\bFunction\s*\(\s*["'`]/, 'Function("...")'],
+  // The constructor under another name: `let t=Function;` and the like.
+  [/(?<![\w$.'"`])Function\s*[;,)}\]]/, 'the Function constructor as a value'],
+  [/\.constructor\s*\(\s*["'`]/, 'a constructor called with code'],
   [/\brequire\s*\(\s*["'`](?:node:)?(?:fs|path|http|https|net|tls|child_process|crypto|stream|zlib)["'`]\s*\)/, 'a Node module'],
 ];
 for (const [pattern, label] of forbidden) {

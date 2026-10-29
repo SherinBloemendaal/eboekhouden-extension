@@ -210,6 +210,9 @@ test('vendor/ai-sdk.mjs runs under the extension CSP: no eval, no new Function, 
   assert.match(code.slice(0, 400), /ai@7\.0\.156/);
   assert.doesNotMatch(code, /\beval\s*\(/);
   assert.doesNotMatch(code, /\bnew\s+Function\s*\(/);
+  // zod's `const F = Function; new F("")` hides the constructor behind a name.
+  assert.doesNotMatch(code, /(?<![\w$.'"`])Function\s*[;,)}\]]/, 'no Function constructor as a value');
+  assert.match(code, /EB Sessions: no code from strings/, 'zod gets the throwing stand-in');
   assert.doesNotMatch(code, /require\(["'](?:node:)?(?:fs|path|http|https|net|child_process)["']\)/);
   const pinned = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).devDependencies;
   for (const name of ['ai', '@ai-sdk/openai', '@ai-sdk/anthropic', '@openrouter/ai-sdk-provider', 'zod']) {
