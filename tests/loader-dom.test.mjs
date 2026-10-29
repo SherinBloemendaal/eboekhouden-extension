@@ -123,6 +123,27 @@ test('anything that is not that mark is not used', () => {
   p.close();
 });
 
+test('a hostile file cannot freeze the page: long styles, open comments, endless parts', () => {
+  const p = page('<html><body></body></html>', { url: TOP });
+  p.load('shared.js', 'features/loader.js');
+  const { markFromSvg } = p.window.EBS.loader;
+  const svgWith = (inner) => `<svg xmlns="http://www.w3.org/2000/svg">${inner}<circle cx="50" cy="50" r="40" fill="#30395f"/></svg>`;
+  for (const [label, text] of [
+    ['a style without braces', svgWith(`<style>${'a'.repeat(290_000)}</style>`)],
+    ['a style with one open brace', svgWith(`<style>.x{${'b'.repeat(290_000)}</style>`)],
+    ['comments that never close', svgWith(`<style>${'/*'.repeat(140_000)}</style>`)],
+    ['a path of 50,000 parts', svgWith(`<path fill="#ffffff" d="${'M50 50h1v1z'.repeat(25_000)}"/>`)],
+    ['a long fill', svgWith(`<path fill="url(#${' '.repeat(250_000)}x" d="M0 0h1v1z"/>`)],
+  ]) {
+    const started = Date.now();
+    assert.equal(markFromSvg(text), null, label);
+    assert.ok(Date.now() - started < 1500, `${label}: ${Date.now() - started} ms`);
+  }
+  // Comments are still skipped in a normal style.
+  assert.ok(markFromSvg(LOGO.replace('<style>', '<style>/* Illustrator */ ')));
+  p.close();
+});
+
 test('path data is read the way SVG reads it', () => {
   const p = page('<html><body></body></html>', { url: TOP });
   p.load('shared.js', 'features/loader.js');

@@ -411,13 +411,33 @@
   }
 
   // Class rules from <style> (Illustrator writes `.st0{fill:#30395F;}`).
+  // Read with indexOf and split, in one pass: a regular expression over the
+  // whole text backtracks from every position of a long text without braces
+  // (or with an unclosed comment), which froze the page for a minute on
+  // 300 kB.
+  function withoutComments(text) {
+    let out = '';
+    let at = 0;
+    while (at < text.length) {
+      const open = text.indexOf('/*', at);
+      if (open < 0) return out + text.slice(at);
+      out += text.slice(at, open);
+      const close = text.indexOf('*/', open + 2);
+      if (close < 0) return out;
+      at = close + 2;
+    }
+    return out;
+  }
+
   function classRules(doc) {
     const rules = new Map();
     for (const style of doc.getElementsByTagName('style')) {
-      const text = (style.textContent ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
-      for (const match of text.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-        const found = declarations(match[2]);
-        for (const selector of match[1].split(',')) {
+      const text = withoutComments(style.textContent ?? '');
+      for (const block of text.split('}')) {
+        const open = block.indexOf('{');
+        if (open < 0) continue;
+        const found = declarations(block.slice(open + 1));
+        for (const selector of block.slice(0, open).split(',')) {
           const name = /^\s*\.([\w-]+)\s*$/.exec(selector)?.[1];
           if (name) rules.set(name, { ...(rules.get(name) ?? {}), ...found });
         }
@@ -480,6 +500,8 @@
     }
   }
 
+  // e-Boekhouden's logo has a few dozen parts.
+  const MAX_PARTS = 400;
   const SHAPES = new Set(['path', 'circle', 'ellipse', 'rect', 'polygon', 'polyline']);
   const SKIP = new Set(['defs', 'clipPath', 'mask', 'symbol', 'pattern', 'marker', 'style', 'script', 'title', 'desc', 'metadata', 'foreignObject', 'image', 'text', 'use', 'linearGradient', 'radialGradient', 'filter', 'switch']);
 
@@ -506,6 +528,7 @@
     const rules = classRules(doc);
     const gradients = gradientColors(doc);
     const shapes = [];
+    let tooMany = false;
     const styleOf = (node) => {
       const own = {};
       for (const name of ['fill', 'fill-rule', 'display', 'visibility', 'opacity', 'fill-opacity']) {
@@ -516,7 +539,7 @@
       return { ...own, ...declarations(node.getAttribute('style')) };
     };
     const walk = (node, matrix, inherited, depth) => {
-      if (depth > 32 || shapes.length > 400) return;
+      if (depth > 32 || tooMany) return;
       const style = styleOf(node);
       if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || Number(style['fill-opacity']) === 0) return;
       const own = parseTransform(node.getAttribute('transform'));
@@ -530,22 +553,30 @@
         const subpaths = d ? subpathsOf(d) : null;
         if (!subpaths) return;
         let rgb = null;
-        const ref = /^url\(\s*['"]?#([^'")]+)['"]?\s*\)$/.exec(String(fill ?? '').trim());
+        const fillText = String(fill ?? '').trim();
+        if (fillText.length > 200) return;
+        const ref = /^url\(\s*['"]?#([^'")\s]+)['"]?\s*\)$/.exec(fillText);
         if (ref) rgb = gradients.get(ref[1]) ?? null;
         else if (fill !== 'none') rgb = parseColor(fill ?? 'black');
         if (!rgb) return;
         const leaf = shapes.length;
-        subpaths.forEach((subpath, index) => {
-          if (subpath.points.length < 2) return;
-          shapes.push({ leaf, index, d: subpath.d, matrix: next, rgb, fillRule: fillRule === 'evenodd' ? 'evenodd' : 'nonzero', box: boundsOf(subpath.points.map((point) => applyMatrix(next, point))) });
-        });
+        for (const subpath of subpaths) {
+          if (subpath.points.length < 2) continue;
+          // The holes test below compares every pair: a file with more parts
+          // than a logo has is not the logo.
+          if (shapes.length >= MAX_PARTS) {
+            tooMany = true;
+            return;
+          }
+          shapes.push({ leaf, d: subpath.d, matrix: next, rgb, fillRule: fillRule === 'evenodd' ? 'evenodd' : 'nonzero', box: boundsOf(subpath.points.map((point) => applyMatrix(next, point))) });
+        }
         return;
       }
       if (SKIP.has(node.localName)) return;
       for (const child of node.children) walk(child, next, { fill, fillRule }, depth + 1);
     };
     walk(doc.documentElement, IDENTITY, { fill: undefined, fillRule: undefined }, 0);
-    return shapes;
+    return tooMany ? [] : shapes;
   }
 
   function matrixString(m) {
