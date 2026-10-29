@@ -31,8 +31,24 @@
         "https://secure*.e-boekhouden.nl/*"
       ],
       "js": [
+        "src/main-world.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.e-boekhouden.nl/*"
+      ],
+      "include_globs": [
+        "https://secure*.e-boekhouden.nl/*"
+      ],
+      "js": [
         "src/shared.js",
         "src/icons.js",
+        "src/bridge.js",
+        "src/request.js",
         "src/login-breakout.js",
         "src/password-fields.js",
         "src/content.js",
