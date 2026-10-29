@@ -7,6 +7,12 @@
 // the provider then refuses it: the old key never stays in use unseen. The
 // test is a small GET to the provider without any text (engine.test). The
 // service worker mirrors what pages may know into aiView (src/bg/ai.js).
+//
+// The keys go to the extension's IndexedDB (keys, src/offscreen/keys.js),
+// never to chrome.storage: Chrome hands its change events, values included,
+// to the content scripts in the e-Boekhouden tabs. Only the provider, the
+// models and the test results go to chrome.storage.local (aiConfig). After a
+// key changes, ai:keys tells the service worker to update aiView.
 
 import { PROVIDERS, checkKey, checkModel } from '../offscreen/protocol.js';
 
@@ -37,7 +43,7 @@ function failureText(code, status, provider) {
   }
 }
 
-export function mount({ document, chrome, engine, EBS, now = () => new Date() }) {
+export function mount({ document, chrome, engine, keys, EBS, now = () => new Date() }) {
   const $ = (id) => document.getElementById(id);
   const ui = {
     enabled: $('enabled'), providers: $('providers'), key: $('key'), test: $('test'), keyNote: $('key-note'),
@@ -217,10 +223,28 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
     state.granted = Object.fromEntries(entries);
   }
 
+  async function readKeys() {
+    try {
+      return await keys.all();
+    } catch {
+      return {};
+    }
+  }
+
+  // The service worker keeps aiView in step; a key is not in chrome.storage,
+  // so its change has no storage event there.
+  function keysChanged() {
+    try {
+      Promise.resolve(chrome.runtime.sendMessage({ type: 'ai:keys' })).catch(() => {});
+    } catch {
+      // No worker to tell: it reads the keys when it starts.
+    }
+  }
+
   async function load({ inputs = false } = {}) {
-    const { settings, aiKeys = {}, aiConfig = {} } = await chrome.storage.local.get(['settings', 'aiKeys', 'aiConfig']);
+    const [{ settings, aiConfig = {} }, saved] = await Promise.all([chrome.storage.local.get(['settings', 'aiConfig']), readKeys()]);
     state.settings = EBS.settingsWithDefaults(settings);
-    state.keys = aiKeys && typeof aiKeys === 'object' ? aiKeys : {};
+    state.keys = saved;
     state.config = aiConfig && typeof aiConfig === 'object' ? aiConfig : {};
     await grantedNow();
     if (inputs) {
@@ -355,9 +379,8 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
         state.message = { kind: 'bad', icon: 'triangle-alert', text: `${failureText('permission', null, provider)} De sleutel is niet opgeslagen.` };
         return;
       }
-      const { aiKeys = {} } = await chrome.storage.local.get('aiKeys');
-      state.keys = { ...aiKeys, [provider]: key };
-      await chrome.storage.local.set({ aiKeys: state.keys });
+      await keys.set(provider, key);
+      state.keys = await readKeys();
       await writeConfig((config) => ({
         provider,
         models: { ...config.models, [provider]: model },
@@ -373,10 +396,13 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
         }
         await grantedNow();
       }
+      keysChanged();
       const outcome = await runTest(provider, key, model);
       state.message = outcome.ok
         ? { kind: 'ok', icon: 'circle-check', text: `Opgeslagen. Sleutel werkt. Laatst getest ${when(now().getTime(), now())}.` }
         : { kind: outcome.code === 'auth' ? 'bad' : 'warn', field: 'key', icon: 'triangle-alert', text: `Opgeslagen, maar: ${failureText(outcome.code, outcome.status, provider)}` };
+    }).catch(() => {
+      state.message = { kind: 'bad', icon: 'triangle-alert', text: 'Opslaan lukte niet. Probeer het opnieuw.' };
     }).finally(() => {
       state.busy = null;
       setBusy(ui.save, null);
@@ -390,11 +416,9 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
     state.busy = 'remove';
     setBusy(ui.remove, 'Bezig…');
     try {
-      const { aiKeys = {} } = await chrome.storage.local.get('aiKeys');
-      const keys = { ...aiKeys };
-      delete keys[provider];
-      state.keys = keys;
-      await chrome.storage.local.set({ aiKeys: keys });
+      await keys.remove(provider);
+      state.keys = await readKeys();
+      keysChanged();
       await writeConfig((config) => ({ status: { ...config.status, [provider]: null } }));
       try {
         await chrome.permissions.remove({ origins: [PROVIDERS[provider].origin] });
@@ -404,6 +428,8 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
       await grantedNow();
       ui.key.value = '';
       state.message = { kind: '', text: `Sleutel verwijderd. De toestemming voor ${PROVIDERS[provider].host} is ook ingetrokken.` };
+    } catch {
+      state.message = { kind: 'bad', icon: 'triangle-alert', text: 'Verwijderen lukte niet. Probeer het opnieuw.' };
     } finally {
       state.busy = null;
       setBusy(ui.remove, null);
@@ -412,7 +438,7 @@ export function mount({ document, chrome, engine, EBS, now = () => new Date() })
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !(changes.settings || changes.aiKeys || changes.aiConfig) || state.busy) return;
+    if (area !== 'local' || !(changes.settings || changes.aiConfig) || state.busy) return;
     load();
   });
   chrome.permissions.onAdded?.addListener(() => grantedNow().then(render));

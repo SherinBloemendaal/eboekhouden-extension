@@ -1,12 +1,15 @@
 // The service worker side of the AI writing help (src/bg/ai.js): which
-// calls it lets through, the offscreen document it creates on demand, the
-// key that goes there and never back to a page, Stoppen, and the aiView
+// calls it lets through, the offscreen document it creates on demand (which
+// reads the key itself: no message carries it), Stoppen, and the aiView
 // mirror the editors draw their bar from.
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeChrome } from './fake-chrome.mjs';
+import { createFakeIndexedDB } from './fake-idb.mjs';
 
 const fake = createFakeChrome();
+const idb = createFakeIndexedDB();
+globalThis.indexedDB = idb.indexedDB;
 
 // What fake-chrome.mjs does not have: permissions, the offscreen API, the
 // runtime's messages to extension pages, and storage change events.
@@ -60,12 +63,14 @@ fake.runtime.sendMessage = async (message) => {
 };
 
 const { router } = await import('../src/background.js');
-const { publishView, stateOf } = await import('../src/bg/ai.js');
+const { keys, publishView, stateOf } = await import('../src/bg/ai.js');
 
 const TAB = { id: 7, url: 'https://secure20.e-boekhouden.nl/beheer/sjabloon/email/1' };
 const frame = { tab: TAB, frameId: 0, id: 'ebs-test' };
 const otherFrame = { tab: TAB, frameId: 3, id: 'ebs-test' };
 const offscreenPage = { id: 'ebs-test', url: 'chrome-extension://ebs-test/src/offscreen/offscreen.html' };
+// The settings page opens in a tab, so it has a sender.tab too.
+const settingsPage = { id: 'ebs-test', tab: { id: 50, url: 'chrome-extension://ebs-test/src/options/options.html' }, url: 'chrome-extension://ebs-test/src/options/options.html' };
 const KEY = 'sk-or-v1-secret-demo-key';
 const REQUEST = {
   action: 'rewrite', option: 'formal', format: 'html', scope: 'all',
@@ -73,9 +78,9 @@ const REQUEST = {
 };
 
 async function configure({ on = true, key = KEY, model = 'anthropic/claude-sonnet-5.5', permission = true } = {}) {
+  if (key) await keys.set('openrouter', key);
   await fake.storage.local.set({
     settings: { aiWriter: on },
-    aiKeys: key ? { openrouter: key } : {},
     aiConfig: { provider: 'openrouter', models: { openrouter: model } },
   });
   if (permission) granted.add('https://openrouter.ai/*');
@@ -87,18 +92,20 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 beforeEach(async () => {
   await settle();
   fake.reset();
+  idb.reset();
   granted.clear();
   Object.assign(offscreen, { open: false, created: 0, closed: 0, messages: [], answer: { result: { content: '<p>Bijgaand treft u factuur [FACTNUMMER] aan.</p>' } }, pending: [] });
 });
 
-test('a call goes to the offscreen document with the key; the page gets the answer and never the key', async () => {
+test('a call goes to the offscreen document without the key; the page gets the answer and never the key', async () => {
   await configure();
   const answer = await run();
   assert.deepEqual(answer, { result: { content: '<p>Bijgaand treft u factuur [FACTNUMMER] aan.</p>' } });
   assert.equal(offscreen.created, 1);
   const call = offscreen.messages.find((message) => message.type === 'ai:offscreen:run');
   assert.equal(call.target, 'offscreen');
-  assert.deepEqual(call.config, { provider: 'openrouter', key: KEY, model: 'anthropic/claude-sonnet-5.5' });
+  assert.deepEqual(call.config, { provider: 'openrouter', model: 'anthropic/claude-sonnet-5.5' }, 'the offscreen document reads the key itself');
+  assert.ok(!JSON.stringify(offscreen.messages).includes(KEY), 'no message to extension pages carries the key');
   assert.deepEqual(Object.keys(call.request).sort(), ['action', 'content', 'format', 'instruction', 'option', 'scope', 'subject', 'templateType', 'variables']);
   assert.ok(!JSON.stringify(answer).includes(KEY));
 
@@ -110,6 +117,7 @@ test('a call goes to the offscreen document with the key; the page gets the answ
 test('nothing goes out when the switch is off, there is no key, no permission or no model', async () => {
   for (const [setup, code] of [[{ on: false }, 'off'], [{ key: '' }, 'nokey'], [{ permission: false }, 'permission'], [{ model: '' }, 'model']]) {
     fake.reset();
+    idb.reset();
     granted.clear();
     await configure(setup);
     assert.deepEqual(await run(), { error: { code, status: null } }, code);
@@ -173,11 +181,11 @@ test('ai:settings opens the settings page; ai:run is for pages only', async () =
 });
 
 test('aiView follows the key, the model, the permission and the last test, without the key', async () => {
-  assert.equal(stateOf({ key: '', model: 'm' }, true), 'nokey');
-  assert.equal(stateOf({ key: 'k', model: 'm' }, false), 'permission');
-  assert.equal(stateOf({ key: 'k', model: 'm', status: { ok: false, code: 'auth' } }, true), 'rejected');
-  assert.equal(stateOf({ key: 'k', model: 'm', status: { ok: false, code: 'rate' } }, true), 'ready');
-  assert.equal(stateOf({ key: 'k', model: '' }, true), 'nomodel');
+  assert.equal(stateOf({ hasKey: false, model: 'm' }, true), 'nokey');
+  assert.equal(stateOf({ hasKey: true, model: 'm' }, false), 'permission');
+  assert.equal(stateOf({ hasKey: true, model: 'm', status: { ok: false, code: 'auth' } }, true), 'rejected');
+  assert.equal(stateOf({ hasKey: true, model: 'm', status: { ok: false, code: 'rate' } }, true), 'ready');
+  assert.equal(stateOf({ hasKey: true, model: '' }, true), 'nomodel');
 
   await configure();
   await settle();
@@ -190,8 +198,12 @@ test('aiView follows the key, the model, the permission and the last test, witho
   await settle();
   assert.equal((await chrome.storage.local.get('aiView')).aiView.state, 'permission');
 
-  await fake.storage.local.set({ aiKeys: {} });
-  await settle();
-  assert.equal((await chrome.storage.local.get('aiView')).aiView.state, 'nokey');
+  granted.add('https://openrouter.ai/*');
+  await publishView();
+  await keys.remove('openrouter');
+  assert.deepEqual(await fake.dispatch({ type: 'ai:keys' }, frame), {}, 'a page may ask, but changes nothing');
+  assert.equal((await chrome.storage.local.get('aiView')).aiView.state, 'ready');
+  await fake.dispatch({ type: 'ai:keys' }, settingsPage);
+  assert.equal((await chrome.storage.local.get('aiView')).aiView.state, 'nokey', 'the settings page says the key is gone');
   assert.equal((await publishView()).state, 'nokey');
 });
