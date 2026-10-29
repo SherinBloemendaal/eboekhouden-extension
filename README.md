@@ -16,7 +16,7 @@
 **EB Sessions** is a small Chrome extension for [e-Boekhouden.nl](https://www.e-boekhouden.nl) that makes 1Password autofill work on the login page, switches between administrations in one click, and turns an expired session into a login dialog instead of a lost page.<br>
 Repo: [github.com/SherinBloemendaal/eboekhouden-extension](https://github.com/SherinBloemendaal/eboekhouden-extension)
 
-[Install](#-install) · [Highlights](#-highlights) · [1Password](#-1password-on-the-login-page) · [Switching](#-switching-sessions) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
+[Install](#-install) · [Highlights](#-highlights) · [1Password](#-1password-on-the-login-page) · [Switching](#-switching-sessions) · [Login page](#-login-page) · [Importing](#-importing) · [Better design](#-better-design) · [Re-login](#%EF%B8%8F-re-login-dialog) · [Security](#-security) · [Development](#-development)
 
 </div>
 
@@ -30,6 +30,8 @@ Repo: [github.com/SherinBloemendaal/eboekhouden-extension](https://github.com/Sh
 - **One click between administrations.** A switcher in the e-Boekhouden header lists every administration you logged in to in this Chrome session. Pick one and all e-Boekhouden tabs move over, no logging out and in.
 - **1Password works on the login page.** The login form moves out of e-Boekhouden's old frameset into a normal iframe, where 1Password's inline menu stays open.
 - **Expired session? Log in where you are.** Instead of being dropped on the login page, you get a dialog over the page, with 1Password working there too. After login you are back on the page you were on.
+- **A faster import screen.** Shift-click selects a range of bank lines, and an action bar keeps *Wegboeken* and *Verwijderen* in view while lines are selected.
+- **Better design, if you want it.** One switch in the popup turns on a redesigned login page and import screen: search, filters, groups, hiding lines, and the mutation screen in a dialog.
 - **Passwords never touch the extension.** Logging in always goes through the real e-Boekhouden form and 1Password. The extension stores session cookies in memory only, and only for e-Boekhouden.
 - **No dependencies, no network calls.** Plain JavaScript, no build step, nothing sent anywhere.
 
@@ -78,9 +80,35 @@ The switcher is a navbar item in e-Boekhouden's own header, styled after whichev
 - **Administratie toevoegen** (*Sessie toevoegen* in the legacy design) saves the current session and opens an empty login screen for the next administration.
 - **Status per entry:** *Actief* (the one you are in), *Klaar* (ready to switch to), *Verlopen* in red (e-Boekhouden ended that session; picking it opens the login screen), *Inloggen* (known, but no session in memory).
 - **Profile pictures** (new design only). Hover an entry and click the camera to pick a picture. It replaces the initials circle in the e-Boekhouden header while that administration is active, and shows in the list. Pictures are cropped to 128 px and stored locally; they are never uploaded.
-- **Remove an entry** with the bin icon on hover. Logging in again adds it back.
+- **Remove an entry** with the bin icon on hover. Logging out does not remove it: the entry keeps its name, number and picture and shows *Inloggen*.
+- **Matching after a new login.** The session lands on its old entry by the username typed at login plus the administration number from the header, then by the number alone, then by the name. That keeps the picture when an administration is renamed, and keeps two administrations of one user apart.
+- **The toolbar popup** shows the same list with *Wissel*, *Inloggen* and *Opnieuw inloggen* buttons, a camera per entry, and the settings.
 
 Sessions live in memory, so after restarting Chrome each administration asks for one login again. Names, numbers and pictures stay.
+
+## 🚪 Login page
+
+The login page shows what is still open. *Actieve sessies* lists the administrations whose session is still saved; one click opens it, without logging in. *Eerder gebruikt* lists the expired and logged-out ones; a click puts *Log in voor …* above the form, so you know which login 1Password should fill. The *Administraties* menu sits in a header above the form as well.
+
+The form itself stays e-Boekhouden's own: its fields, hidden fields and button post to e-Boekhouden as before.
+
+## 📥 Importing
+
+On *Boekhouden > Invoeren > Importeren* (the *Niet verwerkte afschriftregels* grid):
+
+- **Shift-click** a checkbox to give every line between it and the last one you clicked the same state, as in Gmail. Hold shift over a line to see the range first.
+- **The action bar** appears at the bottom as soon as a line is ticked: how many lines, their total, and *Wegboeken*, *Verwijderen* and *Selectie wissen*. The buttons click e-Boekhouden's own actions under *Acties*; e-Boekhouden asks for confirmation as it always does.
+
+Both have their own switch in the popup.
+
+## 🎨 Better design
+
+One switch, *Better design* in the popup, off by default. It turns on redesigned screens; everything functional keeps its own switch.
+
+- **Login page:** two joined panels: your active sessions as cards (or a searchable list when there are many) next to the login form, restyled with CSS around e-Boekhouden's real fields.
+- **Import screen:** totals for what is in view, one search field over every column, filters on direction, booking month and amount, groups you make yourself (tabs, and *Aan groep toevoegen* in the action bar), hiding lines from your view with *Verborgen (N) tonen* to get them back, tooltips on the row buttons, and the counterparty and IBAN pulled from the bank description. Clicking a line opens e-Boekhouden's own *Handmatig invoeren* page in a dialog instead of leaving the list; after saving, the dialog closes and the list reloads. *Klassieke weergave* switches back for the rest of the visit.
+- **Hiding and groups are local.** They live in `chrome.storage.local`, per administration number. Hiding is never deleting.
+- **Motion with restraint:** the action bar, the dialog, the group menu and hidden lines move briefly (120 to 200 ms, transform and opacity only), nothing animates on page load, and with *reduce motion* set in your system the movement turns into a short fade.
 
 ## ⏱️ Re-login dialog
 
@@ -98,9 +126,10 @@ A real logout (the power button) does not trigger the dialog. **Gewoon inloggen*
 - **No passwords.** The extension never reads, stores or fills a password. You type it or 1Password fills it into e-Boekhouden's own form, which posts straight to e-Boekhouden.
 - **Session cookies in `chrome.storage.session` only.** That storage lives in memory and is wiped when Chrome quits or the extension reloads. Its access level is set to trusted contexts, so content scripts on e-Boekhouden pages cannot read it. Cookie values never leave the service worker: pages only get names and flags.
 - **Why not encrypted local storage?** Storing on disk would keep sessions across restarts, but the key would have to live next to the data in the same profile, so the encryption would protect against very little. A session cookie is as good as a login, so it stays in memory. One login per administration after a restart is the price.
-- **What is stored on disk**, in `chrome.storage.local`: the administration names and numbers, whether a session expired, which one is active, and your profile pictures. Pages read this to draw the switcher. No cookies, no customer data.
+- **What is stored on disk**, in `chrome.storage.local`: the administration names and numbers, the e-Boekhouden username per administration (only as a key to match a new login to its entry), whether a session expired, which one is active, your profile pictures, the settings, and per administration the import lines you hid or grouped (as date, account, amount and description). Pages read this to draw the switcher and the import screen. No cookies, no passwords.
+- **The username is read once, the password never.** When you send the login form, the extension reads the *Gebruikersnaam* field to match the session to its entry. The password field is not read, not even its length.
 - **Minimum permissions.** `cookies` and `storage`, and host access to `https://*.e-boekhouden.nl/*`, which covers the `secure*` hosts and the cookies e-Boekhouden sets on `.e-boekhouden.nl`. The content script only runs on `secure*.e-boekhouden.nl`. No `tabs` permission, no access to other sites, no remote code.
-- **No financial actions.** The extension never submits a form, never clicks for you, and never touches bookings. It only changes how the login page is laid out, how the login form looks when a session expired, and which page loads after login or a switch.
+- **No financial actions on its own.** The extension never submits a form and never books anything by itself. On the import screen it clicks e-Boekhouden's own checkboxes, actions and links only in answer to your click (a shift-click ticks the boxes in between; *Wegboeken* in the action bar clicks e-Boekhouden's *Geselecteerde regels wegboeken*), and e-Boekhouden's own confirmations still apply.
 
 ## 🧪 Development
 
@@ -111,7 +140,7 @@ npm test          # service worker tests, with an in-memory fake of the chrome.*
 npm run check     # syntax check of both scripts
 ```
 
-The tests cover the cookie swap (host-only and domain cookies, expired cookies), the confirm step with several tabs, slots matched by administration name, expired and logged-out sessions, profile picture validation, the re-login return including the inner classic page, and that no cookie value reaches a page.
+The tests cover the cookie swap (host-only and domain cookies, expired cookies), the confirm step with several tabs, matching a login to its entry (username, administration number, name), expired and logged-out sessions, profile picture validation, the re-login return, the shift-select range, search and filters, groups and hidden lines, and that no cookie value reaches a page.
 
 <details>
 <summary><b>Project layout</b></summary>
@@ -122,9 +151,13 @@ The tests cover the cookie swap (host-only and domain cookies, expired cookies),
 | ------------------------- | ----------------------------------------------------------------------------- |
 | `manifest.json`           | Manifest V3: permissions, the content script and the service worker.         |
 | `src/background.js`       | Service worker: saved sessions, the cookie swap, re-login state per tab.     |
+| `src/shared.js`           | Pure helpers shared by the content scripts and the tests.                    |
 | `src/login-breakout.js`   | Swaps the login frameset for one iframe so 1Password's menu works.           |
 | `src/password-fields.js`  | Labels login fields, wraps them in a form, re-fires events for frameworks.   |
 | `src/content.js`          | Runs in every e-Boekhouden frame: navbar switcher, re-login dialog.          |
+| `src/login-page.js`       | Active sessions on the login page, and its Better design layout.             |
+| `src/import.js`           | Shift-select, the action bar and the Better design import screen.            |
+| `src/popup/`              | The toolbar popup: administrations, profile pictures, settings.              |
 | `tests/`                  | `node --test` tests for the service worker and the fake `chrome.*` APIs.     |
 | `icons/`                  | The extension icon as SVG, and the PNG sizes Chrome uses.                    |
 | `assets/`                 | Images for this README. Screenshots use made-up administration names.       |
