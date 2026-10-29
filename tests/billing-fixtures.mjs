@@ -136,7 +136,7 @@ const form = (body) => `<app-form><form class="form"><div class="form-header cus
 
 export function invoiceEditHtml(lines = LINES) {
   return `<!doctype html><html><head></head><body>${identity}<app-notification-bar></app-notification-bar>
-  <div id="content"><app-factuur-form><div class="middle-top-container"><app-goback><a id="goback">Terug</a></app-goback></div>
+  <div id="content"><app-factuur-form><div><div class="middle-top-container"><app-goback><a id="goback">Terug</a></app-goback></div>
   ${form(`${autocompleteRow('relatieId', 'Relatie', 'DEMO Demo Klant B.V.')}${textRow('nummer', 'Factuurnummer', 'VB-F000000234')}${selectRow('inEx', 'Deze factuur is', [['EX', 'Excl btw'], ['IN', 'Incl btw']], 'EX')}
     ${textRow('datum', 'Factuurdatum', '29-10-2026')}${textRow('kenmerk', 'Uw kenmerk')}
     <div class="form-row"><div class="form-component"><app-form-label><label for="termijn">Betalingstermijn</label></app-form-label><app-number-input><div class="form-control"><input type="text" class="form-input" id="termijn" value="14"></div></app-number-input> dagen</div></div>
@@ -145,7 +145,7 @@ export function invoiceEditHtml(lines = LINES) {
     ${textRow('factOm1', 'Omschrijving regel 1')}${checkbox('emailen', 'Factuur per e-mail versturen', true)}${checkbox('printen', 'Factuur per reguliere post versturen')}
     ${checkbox('incasso', 'Factuurbedrag incasseren')}${checkbox('directVerwerken', 'Factuur direct verwerken in de boekhouding', true)}${textRow('mutOmschrijving', 'Mutatie-omschrijving')}
     <div class="title-group">Producten / Diensten</div>${lineList(lines)}`)}
-  </app-factuur-form></div></body></html>`;
+  </div></app-factuur-form></div></body></html>`;
 }
 
 export function subscriptionEditHtml(lines = LINES.slice(1)) {

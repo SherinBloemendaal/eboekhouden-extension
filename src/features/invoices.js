@@ -897,14 +897,26 @@
     }
   }
 
-  // Every native node moved out of `scope` (or all) goes home again.
+  // Every native node moved out of `scope` (or all) goes home again. A node
+  // that e-Boekhouden took away itself (an @if that closed) is forgotten,
+  // with its mark, so it never comes back as a copy that nothing drives.
   function restore(scope = null) {
     for (const [node, home] of [...homes]) {
-      if (scope && !scope.contains(node)) continue;
+      const inScope = !scope || scope.contains(node);
+      if (!inScope) {
+        if (!node.isConnected) {
+          homes.delete(node);
+          home.remove();
+        }
+        continue;
+      }
       homes.delete(node);
       node.removeAttribute(NATIVE);
-      if (home.isConnected) home.replaceWith(node);
-      else node.remove();
+      if (home.isConnected && node.isConnected) home.replaceWith(node);
+      else {
+        home.remove();
+        node.remove();
+      }
     }
   }
 
@@ -1219,11 +1231,21 @@
 
   // config: { screen, title(), back, fields: { slotName: [names] }, checks,
   //           layout(view) -> builds the sections, aside(view, data) }
+  //
+  // The new layout lives inside e-Boekhouden's own app-form, in front of its
+  // <form>, which goes under Meer velden. So every moved row is still inside
+  // app-form: e-Boekhouden finds a field it rejects there
+  // (document.querySelector('app-form .form-row .form-component #name')) and
+  // puts the focus on it, and a form it hides (custom-hidden) hides the
+  // layout too. The values live in e-Boekhouden's own form model, not in the
+  // DOM, so the place of a row changes nothing about what Opslaan sends.
   function editScreen(config) {
     const view = {
       config,
       root: null,
       host: null,
+      form: null,
+      formNode: null,
       slots: {},
       mounted: false,
       broken: false,
@@ -1309,11 +1331,20 @@
       view.linesSection.append(linesHead, linesHeader, view.linesBody, add, view.listSlot);
       main.insertBefore(view.linesSection, main.children[config.linesAt] ?? null);
 
-      // Everything else of the native form: "Meer velden".
-      view.more = el('details', 'ebs-b-more');
-      const summary = el('summary', '', config.moreLabel);
+      // Everything else of the native form: "Meer velden". Closed, its fields
+      // stay rendered (height 0), so a field in there that gets the focus,
+      // by Tab or because e-Boekhouden points at a field it rejected, opens
+      // it. A closed <details> would leave such a field unfocusable.
+      view.more = el('div', 'ebs-b-more');
+      const moreId = `ebs-b-more-${config.screen}`;
+      view.moreToggle = button('', 'ebs-b-more-toggle', () => setMore(!view.more.classList.contains('open')), { 'aria-expanded': 'false', 'aria-controls': moreId });
+      view.moreToggle.append(icon('chevron-right', { size: 14 }), el('span', '', config.moreLabel));
       view.moreSlot = own(el('div', 'ebs-b-more-slot'));
-      view.more.append(summary, view.moreSlot);
+      view.moreSlot.id = moreId;
+      view.moreSlot.setAttribute('role', 'region');
+      view.moreSlot.setAttribute('aria-label', 'Meer velden');
+      view.moreSlot.addEventListener('focusin', () => setMore(true));
+      view.more.append(view.moreToggle, view.moreSlot);
       (view.slots.more ?? main).append(view.more);
       // Native rows that have a control of ours (Bedragen) stay out of sight.
       view.slots.hidden = own(el('div', 'ebs-b-hidden-slot'));
@@ -1327,10 +1358,20 @@
       return root;
     }
 
+    function setMore(open) {
+      view.more.classList.toggle('open', open);
+      view.moreToggle.setAttribute('aria-expanded', String(open));
+    }
+
+    // The <form> of app-form itself (its template's root), never the one of
+    // the line window, which sits in the same app-form now.
+    function nativeForm(form) {
+      if (view.formNode?.isConnected && form.contains(view.formNode)) return view.formNode;
+      return form.querySelector(':scope > form');
+    }
+
     function save(node) {
-      const host = view.host;
-      const form = mainForm(host);
-      const submit = form?.querySelector('.form-footer button.form-submit, button.form-submit[type="submit"]');
+      const submit = view.formNode?.querySelector(':scope > .form-footer button.form-submit') ?? null;
       if (!submit || submit.disabled) {
         view.warning.textContent = 'De knop Opslaan van e-Boekhouden is er nu niet. Gebruik de klassieke weergave.';
         view.warning.classList.add('show');
@@ -1444,11 +1485,16 @@
         return;
       }
       view.back?.remove();
-      if (!view.root?.isConnected || view.host !== host) {
-        view.root?.remove();
+      // Another form (e-Boekhouden drew it again): the old layout goes, with
+      // every row it still holds back home, before a new one is built.
+      if (view.root && (!view.root.isConnected || view.form !== form || view.root.parentNode !== form)) view.unmount();
+      if (!view.root) {
         view.host = host;
+        view.form = form;
+        view.formNode = nativeForm(form);
+        if (!view.formNode) return;
         view.root = build(host);
-        host.prepend(view.root);
+        form.prepend(view.root);
         lineWindow.load();
       }
       view.mounted = true;
@@ -1470,7 +1516,8 @@
       }
       view.list = host.querySelector('app-factuurregel-list');
       if (view.list) place(view.listSlot, [view.list]);
-      place(view.moreSlot, [form]);
+      view.formNode = nativeForm(form) ?? view.formNode;
+      place(view.moreSlot, [view.formNode]);
       form.setAttribute('data-ebs-billing-form', '');
 
       view.title.textContent = config.title(host, form);
@@ -1486,12 +1533,11 @@
 
     view.unmount = ({ keepBack = false } = {}) => {
       if (view.root) {
-        // Native nodes go back where they came from: the form first, then
-        // the rows into it.
-        const form = view.root.querySelector('[data-ebs-billing-form]');
-        if (form) restore(form.parentNode);
+        // Native nodes go back where they came from: the <form> first, then
+        // the rows and the line list into it.
+        restore(view.moreSlot);
         restore(view.root);
-        form?.removeAttribute('data-ebs-billing-form');
+        view.form?.removeAttribute('data-ebs-billing-form');
         view.host?.removeAttribute('data-ebs-billing-edit');
         view.root.remove();
         // The line window looks like e-Boekhouden's own again.
@@ -1501,6 +1547,8 @@
         lineWindow.current = null;
       }
       view.root = null;
+      view.form = null;
+      view.formNode = null;
       view.mounted = false;
       if (!keepBack) {
         view.back?.remove();
@@ -1531,7 +1579,9 @@
     html.ebs-billing [data-ebs-billing-list] .middle-bottom-container:has(app-target-link) { display: none !important; }
     /* A success message of e-Boekhouden shows as our toast; errors stay where they are. */
     html.ebs-billing app-notification-bar .notification-bar:not(.error) { display: none !important; }
-    html.ebs-billing [data-ebs-billing-edit] > .middle-top-container:has(app-goback, app-goback-b) { display: none !important; }
+    /* The native Terug: straight under the host (abonnement) or in its wrapper (factuur). */
+    html.ebs-billing [data-ebs-billing-edit] > .middle-top-container:has(app-goback, app-goback-b),
+    html.ebs-billing [data-ebs-billing-edit] > div > .middle-top-container:has(app-goback, app-goback-b) { display: none !important; }
     .ebs-b-hidden-slot { display: none !important; }
     .ebs-b-filter-dialog app-form, .ebs-b-filter-dialog form { width: auto !important; }
     .ebs-b-dialog-text { margin: 0; font-size: 14px; line-height: 20px; color: #232c4f; }
@@ -1670,7 +1720,12 @@
     .ebs-b-toast-mark { display: flex; flex: none; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: #5d9e35; }
 
     /* Edit screens */
-    html.ebs-billing [data-ebs-billing-form] > form > :is(.form-header, .form-footer) { display: none !important; }
+    /* e-Boekhouden's app-form holds the layout: its own width and margin step aside. */
+    html.ebs-billing app-form[data-ebs-billing-form] { width: auto !important; min-width: 0 !important; max-width: none !important; margin: 0 !important; }
+    html.ebs-billing [data-ebs-billing-form] .ebs-b-more-slot > form > :is(.form-header, .form-footer) { display: none !important; }
+    /* Fields e-Boekhouden hides in its simple mode ("Meer opties") show in the layout. */
+    .ebs-b-edit :is(.ebs-b-slot, .ebs-b-slot-wrap, .ebs-b-check-slot) > .form-row.custom-hidden,
+    .ebs-b-edit .ebs-b-more-slot > form > .form-body > .form-row.custom-hidden { display: block !important; }
     .ebs-b-edit { box-sizing: border-box; margin: 24px 32px 16px; }
     .ebs-b-edit-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
     .ebs-b-back { display: flex; align-items: center; gap: 4px; font-size: 13px; color: #232c4f; text-decoration: underline; transition: color 150ms ease; }
@@ -1710,11 +1765,18 @@
     .ebs-b-edit .form-row:has(#termijn) app-number-input, .ebs-b-edit .form-row:has(#termijn) .form-control { width: 70px !important; }
     .ebs-b-due-note { font-size: 13px; color: #5d6584; }
     .ebs-b-more { grid-column: 1 / -1; padding-top: 12px; border-top: 1px solid #eef0f5; }
-    .ebs-b-more summary { font-size: 13px; font-weight: 500; color: #3a4677; cursor: pointer; transition: color 150ms ease; }
-    .ebs-b-more summary:hover { color: #232c4f; }
-    .ebs-b-more-slot { margin-top: 12px; }
-    .ebs-b-more-slot > app-form > form > .form-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .ebs-b-more-slot > app-form > form > .form-body > :not(.form-row) { grid-column: 1 / -1; }
+    .ebs-b-more-toggle { display: flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: 500 13px Ubuntu, system-ui, sans-serif; color: #3a4677; text-align: left; cursor: pointer; transition: color 150ms ease; }
+    .ebs-b-more-toggle:hover { color: #232c4f; }
+    .ebs-b-more-toggle:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    .ebs-b-more-toggle svg { flex: none; transition: transform 150ms ease; }
+    .ebs-b-more.open .ebs-b-more-toggle svg { transform: rotate(90deg); }
+    .ebs-b-more-slot { margin-top: 12px; transition: opacity 150ms ease, transform 150ms ease; }
+    /* Closed it keeps its fields rendered, so they can still take the focus. */
+    .ebs-b-more:not(.open) .ebs-b-more-slot { height: 0; margin-top: 0; overflow: hidden; opacity: 0; transform: translateY(-4px); }
+    .ebs-b-more-slot > form > .form-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .ebs-b-more-slot > form > .form-body > :not(.form-row) { grid-column: 1 / -1; }
+    /* Its headings (Verzendwijze, Producten / Diensten) name rows that moved out. */
+    .ebs-b-more-slot > form > .form-body > .title-group { display: none; }
 
     .ebs-b-line { display: grid; grid-template-columns: 70px minmax(0, 1fr) 110px 150px 110px 76px; gap: 10px; align-items: center; padding: 10px 20px; border-top: 1px solid #eef0f5; background: #fff; cursor: pointer; transition: background-color 150ms ease; }
     .ebs-b-line:not(.ebs-b-line-head):hover { background: #f3f6fd; }
@@ -1800,7 +1862,8 @@
       .ebs-b-card.loading .ebs-b-card-value, .ebs-b-card.loading .ebs-b-card-sub, .ebs-b-bar, .ebs-b-status.loading { animation: none; }
       .ebs-b-bar, .ebs-b-bar.show { transform: translate(-50%, 0); }
       .ebs-b-bar.show { transition: opacity 150ms ease-out, visibility 0s; }
-      .ebs-b-toast, .ebs-b-toast.show, .ebs-b-warning-summary, .ebs-b-modal-warning { transform: none; }
+      .ebs-b-toast, .ebs-b-toast.show, .ebs-b-warning-summary, .ebs-b-modal-warning, .ebs-b-more-slot { transform: none !important; }
+      .ebs-b-more-toggle svg { transition: none; }
       .ebs-b-message, .ebs-b-row.enter { animation: ebs-b-fade 150ms ease-out both; }
       app-form-overlay[data-ebs-line-window] .overlay-inner { animation: ebs-b-fade 150ms ease-out both; }
       .ebs-b-bar-button:active { transform: none; }

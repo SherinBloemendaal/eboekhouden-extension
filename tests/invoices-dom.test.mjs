@@ -401,9 +401,106 @@ test('the invoice form: e-Boekhouden\'s own rows in the new layout, and back in 
   await p.settle();
   assert.equal(document.querySelector('.ebs-b-edit'), null);
   assert.deepEqual(order(), ['relatieId-AutocompletePickerInput', 'nummer', 'inEx', 'datum', 'kenmerk', 'termijn', 'uitersteBetaaldatum', 'factuurtekst', 'factuursjabloonId', 'emailsjabloonId', 'factOm1', 'emailen', 'printen', 'incasso', 'directVerwerken', 'mutOmschrijving']);
-  assert.ok(document.querySelector('app-factuur-form > app-form'), 'the form is home');
+  assert.ok(document.querySelector('app-factuur-form > div > app-form > form > .form-body'), 'the form is home');
   assert.ok(document.querySelector('app-factuur-form app-form app-factuurregel-list'));
   assert.equal(document.querySelectorAll('[data-ebs-native]').length, 0);
+  p.close();
+});
+
+test('the moved rows stay inside e-Boekhouden\'s app-form: its focus on a rejected field works, also under Meer velden', async () => {
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0');
+  const { document } = p;
+  const view = document.querySelector('.ebs-b-edit');
+  const appForm = document.querySelector('app-form[data-ebs-billing-form]');
+  assert.equal(view.parentNode, appForm, 'the layout is inside app-form');
+  // e-Boekhouden's own form.focusOnField(name), word for word.
+  const focusOnField = (name) => {
+    const field = document.querySelector(`app-form .form-row .form-component #${name}`);
+    field?.focus();
+    return field;
+  };
+  assert.equal(focusOnField('nummer'), document.getElementById('nummer'));
+  assert.ok(focusOnField('nummer').closest('[aria-label="Gegevens"]'), 'the row in our layout');
+  assert.equal(document.activeElement, document.getElementById('nummer'));
+
+  // Meer velden is closed, its fields still take the focus; that opens it.
+  const more = view.querySelector('.ebs-b-more');
+  const toggle = more.querySelector('.ebs-b-more-toggle');
+  assert.equal(more.classList.contains('open'), false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(focusOnField('factOm1'), document.getElementById('factOm1'));
+  assert.equal(document.activeElement, document.getElementById('factOm1'));
+  assert.equal(more.classList.contains('open'), true, 'opened by the focus');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  toggle.click();
+  assert.equal(more.classList.contains('open'), false, 'the user closes it again');
+
+  // The values are e-Boekhouden's: a field under Meer velden is in the form that Opslaan submits.
+  const formNode = view.querySelector('.ebs-b-more-slot > form');
+  assert.ok(formNode.contains(document.getElementById('factOm1')));
+  assert.equal(document.querySelectorAll('.ebs-b-edit #nummer, .ebs-b-edit #factOm1, .ebs-b-edit #emailen').length, 3, 'nothing doubled');
+  p.close();
+});
+
+test('Opslaan clicks the form\'s own submit, never the one of an open line window', async () => {
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0');
+  const { document } = p;
+  const overlay = openLineWindow(document);
+  await p.settle();
+  let line = 0;
+  let main = 0;
+  overlay.querySelector('form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    line += 1;
+  });
+  document.querySelector('.ebs-b-more-slot > form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    main += 1;
+  });
+  document.querySelector('.ebs-b-save').click();
+  assert.deepEqual([main, line], [1, 0]);
+  p.close();
+});
+
+test('e-Boekhouden redrawing parts of the form: nothing doubles, nothing dead comes back', async () => {
+  const p = await editPage(invoiceEditHtml(), 'https://secure20.e-boekhouden.nl/facturen/factuur/toevoegen/0');
+  const { document } = p;
+  const host = document.querySelector('app-factuur-form');
+  // An @if closes on a row we moved (Angular removes the node where it is) ...
+  const kenmerk = document.getElementById('kenmerk').closest('.form-row');
+  kenmerk.remove();
+  // ... and opens again: a new row, where Angular puts it, in its form body.
+  const body = document.getElementById('factOm1').closest('.form-body');
+  body.insertAdjacentHTML('afterbegin', '<div class="form-row"><div class="form-component"><app-form-label><label>Uw kenmerk</label></app-form-label><app-text-input><div class="form-control"><input id="kenmerk" class="displayValue form-input" value="nieuw"></div></app-text-input></div></div>');
+  await p.settle();
+  assert.equal(document.querySelectorAll('#kenmerk').length, 1);
+  assert.ok(document.querySelector('[aria-label="Gegevens"] #kenmerk'), 'the new row in the layout');
+  assert.equal(document.getElementById('kenmerk').value, 'nieuw');
+
+  // Classic: every row home, the removed one does not come back.
+  [...document.querySelectorAll('.ebs-b-link')].find((node) => node.textContent === 'Klassieke weergave').click();
+  await p.settle();
+  assert.equal(document.querySelectorAll('#kenmerk').length, 1);
+  assert.equal(document.getElementById('kenmerk').value, 'nieuw');
+  assert.equal(kenmerk.isConnected, false);
+  const comments = [];
+  const walker = document.createTreeWalker(host, p.window.NodeFilter.SHOW_COMMENT);
+  while (walker.nextNode()) comments.push(walker.currentNode.data);
+  assert.deepEqual(comments.filter((data) => data === 'ebs-billing'), [], 'no marks left behind');
+
+  // Better design again, then e-Boekhouden draws its whole form anew.
+  document.querySelector('.ebs-b-native-toggle a').click();
+  await p.settle();
+  assert.ok(document.querySelector('.ebs-b-edit'));
+  const wrapper = host.querySelector(':scope > div');
+  wrapper.remove();
+  host.insertAdjacentHTML('beforeend', invoiceEditHtml().match(/<app-factuur-form>([\s\S]*)<\/app-factuur-form>/)[1]);
+  await p.settle(4);
+  assert.equal(document.querySelectorAll('.ebs-b-edit').length, 1, 'one layout, for the new form');
+  assert.equal(document.querySelector('.ebs-b-edit').parentNode, host.querySelector('app-form'));
+  assert.equal(document.querySelectorAll('#nummer').length, 1);
+  assert.ok(document.querySelector('[aria-label="Gegevens"] #nummer'));
+  assert.equal(p.fetches.length, 0, 'the form asks nothing');
   p.close();
 });
 
