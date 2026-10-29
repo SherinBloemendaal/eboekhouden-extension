@@ -327,3 +327,284 @@ test('a submit that e-Boekhouden cancels (empty field) leaves the button as it i
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(p.document.getElementById('submit1').disabled, false);
 });
+
+// ---------------------------------------------------------------------------
+// The username lock: a login for a known entry gets that entry's username,
+// read-only, and Inloggen refuses another one.
+// ---------------------------------------------------------------------------
+
+const known = [
+  { id: 'a', name: 'Voorbeeld B.V.', number: '1000001', username: 'demo@voorbeeld.nl' },
+  { id: 'b', name: 'Vitrion B.V.', number: '1000002', username: 'sherin@vitrion.example', expired: true },
+  { id: 'c', name: 'Oud Archief', number: '1000003', expired: true },
+];
+const WRONG = 'Dit is niet het account van Vitrion B.V. Kies het juiste account in 1Password, of klik op Ander account.';
+
+async function lockPage({ betterDesign = false, pendingLoginFor = 'b', list = known, password = '' } = {}) {
+  let pending = pendingLoginFor;
+  const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+    url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/',
+    store: { settings: { betterDesign }, slots: list, view: { ready: [] } },
+    answer: (message) => {
+      if (message.type === 'login:for') pending = message.slotId;
+      return message.type === 'login:context' ? { pendingLoginFor: pending, relogin: false, reloginFor: null } : {};
+    },
+  });
+  const field = p.document.getElementById('txtWachtwoord');
+  field.value = password;
+  p.passwordBefore = field.outerHTML;
+  p.load('shared.js', 'icons.js', 'login-page.js');
+  await p.settle();
+  return p;
+}
+
+const click = (p, element) => {
+  const event = new p.window.MouseEvent('click', { bubbles: true, cancelable: true });
+  element.dispatchEvent(event);
+  return event;
+};
+const submit = (p) => {
+  const event = new p.window.Event('submit', { bubbles: true, cancelable: true });
+  p.document.getElementById('frm').dispatchEvent(event);
+  return event;
+};
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+for (const betterDesign of [false, true]) {
+  test(`${betterDesign ? 'Better design' : 'classic'}: a login for a known entry fills in its username, read-only, with a lock and its name`, async () => {
+    const p = await lockPage({ betterDesign });
+    const user = p.document.getElementById('txtEmail');
+    assert.equal(user.value, 'sherin@vitrion.example');
+    assert.equal(user.readOnly, true, 'read-only');
+    assert.equal(user.disabled, false, 'not disabled: a disabled field is not sent');
+    const box = p.document.querySelector('.ebs-userlock');
+    assert.ok(box.classList.contains(betterDesign ? 'better' : 'classic'));
+    assert.equal(box.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion B.V.');
+    assert.ok(box.querySelector('.ebs-userlock-icon svg.lucide-lock'), 'a Lucide lock');
+    assert.equal(box.querySelector('.ebs-userlock-other').textContent, 'Ander account');
+    assert.equal(box.querySelector('.ebs-userlock-other').type, 'button', 'the link never sends the form');
+    // The message is laid out from the start (its room reserved), but not shown.
+    const message = box.querySelector('.ebs-userlock-msg');
+    assert.equal(message.textContent, WRONG);
+    assert.ok(!message.classList.contains('on'));
+    assert.equal(box.closest('tr').previousElementSibling, user.closest('tr.TRNORM'), 'right under the username');
+    assert.equal(p.document.getElementById('txtWachtwoord').outerHTML, p.passwordBefore, 'the password field is untouched');
+    if (betterDesign) assert.ok(p.document.querySelector('#ebs-better .ebs-userlock'), 'inside the Better design form');
+  });
+}
+
+test('an entry without a stored username fills in and locks nothing', async () => {
+  const p = await lockPage({ pendingLoginFor: 'c' });
+  const user = p.document.getElementById('txtEmail');
+  assert.equal(user.value, '');
+  assert.equal(user.readOnly, false);
+  assert.equal(p.document.querySelector('.ebs-userlock'), null);
+  const none = await lockPage({ pendingLoginFor: null });
+  assert.equal(none.document.getElementById('txtEmail').value, '');
+  assert.equal(none.document.querySelector('.ebs-userlock'), null);
+  user.value = 'wie@dan.ook';
+  assert.equal(submit(p).defaultPrevented, false, 'the form behaves as before');
+});
+
+for (const betterDesign of [false, true]) {
+  test(`${betterDesign ? 'Better design' : 'classic'}: Inloggen with another account is stopped, without the busy state, and the username comes back`, async () => {
+    const p = await lockPage({ betterDesign, password: 'geheim-van-iemand' });
+    const { document } = p;
+    const user = document.getElementById('txtEmail');
+    const button = document.getElementById('submit1');
+    // e-Boekhouden's own ValidateForm (OnSubmit) must not run for a stopped login.
+    let validated = 0;
+    document.getElementById('frm').addEventListener('submit', () => { validated += 1; });
+    const message = document.querySelector('.ebs-userlock-msg');
+
+    // 1Password (or a script) writes another account into the read-only field.
+    user.value = 'Iemand@Anders.nl';
+    user.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+    assert.ok(message.classList.contains('on'), 'the message shows early');
+
+    assert.equal(click(p, button).defaultPrevented, true, 'the Inloggen click is stopped');
+    assert.equal(user.value, 'sherin@vitrion.example', 'the entry\'s username is back');
+    assert.ok(message.classList.contains('on'));
+    // A write that fired no event is caught at the submit itself.
+    user.value = 'nog@iemand.nl';
+    assert.equal(submit(p).defaultPrevented, true, 'the submit is stopped');
+    assert.equal(user.value, 'sherin@vitrion.example');
+    // The restored value firing its own input event keeps the message.
+    user.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+    assert.ok(message.classList.contains('on'), 'still shown after the restore');
+    await wait(15);
+    assert.equal(validated, 0, 'e-Boekhouden\'s own handlers never saw it');
+    assert.equal(button.disabled, false, 'no busy state');
+    assert.equal(button.value, 'Inloggen');
+    assert.equal(button.getAttribute('aria-busy'), null);
+    assert.equal(p.sent.filter((sent) => sent.type === 'login:username').length, 0, 'no username sent for a stopped login');
+    assert.equal(document.getElementById('txtWachtwoord').outerHTML, p.passwordBefore, 'the password field is untouched');
+    assert.equal(document.getElementById('txtWachtwoord').value, 'geheim-van-iemand');
+    assert.ok(!JSON.stringify(p.sent).includes('geheim'), 'the password never leaves the page');
+  });
+}
+
+test('the entry\'s own account logs in as before, in any case and with spaces, and gets the busy state', async () => {
+  const p = await lockPage();
+  const user = p.document.getElementById('txtEmail');
+  const button = p.document.getElementById('submit1');
+  user.value = '  Sherin@Vitrion.Example ';
+  user.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  assert.ok(!p.document.querySelector('.ebs-userlock-msg').classList.contains('on'));
+  assert.equal(click(p, button).defaultPrevented, false);
+  assert.equal(submit(p).defaultPrevented, false);
+  assert.equal(button.disabled, false, 'still enabled while the browser builds the form data');
+  await wait(10);
+  assert.equal(button.disabled, true);
+  assert.equal(button.value, 'Bezig met inloggen…');
+  assert.equal(button.getAttribute('aria-busy'), 'true');
+  // The entry's own spelling is what is sent and matched: the service worker
+  // compares usernames exactly, so '  Sherin@Vitrion.Example ' would start
+  // the session on another entry.
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.deepEqual(JSON.parse(JSON.stringify(p.sent.filter((sent) => sent.type === 'login:username'))), [{ type: 'login:username', username: 'sherin@vitrion.example' }]);
+});
+
+test('Enter in the password field (the implicit click on Inloggen) with another account is stopped as well', async () => {
+  const p = await lockPage({ password: 'x' });
+  const user = p.document.getElementById('txtEmail');
+  user.value = 'iemand@anders.nl';
+  // Chrome turns Enter into a click on the form's default button.
+  assert.equal(click(p, p.document.getElementById('submit1')).defaultPrevented, true);
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.ok(p.document.querySelector('.ebs-userlock-msg').classList.contains('on'));
+  // Clicks elsewhere in the form are no login: nothing is stopped there.
+  user.value = 'iemand@anders.nl';
+  assert.equal(click(p, p.document.getElementById('txtWachtwoord')).defaultPrevented, false);
+});
+
+test('after Ander account, picking the entry again locks it again; an entry without a username clears the row', async () => {
+  const p = await lockPage({ list: known.map((slot) => ({ ...slot, expired: true })) });
+  const { document } = p;
+  const user = document.getElementById('txtEmail');
+  const chip = (name) => [...document.querySelectorAll('#ebs-sessions .chip')].find((button) => button.textContent.startsWith(name));
+  document.querySelector('.ebs-userlock-other').click();
+  assert.equal(user.readOnly, false);
+  chip('Vitrion B.V.').click();
+  await p.settle();
+  assert.equal(user.readOnly, true, 'locked again');
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion B.V.');
+  assert.equal(document.querySelector('.ebs-userlock-other').disabled, false);
+  document.querySelector('.ebs-userlock-other').click();
+  user.value = 'zelf@getypt.nl';
+  chip('Oud Archief').click();
+  await p.settle();
+  assert.equal(document.querySelector('.ebs-userlock'), null, 'no unlocked row left for an entry that locks nothing');
+  assert.equal(user.value, 'zelf@getypt.nl', 'what the user typed stays');
+});
+
+test('the lock follows a new stored username for the same entry', async () => {
+  const p = await lockPage();
+  const user = p.document.getElementById('txtEmail');
+  await p.window.chrome.storage.local.set({ slots: known.map((slot) => (slot.id === 'b' ? { ...slot, name: 'Vitrion Holding', username: 'nieuw@vitrion.example' } : slot)) });
+  await p.settle();
+  assert.equal(user.value, 'nieuw@vitrion.example');
+  assert.equal(p.document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion Holding');
+  user.value = 'sherin@vitrion.example';
+  assert.equal(submit(p).defaultPrevented, true, 'the old username is no longer the entry\'s');
+  assert.equal(user.value, 'nieuw@vitrion.example');
+});
+
+test('Ander account unlocks and empties the field, after which any account logs in', async () => {
+  const p = await lockPage({ betterDesign: true });
+  const { document } = p;
+  const user = document.getElementById('txtEmail');
+  const other = document.querySelector('.ebs-userlock-other');
+  user.value = 'iemand@anders.nl';
+  user.dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  other.click();
+  assert.equal(user.readOnly, false);
+  assert.equal(user.value, '');
+  assert.equal(document.activeElement, user);
+  assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Ander account: vul de gebruikersnaam zelf in.');
+  assert.ok(document.querySelector('.ebs-userlock-icon svg.lucide-user'));
+  assert.ok(!document.querySelector('.ebs-userlock-msg').classList.contains('on'), 'the message goes');
+  assert.equal(other.isConnected, true, 'the link stays in place (faded), nothing moves');
+  assert.equal(other.disabled, true);
+  // A redraw (a storage change) does not lock it again.
+  await p.window.chrome.storage.local.set({ view: { ready: [] } });
+  await p.settle();
+  assert.equal(user.readOnly, false);
+  assert.equal(user.value, '');
+  user.value = 'iemand@anders.nl';
+  assert.equal(submit(p).defaultPrevented, false, 'a deliberate switch logs in');
+  await wait(10);
+  assert.equal(document.getElementById('submit1').disabled, true);
+  assert.equal(document.getElementById('txtWachtwoord').outerHTML, p.passwordBefore);
+});
+
+test('picking another entry moves the lock to that entry\'s username, and the caret to the password', async () => {
+  const p = await lockPage({ pendingLoginFor: null, list: known.map((slot) => ({ ...slot, expired: true })) });
+  const { document } = p;
+  const user = document.getElementById('txtEmail');
+  assert.equal(user.readOnly, false);
+  const chip = (name) => [...document.querySelectorAll('#ebs-sessions .chip')].find((button) => button.textContent.startsWith(name));
+  chip('Voorbeeld B.V.').click();
+  await p.settle();
+  assert.equal(user.value, 'demo@voorbeeld.nl');
+  assert.equal(user.readOnly, true);
+  assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Voorbeeld B.V.');
+  assert.equal(document.activeElement, document.getElementById('txtWachtwoord'));
+  chip('Vitrion B.V.').click();
+  await p.settle();
+  assert.equal(user.value, 'sherin@vitrion.example');
+  assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion B.V.');
+  assert.equal(document.querySelectorAll('.ebs-userlock').length, 1, 'one lock row');
+  // An entry without a username frees the field again.
+  chip('Oud Archief').click();
+  await p.settle();
+  assert.equal(user.value, '');
+  assert.equal(user.readOnly, false);
+  assert.equal(document.querySelector('.ebs-userlock'), null);
+  assert.equal(document.getElementById('txtWachtwoord').outerHTML, p.passwordBefore);
+});
+
+test('the expired re-login dialog locks the username to the entry whose session expired', async () => {
+  for (const betterDesign of [false, true]) {
+    const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+      url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/',
+      store: { settings: { betterDesign }, slots: known, view: { ready: [] } },
+      answer: (message) => {
+        if (message.type === 'main:page') return { relogin: true };
+        // Another entry was picked on the login page earlier: the dialog is not for that one.
+        return message.type === 'login:context' ? { pendingLoginFor: 'a', relogin: true, reloginFor: 'b' } : {};
+      },
+    });
+    const before = p.document.getElementById('txtWachtwoord').outerHTML;
+    // jsdom gives the frame's window no name: content.js finds its role by it.
+    p.window.name = 'mainframe';
+    p.load('shared.js', 'icons.js', 'content.js', 'login-page.js');
+    await p.settle();
+    await wait(20);
+    const { document } = p;
+    assert.ok(document.documentElement.classList.contains('ebs-relogin'), `the dialog shows (betterDesign ${betterDesign})`);
+    assert.equal(document.getElementById('ebs-better'), null);
+    const user = document.getElementById('txtEmail');
+    assert.equal(user.value, 'sherin@vitrion.example', 'the expired entry\'s username');
+    assert.equal(user.readOnly, true);
+    assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion B.V.');
+    assert.ok(document.querySelector('.ebs-userlock').classList.contains('classic'));
+    assert.equal(document.activeElement, document.getElementById('txtWachtwoord'), 'on to the password');
+    user.value = 'demo@voorbeeld.nl';
+    assert.equal(submit(p).defaultPrevented, true, 'the other entry\'s account is stopped too');
+    assert.equal(user.value, 'sherin@vitrion.example');
+    assert.equal(document.getElementById('txtWachtwoord').outerHTML, before, 'the password field is untouched');
+    // Renamed in the popup while the dialog is open: the row follows.
+    await p.window.chrome.storage.local.set({ slots: known.map((slot) => (slot.id === 'b' ? { ...slot, name: 'Vitrion Holding' } : slot)) });
+    await p.settle();
+    assert.equal(document.querySelector('.ebs-userlock-text').textContent, 'Vastgezet voor Vitrion Holding');
+    assert.equal(user.readOnly, true);
+    // Removed: nothing to lock to any more.
+    await p.window.chrome.storage.local.set({ slots: known.filter((slot) => slot.id !== 'b') });
+    await p.settle();
+    assert.equal(document.querySelector('.ebs-userlock'), null);
+    assert.equal(user.readOnly, false);
+    assert.equal(user.value, '', 'the filled-in username goes with it');
+  }
+});

@@ -281,7 +281,7 @@ test('logging in for a logged-out entry from the popup opens the login page with
   await fake.dispatch({ type: 'switcher:switch', slotId: 'x' }, popup);
   assert.equal(fake.created.at(-1).url, `${ORIGIN}/bh/`, 'no e-Boekhouden tab open: one is opened');
   assert.equal(fake.storage.session.dump().pendingLoginFor, 'x');
-  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: 'x', relogin: false });
+  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: 'x', relogin: false, reloginFor: null });
 });
 
 test('the popup may only send its own actions', async () => {
@@ -349,6 +349,25 @@ test('the login page learns when the re-login dialog takes its form', async () =
   assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, true);
   await fake.dispatch({ type: 'relogin:cancel' }, main);
   assert.equal((await fake.dispatch({ type: 'login:context' }, main)).relogin, false);
+});
+
+test('the re-login dialog is for the entry whose session expired, not for another one picked earlier', async () => {
+  const studio = await loginAs('Studio Noord', [cookie('ASPSESSIONIDBBB', 'demo-b')]);
+  await fake.dispatch({ type: 'login:for', slotId: studio.id }, inner);
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a')]);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/boekhouden/overzicht', kind: 'app' }, main);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1login', kind: 'login' }, main);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  // A second report (the inner frame after the shell) keeps the same entry.
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  const context = await fake.dispatch({ type: 'login:context' }, inner);
+  assert.equal(context.relogin, true);
+  assert.equal(context.reloginFor, slot.id);
+  assert.equal((await slots()).find((entry) => entry.id === slot.id).expired, true);
+  // After the login the tab is no longer in a re-login.
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/welkom', kind: 'app' }, main);
+  assert.deepEqual(await fake.dispatch({ type: 'login:context' }, inner), { pendingLoginFor: null, relogin: false, reloginFor: null });
+  assert.equal(fake.storage.session.dump()['tab:7'].reloginFor, undefined);
 });
 
 test('only plain page views count as safe to reopen', () => {

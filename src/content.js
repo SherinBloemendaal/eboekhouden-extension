@@ -281,7 +281,11 @@
     form.append(foot);
     document.body.append(backdrop);
     document.documentElement.classList.add('ebs-relogin');
-    document.getElementById('txtEmail')?.focus();
+    // login-page.js may have locked the username to the expired entry
+    // already: then the password is next.
+    const user = document.getElementById('txtEmail');
+    if (user?.readOnly) form.querySelector('input[type="password"]')?.focus();
+    else user?.focus();
   }
 
   // -------------------------------------------------------------------------

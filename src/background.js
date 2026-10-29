@@ -33,7 +33,8 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 // session: cookies:<id>   [chrome.cookies.Cookie]           (the session itself)
 //          activeSlotId, loggedIn, pendingCheck
 //          pendingUsername, pendingLoginFor  (the login in progress)
-//          tab:<tabId>    { mainFrameId, returnUrl, relogin, innerUrl, innerFor, restoreInner }
+//          tab:<tabId>    { mainFrameId, returnUrl, relogin, reloginFor, innerUrl, innerFor, restoreInner }
+//                         reloginFor: the entry whose session expired in that tab
 //          requestBudget  { started: [ms], blockedUntil } of the request budget (bg/requests.js)
 // ---------------------------------------------------------------------------
 
@@ -471,6 +472,18 @@ async function setAvatar(slotId, dataUrl) {
 // is sent back to that page.
 // ---------------------------------------------------------------------------
 
+// The session that expired in this tab is the one that was active there:
+// the tab showed app pages (it has a return page), and a switch clears the
+// tab state. Kept from the first login report on, so the re-login dialog
+// knows which entry it is for (login-page.js locks the username to it).
+async function startRelogin(tab) {
+  if (!tab.relogin || tab.reloginFor === undefined) {
+    const { activeSlotId } = await getSessionState();
+    tab.reloginFor = activeSlotId;
+  }
+  tab.relogin = true;
+}
+
 async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   const tab = await getTab(tabId);
   tab.mainFrameId = frameId;
@@ -504,7 +517,7 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   }
 
   if (kind === 'login' || kind === 'expired') {
-    if (tab.returnUrl) tab.relogin = true;
+    if (tab.returnUrl) await startRelogin(tab);
     await setTab(tabId, tab);
     const shell = new URL(url).hostname === 'secure20.e-boekhouden.nl' && kind === 'login';
     if (!shell) await onLoginPage();
@@ -516,6 +529,7 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   if (tab.relogin && tab.returnUrl) {
     const target = tab.returnUrl;
     tab.relogin = false;
+    delete tab.reloginFor;
     tab.restoreInner = tab.innerFor === target ? tab.innerUrl : null;
     // Loading the page again would repeat whatever its URL does: only plain
     // page views are reopened; for anything else the user gets a link.
@@ -551,7 +565,7 @@ async function onInnerPage(tabId, { url, kind }) {
 
   if (kind === 'login' || kind === 'expired') {
     // The login form of secure20/v1login lives in this inner frame.
-    if (tab.returnUrl) tab.relogin = true;
+    if (tab.returnUrl) await startRelogin(tab);
     await setTab(tabId, tab);
     await onLoginPage();
     // The plain login form inside the /v1login shell (after a logout, an
@@ -711,11 +725,12 @@ router.on('login:for', async (message) => {
   return {};
 });
 // What the login page needs to know: the administration picked for this
-// login, and whether the re-login dialog takes the form in this tab.
+// login, whether the re-login dialog takes the form in this tab, and the
+// entry whose session expired there.
 router.on('login:context', async (message, sender) => {
   const { pendingLoginFor = null } = await chrome.storage.session.get('pendingLoginFor');
   const tab = sender.tab ? await getTab(sender.tab.id) : {};
-  return { pendingLoginFor, relogin: Boolean(tab.relogin) };
+  return { pendingLoginFor, relogin: Boolean(tab.relogin), reloginFor: tab.relogin ? tab.reloginFor ?? null : null };
 });
 router.on('header:identity', (message) => onHeaderIdentity(message));
 router.on('main:page', (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url));
