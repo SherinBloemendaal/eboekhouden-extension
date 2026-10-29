@@ -59,7 +59,8 @@
   function role() {
     const path = location.pathname.toLowerCase();
     // The import page inside the mutation dialog (import.js) is not part of the frameset flow.
-    if (location.hash.startsWith('#ebs-edit=')) return null;
+    // In a tab of its own ("Openen in nieuw tabblad") it is an ordinary shell page.
+    if (!isTop && location.hash.startsWith('#ebs-edit=')) return null;
     if (isTop && location.hostname === SECURE20) return 'shell';
     if (isTop) return ['/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
     if (parentIsTop && window.name === 'mainframe') return 'main';
@@ -254,7 +255,7 @@
   // task that renders the header, so it is there in the first frame.
   // -------------------------------------------------------------------------
 
-  const state = { slots: [], view: { activeSlotId: null, loggedIn: false, ready: [] }, avatars: {}, settings: EBS.settingsWithDefaults() };
+  const state = { loaded: false, slots: [], view: { activeSlotId: null, loggedIn: false, ready: [] }, avatars: {}, settings: EBS.settingsWithDefaults() };
   const renderers = new Set();
 
   async function loadState() {
@@ -266,6 +267,7 @@
     for (const [key, value] of Object.entries(all)) {
       if (key.startsWith('avatar:')) state.avatars[key.slice(7)] = value;
     }
+    state.loaded = true;
     for (const render of renderers) render();
   }
 
@@ -305,6 +307,9 @@
 
   let lastIdentity = '';
   function mountNav() {
+    // Wait for the stored settings, so a switched-off item never flashes up.
+    // They are read long before Angular renders the header.
+    if (!state.loaded) return;
     if (!state.settings.switcher) {
       nav.host?.remove();
       nav.host = null;
@@ -381,7 +386,8 @@
       this.button.title = 'Wissel van administratie';
       this.button.addEventListener('click', (event) => {
         event.stopPropagation();
-        menu.toggle(variant, this.host);
+        // detail is 0 for a click from the keyboard (Enter or Space).
+        menu.toggle(variant, this.host, event.detail === 0);
       });
       root.append(style, this.button);
       if (variant === 'new') root.append(el('span', 'divider'));
@@ -411,7 +417,7 @@
     confirm: null,
     avatarTarget: null,
 
-    toggle(variant, anchor) {
+    toggle(variant, anchor, fromKeyboard = false) {
       if (this.open) {
         this.close();
         return;
@@ -422,19 +428,63 @@
       this.host = el('div');
       this.host.id = 'ebs-menu';
       this.root = this.host.attachShadow({ mode: 'closed' });
+      const style = el('style');
+      style.textContent = MENU_CSS;
+      // One file input for the life of the menu: a redraw while the file
+      // dialog is open must not drop the picture the user is choosing.
+      this.fileInput = el('input');
+      this.fileInput.type = 'file';
+      this.fileInput.accept = 'image/*';
+      this.fileInput.hidden = true;
+      this.fileInput.addEventListener('change', async (event) => {
+        const file = event.target.files?.[0];
+        const slotId = this.avatarTarget;
+        if (!file || !slotId) return;
+        try {
+          await send({ type: 'avatar:set', slotId, dataUrl: await EBS.toAvatar(file) });
+        } catch (error) {
+          console.warn('EB Sessions: could not read the picture', error);
+        }
+      });
+      this.body = el('div');
+      this.root.append(style, this.fileInput, this.body);
       document.documentElement.append(this.host);
       this.onOutside = (event) => {
         if (!event.composedPath().some((node) => node === this.host || node === nav.host)) this.close();
       };
-      this.onKey = (event) => {
-        if (event.key === 'Escape') this.close();
-      };
+      this.onKey = (event) => this.key(event);
       this.onResize = () => this.place();
       document.addEventListener('mousedown', this.onOutside, true);
       document.addEventListener('keydown', this.onKey, true);
       window.addEventListener('resize', this.onResize);
       this.render();
       nav.render();
+      if (fromKeyboard) this.items()[0]?.focus();
+    },
+
+    // The menu items in order: the rows, then "toevoegen".
+    items() {
+      return this.root ? [...this.root.querySelectorAll('[role^="menuitem"]')] : [];
+    },
+
+    key(event) {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        this.close();
+        nav.button?.focus();
+        return;
+      }
+      const items = this.items();
+      const current = items.indexOf(this.root.activeElement);
+      if (event.key === 'Tab') {
+        this.close();
+        return;
+      }
+      if (current < 0 && this.root.activeElement) return; // a photo, bin or confirm button
+      const next = { ArrowDown: current + 1, ArrowUp: current - 1, Home: 0, End: items.length - 1 }[event.key];
+      if (next === undefined || !items.length) return;
+      event.preventDefault();
+      items[(next + items.length) % items.length].focus();
     },
 
     close() {
@@ -443,6 +493,7 @@
       window.removeEventListener('resize', this.onResize);
       this.host?.remove();
       this.host = null;
+      this.root = null;
       this.open = false;
       this.confirm = null;
       nav.render();
@@ -491,24 +542,8 @@
     render() {
       if (!this.open || !this.root) return;
       const variant = this.variant;
-      const root = this.root;
-      root.replaceChildren();
-      const style = el('style');
-      style.textContent = MENU_CSS;
-
-      this.fileInput = el('input');
-      this.fileInput.type = 'file';
-      this.fileInput.accept = 'image/*';
-      this.fileInput.hidden = true;
-      this.fileInput.addEventListener('change', async () => {
-        const file = this.fileInput.files?.[0];
-        if (!file || !this.avatarTarget) return;
-        try {
-          await send({ type: 'avatar:set', slotId: this.avatarTarget, dataUrl: await EBS.toAvatar(file) });
-        } catch (error) {
-          console.warn('EB Sessions: could not read the picture', error);
-        }
-      });
+      // Redraws come from storage changes; keep keyboard focus where it was.
+      const focused = this.root.activeElement?.dataset?.key ?? null;
 
       const card = el('div', `card ${variant}`);
       card.setAttribute('role', 'menu');
@@ -529,6 +564,7 @@
       const foot = el('div', 'foot');
       const add = el('button', 'add');
       add.type = 'button';
+      add.dataset.key = 'add';
       add.setAttribute('role', 'menuitem');
       if (variant === 'new') {
         add.append(icon(PLUS_ICON), el('span', '', 'Administratie toevoegen'));
@@ -543,7 +579,8 @@
       card.append(foot);
       card.append(el('div', 'note', 'Wachtwoorden blijven in 1Password. Sessies staan alleen in het geheugen van Chrome.'));
 
-      root.append(style, this.fileInput, card);
+      this.body.replaceChildren(card);
+      if (focused) this.root.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
       this.place();
     },
 
@@ -553,6 +590,7 @@
       const row = el('div', `row ${status}`);
       const pick = el('button', 'pick');
       pick.type = 'button';
+      pick.dataset.key = `pick:${slot.id}`;
       pick.setAttribute('role', 'menuitemradio');
       pick.setAttribute('aria-checked', String(status === 'active'));
       pick.addEventListener('click', () => this.choose(slot));
@@ -586,26 +624,29 @@
       const actions = el('span', 'actions');
       if (variant === 'new') {
         const hasPicture = Boolean(state.avatars[slot.id]);
-        actions.append(actionButton(CAMERA_ICON, hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot)));
-        if (hasPicture) actions.append(actionButton(IMAGE_OFF_ICON, 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id })));
+        actions.append(actionButton(CAMERA_ICON, hasPicture ? 'Profielfoto wijzigen' : 'Profielfoto kiezen', () => this.pickAvatar(slot), `photo:${slot.id}`));
+        if (hasPicture) actions.append(actionButton(IMAGE_OFF_ICON, 'Profielfoto verwijderen', () => send({ type: 'avatar:remove', slotId: slot.id }), `photo-off:${slot.id}`));
       }
-      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => send({ type: 'switcher:remove', slotId: slot.id })));
+      actions.append(actionButton(TRASH_ICON, 'Sessie verwijderen', () => send({ type: 'switcher:remove', slotId: slot.id }), `remove:${slot.id}`));
       row.append(actions);
       return row;
     },
 
     confirmBox() {
       const box = el('div', 'confirm');
+      box.setAttribute('role', 'alert');
       box.append(el('span', '', EBS.reloadWarning(this.confirm.tabCount)));
       const buttons = el('div', 'confirm-buttons');
       const no = el('button', 'no', 'Annuleren');
       no.type = 'button';
+      no.dataset.key = 'confirm-no';
       no.addEventListener('click', () => {
         this.confirm = null;
         this.render();
       });
       const ok = el('button', 'ok', 'Doorgaan');
       ok.type = 'button';
+      ok.dataset.key = 'confirm-ok';
       ok.addEventListener('click', () => {
         this.confirm.accepted = true;
         this.act(this.confirm.type, this.confirm.extra);
@@ -616,9 +657,10 @@
     },
   };
 
-  function actionButton(markup, label, onClick) {
+  function actionButton(markup, label, onClick, key) {
     const button = el('button', 'action');
     button.type = 'button';
+    button.dataset.key = key;
     button.title = label;
     button.setAttribute('aria-label', label);
     button.append(icon(markup));
@@ -672,6 +714,7 @@
     .confirm .no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
     .confirm .ok { border: 0; color: #fff; }
     .empty { margin: 4px 16px 12px; font-size: 12px; color: #5d6584; }
+    .pick:focus-visible, .add:focus-visible, .action:focus-visible, .confirm button:focus-visible { outline: 2px solid #232c4f; outline-offset: -2px; }
 
     /* New design */
     .new.card { width: 340px; border-radius: 10px; box-shadow: 0 16px 40px rgba(20, 26, 48, 0.22), 0 0 0 1px rgba(20, 26, 48, 0.06); color: #232c4f; }
