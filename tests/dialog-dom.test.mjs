@@ -57,6 +57,10 @@ test('a dialog is modal: labelled, the page behind inert, focus inside, Escape c
   assert.ok(dialog.isOpen);
   key(window, first, { key: 'Escape' });
   assert.equal(dialog.isOpen, false);
+  // The close button closes it too.
+  const again = window.EBS.dialog.open({ title: 'Map kiezen', content: content(document) });
+  document.querySelector('.ebs-dialog-close').click();
+  assert.equal(again.isOpen, false);
   assert.equal(document.querySelector('.ebs-dialog-backdrop'), null, 'without Better design it goes at once');
   assert.equal(document.getElementById('page').inert, false);
   assert.equal(document.getElementById('toast').inert, false);

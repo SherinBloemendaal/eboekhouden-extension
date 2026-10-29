@@ -8,13 +8,20 @@
 //   await EBS.bridge.call('ckeditor.setData', { name, html })   in a click handler only
 //   EBS.bridge.intercept('windowOpen', ({ url, target, features }) => ({ claim: true }))
 //   EBS.bridge.on('observed', ({ url, method, status, contentType, body }) => {})
+//   EBS.bridge.on('popupClose', ({ frame }) => {})
 //
-// Hooks: windowOpen, formTarget, ckeditor, observe (options: { urls: [regex
-// source, ...] }) and request (request.js only). intercept() takes one
-// handler per hook ('windowOpen', 'formSubmit'); it runs synchronously while
-// the page waits, so it must answer at once: return { claim: true } for
-// window.open, { retarget: 'ebs-<frame name>' } or { cancel: true } for a
-// form, and anything else to leave the page alone. Until a feature registers
+// Hooks: windowOpen, formTarget, popupFrame, ckeditor, observe (options:
+// { urls: [regex source, ...] }) and request (request.js only). intercept()
+// takes one handler per hook ('windowOpen', 'formSubmit'); it runs
+// synchronously while the page waits, so it must answer at once: return
+// { claim: true } for window.open (with frame: 'ebs-popup-<id>', an iframe
+// the handler just put in this document, the page gets that frame's window),
+// { retarget: 'ebs-<frame name>' } or { cancel: true } for a form, and
+// anything else to leave the page alone. An empty popup comes as url
+// 'about:blank'. popupFrame, in a frame named ebs-popup-<id>: the page there
+// gets window.opener (the parent) and its close() becomes a 'popupClose'
+// event with frame ''; an empty popup frame's close() comes to the opener's
+// side as 'popupClose' with its frame name. Until a feature registers
 // one, the answer is null and the page goes its own way. A handler is only
 // asked during a user gesture (navigator.userActivation.isActive): a page
 // script cannot make a feature open a dialog on its own. In the same way
@@ -38,9 +45,10 @@
   const MAX_MESSAGE = 8 * 1024 * 1024;
   const CALL_TIMEOUT_MS = 30_000;
   const APP_ORIGIN = /^https:\/\/secure\d*\.e-boekhouden\.nl$/;
-  const CAPABILITIES = new Set(['windowOpen', 'formTarget', 'ckeditor', 'observe', 'request']);
+  const CAPABILITIES = new Set(['windowOpen', 'formTarget', 'popupFrame', 'ckeditor', 'observe', 'request']);
   const HOOKS = new Set(['windowOpen', 'formSubmit']);
-  const EVENTS = new Set(['observed']);
+  const EVENTS = new Set(['observed', 'popupClose']);
+  const POPUP_FRAME = /^ebs-popup-[a-z0-9]{1,24}$/;
   // Public methods; request.* only through claimRequest().
   const PUBLIC_METHODS = new Set(['ckeditor.list', 'ckeditor.getData', 'ckeditor.getSelectionText', 'ckeditor.insertHtml', 'ckeditor.setData']);
   // Writing into the page is the user's choice: only during their click.
@@ -150,7 +158,7 @@
   function checkQuery(hook, data) {
     if (!data || typeof data !== 'object') return null;
     if (hook === 'windowOpen') {
-      const url = appUrl(data.url);
+      const url = data.url === 'about:blank' ? data.url : appUrl(data.url);
       const target = string(data.target, 200);
       const features = string(data.features, 500);
       return url && target !== null && features !== null ? { url, target, features } : null;
@@ -186,6 +194,11 @@
     };
   }
 
+  function checkPopupClose(data) {
+    const frame = data && typeof data === 'object' ? string(data.frame, 40) : null;
+    return frame === '' || (frame && POPUP_FRAME.test(frame)) ? { frame } : null;
+  }
+
   function onMessage(event) {
     const text = event.detail;
     if (typeof text !== 'string' || text.length > MAX_MESSAGE) return;
@@ -214,7 +227,8 @@
       return;
     }
     if (message.type === 'event' && EVENTS.has(message.name)) {
-      const data = message.name === 'observed' ? checkObserved(message.data) : null;
+      const check = { observed: checkObserved, popupClose: checkPopupClose }[message.name];
+      const data = check(message.data);
       if (!data) return;
       for (const listener of [...listeners.get(message.name)]) {
         try {

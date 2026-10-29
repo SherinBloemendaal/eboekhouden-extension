@@ -67,6 +67,9 @@
     // The import page inside the mutation dialog (import.js) is not part of the frameset flow.
     // In a tab of its own ("Openen in nieuw tabblad") it is an ordinary shell page.
     if (!isTop && location.hash.startsWith('#ebs-edit=')) return null;
+    // A pop-up shown as a dialog (features/popups.js) is not part of it
+    // either: its pages are not the page to return to after a re-login.
+    if (!isTop && /^ebs-popup-[a-z0-9]{1,24}$/.test(window.name)) return null;
     if (isTop && location.hostname === SECURE20) return 'shell';
     if (isTop) return ['/bh', '/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
     if (parentIsTop && window.name === 'mainframe') return 'main';

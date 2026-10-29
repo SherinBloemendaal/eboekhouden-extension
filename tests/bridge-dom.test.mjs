@@ -3,9 +3,14 @@
 // event traffic Chrome carries between the worlds.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { closeAll, page } from './dom.mjs';
 
 after(closeAll);
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const URL_V2 = 'https://secure20.e-boekhouden.nl/boekhouden/facturen';
 const HTML = '<!doctype html><html><head></head><body><form id="f" action="/print/factuur" target="_blank" name="frmPrint"></form><button id="b">Klik</button></body></html>';
@@ -118,10 +123,11 @@ test('window.open: unclaimed popups open as always, a claimed one returns null',
   assert.equal(p.window.open('/bh/factuur.asp?id=2', 'print', 'width=800'), null);
   assert.equal(p.window.open('/bh/relatie.asp'), 'page-window');
   assert.equal(p.window.open('https://www.example.com/'), 'page-window', 'other sites are never asked about');
-  assert.equal(p.window.open(''), 'page-window', 'an empty popup (to write into) is left alone');
+  assert.equal(p.window.open(''), 'page-window', 'an empty popup unclaimed: the page\'s own');
   assert.deepEqual(asked.map((popup) => [popup.url, popup.target, popup.features]), [
     ['https://secure20.e-boekhouden.nl/bh/factuur.asp?id=2', 'print', 'width=800'],
     ['https://secure20.e-boekhouden.nl/bh/relatie.asp', '', ''],
+    ['about:blank', '', ''],
   ]);
   stop();
   p.bridge.intercept('windowOpen', () => {
@@ -133,6 +139,94 @@ test('window.open: unclaimed popups open as always, a claimed one returns null',
   console.error = errors;
   p.bridge.disable('windowOpen');
   assert.equal(p.window.open, p.natives.open, 'off again: the page\'s own window.open');
+  p.close();
+});
+
+test('window.open: a claim with a popup frame gives the page that frame\'s window', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  p.gesture.active = true;
+  p.bridge.enable('windowOpen');
+  const closed = [];
+  p.bridge.on('popupClose', (event) => closed.push(event));
+  let frame = null;
+  p.bridge.intercept('windowOpen', (popup) => {
+    frame = p.document.createElement('iframe');
+    frame.name = 'ebs-popup-0a1b2c3d4e5f';
+    if (popup.url !== 'about:blank') frame.src = popup.url;
+    p.document.body.append(frame);
+    return { claim: true, frame: frame.name };
+  });
+  const win = p.window.open('/bh/factuur.asp?id=4', '', 'width=800,height=600');
+  assert.ok(win === frame.contentWindow, 'the frame\'s window, as a popup would give its own');
+  frame.remove();
+
+  // An empty one, to write into: its opener and close() are set from here.
+  const blank = p.window.open('', '', 'width=1200,height=1000');
+  assert.ok(blank === frame.contentWindow);
+  assert.ok(blank.opener === p.window, 'window.opener is the page');
+  blank.close();
+  await tick();
+  assert.deepEqual(closed.map(plain), [{ frame: 'ebs-popup-0a1b2c3d4e5f' }]);
+  frame.remove();
+  p.close();
+});
+
+test('window.open: a claim naming no popup frame of this page returns null', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  p.gesture.active = true;
+  p.bridge.enable('windowOpen');
+  let answer = { claim: true, frame: 'mainframe' };
+  p.bridge.intercept('windowOpen', () => answer);
+  assert.equal(p.window.open('/bh/factuur.asp', '', 'width=800'), null);
+  answer = { claim: true, frame: 'ebs-popup-ffffffffffff' };
+  assert.equal(p.window.open('/bh/factuur.asp', '', 'width=800'), null, 'not in this document');
+  assert.deepEqual(p.log.opened, []);
+  p.close();
+});
+
+test('popupFrame: in a frame named ebs-popup-*, opener is the parent and close() asks to close the dialog', async () => {
+  const p = pageWithNatives();
+  await p.bridge.ready();
+  const frame = p.document.createElement('iframe');
+  frame.name = 'ebs-popup-0a1b2c3d4e5f';
+  p.document.body.append(frame);
+  const win = frame.contentWindow;
+  // jsdom gives the frame's window no name of its own.
+  win.name = frame.name;
+  win.chrome = p.window.chrome;
+  const nativeClose = [];
+  win.close = () => nativeClose.push('native');
+  win.eval(readFileSync(join(root, 'src/main-world.js'), 'utf8'));
+  win.eval(readFileSync(join(root, 'src/shared.js'), 'utf8'));
+  win.eval(readFileSync(join(root, 'src/bridge.js'), 'utf8'));
+  assert.equal(await win.EBS.bridge.ready(), true);
+  const closed = [];
+  win.EBS.bridge.on('popupClose', (event) => closed.push(event));
+  assert.equal(win.opener ?? null, null, 'nothing until the feature turns it on');
+  win.EBS.bridge.enable('popupFrame');
+  assert.ok(win.opener === p.window, 'the page that opened it');
+  win.close();
+  await tick();
+  assert.deepEqual(closed.map(plain), [{ frame: '' }]);
+  assert.deepEqual(nativeClose, []);
+  win.EBS.bridge.disable('popupFrame');
+  win.close();
+  assert.deepEqual(nativeClose, ['native'], 'off: the window\'s own close()');
+
+  // Any other frame is left as it is.
+  const other = p.document.createElement('iframe');
+  other.name = 'hiddenframe';
+  p.document.body.append(other);
+  const otherWin = other.contentWindow;
+  otherWin.name = other.name;
+  otherWin.eval(readFileSync(join(root, 'src/main-world.js'), 'utf8'));
+  otherWin.eval(readFileSync(join(root, 'src/shared.js'), 'utf8'));
+  otherWin.eval(readFileSync(join(root, 'src/bridge.js'), 'utf8'));
+  await otherWin.EBS.bridge.ready();
+  otherWin.EBS.bridge.enable('popupFrame');
+  assert.equal(otherWin.opener ?? null, null);
   p.close();
 });
 
