@@ -46,6 +46,8 @@
   // How long the answer to a login may sit still before the extension opens
   // the app itself (see runLoginHost).
   const LOGIN_ANSWER_SETTLE_MS = 3000;
+  // After jwtredirect.asp has loaded in hiddenframe, the ASP session is set.
+  const JWT_SETTLE_MS = 500;
 
   const isTop = window === window.top;
   const parentIsTop = !isTop && window.parent === window.top;
@@ -131,8 +133,10 @@
       // top.jwtframe and fall back to navigating the top window when a frame
       // is missing (fGoto). Give them empty, invisible targets so a post-login
       // "tokensaved" message cannot send the top window to jwtredirect.asp.
+      const sinks = {};
       for (const name of ['hiddenframe', 'jwtframe']) {
         const sink = document.createElement('iframe');
+        sinks[name] = sink;
         sink.id = name;
         sink.name = name;
         sink.src = 'about:blank';
@@ -155,8 +159,13 @@
       // As in DacTecTools: after a login the iframe lands on a page that is
       // no longer a login page. Same-origin pages are checked here; a landing
       // on secure20 (cross-origin) is reported by content.js in that frame.
+      // A landing only counts once it has stayed put for the settle time:
+      // e-Boekhouden's own next step (jwtredirect.asp and the like) loads
+      // first and is never cut off.
       let lastInnerUrl = iframe.src;
+      let settleTimer = null;
       iframe.addEventListener('load', () => {
+        window.clearTimeout(settleTimer);
         let inner = '';
         try {
           inner = iframe.contentWindow?.location.href ?? '';
@@ -170,7 +179,29 @@
           location.replace('/bh/');
           return;
         }
-        if (!/inloggen\.asp|v1login|vergeten/i.test(inner)) send({ type: 'login:done', url: inner });
+        if (/inloggen\.asp|v1login|vergeten/i.test(inner)) return;
+        settleTimer = window.setTimeout(() => {
+          if (lastInnerUrl === inner) send({ type: 'login:done', url: inner });
+        }, LOGIN_ANSWER_SETTLE_MS);
+      });
+
+      // The clearest sign of a finished login: the new session's token was
+      // stored (e-Boekhouden posts "tokensaved" to the top window) and the
+      // /bh/ page's own handler then loaded jwtredirect.asp into hiddenframe.
+      let tokenSaved = false;
+      window.addEventListener('message', (event) => {
+        if (event.data?.action === 'tokensaved') tokenSaved = true;
+      });
+      sinks.hiddenframe.addEventListener('load', () => {
+        let url = '';
+        try {
+          url = sinks.hiddenframe.contentWindow?.location.href ?? '';
+        } catch {
+          return;
+        }
+        if (tokenSaved && /jwtredirect\.asp/i.test(url)) {
+          window.setTimeout(() => send({ type: 'login:done', url: lastInnerUrl }), JWT_SETTLE_MS);
+        }
       });
       return true;
     }
@@ -182,7 +213,7 @@
     // A secure20 login screen (cross-origin) is reported through the service
     // worker instead (login:swap).
     const watch = window.setInterval(() => {
-      if (swapped || document.getElementById(HOST_ID)) {
+      if (swapped || document.getElementById(HOST_ID) || !chrome.runtime?.id) {
         window.clearInterval(watch);
         return;
       }
@@ -245,7 +276,11 @@
         send({ type: 'login:done', url: location.href });
         return;
       }
-      if (document.getElementById('txtEmail')) return;
+      // Any field at all (a second factor, a forced password change, a
+      // notice with a button to confirm) means e-Boekhouden still wants
+      // something from the user: not done.
+      const fields = [...document.querySelectorAll('input:not([type="hidden"]), select, textarea, button')];
+      if (fields.some((field) => field.getClientRects().length > 0)) return;
       const settle = () => window.setTimeout(() => send({ type: 'login:done', url: location.href }), LOGIN_ANSWER_SETTLE_MS);
       if (document.readyState === 'complete') settle();
       else window.addEventListener('load', settle, { once: true });
