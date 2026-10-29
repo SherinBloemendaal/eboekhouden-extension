@@ -2186,11 +2186,19 @@
     // e-Boekhouden's own confirmation, shown in our dialog: Doorgaan and
     // Annuleren click its own buttons.
     async remove(row) {
-      row.actions.remove?.click();
+      // A second click while e-Boekhouden's question is on its way opens
+      // nothing more.
+      if (this.removing) return;
+      this.removing = true;
       let confirm = null;
-      for (let i = 0; i < 20 && !confirm; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        confirm = row.tr.querySelector('.inner-content');
+      try {
+        row.actions.remove?.click();
+        for (let i = 0; i < 20 && !confirm; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          confirm = row.tr.querySelector('.inner-content');
+        }
+      } finally {
+        this.removing = false;
       }
       const go = confirm?.querySelector('#confirm');
       const stop = confirm?.querySelector('#cancel');

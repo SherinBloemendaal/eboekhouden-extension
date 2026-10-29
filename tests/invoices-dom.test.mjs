@@ -151,12 +151,26 @@ test('the row buttons click e-Boekhouden\'s own links; Verwijderen asks with its
     tr.querySelector('#confirm').addEventListener('click', () => { confirmed += 1; });
   });
   buttons[4].click();
+  buttons[4].click();
   await p.settle();
+  assert.equal(document.querySelectorAll('.ebs-dialog-backdrop').length, 1, 'a double click asks once');
   const dialog = document.querySelector('.ebs-dialog-backdrop');
   assert.ok(dialog, 'a dialog');
   assert.match(dialog.textContent, /Let op: Als u doorgaat, dan wordt de factuur definitief verwijderd\./);
+  assert.equal(confirmed, 0, 'nothing confirmed before the user answers');
   [...dialog.querySelectorAll('button')].find((node) => node.textContent === 'Doorgaan').click();
   assert.equal(confirmed, 1, 'e-Boekhouden\'s own Doorgaan');
+
+  // Annuleren (or Escape) answers e-Boekhouden's question with its own Annuleren.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  let cancelled = 0;
+  trash.addEventListener('click', () => tr.querySelector('#cancel').addEventListener('click', () => { cancelled += 1; }));
+  buttons[4].click();
+  await p.settle();
+  const again = document.querySelector('.ebs-dialog-backdrop');
+  [...again.querySelectorAll('button')].find((node) => node.textContent === 'Annuleren').click();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual([confirmed, cancelled], [1, 1], 'cancelled, nothing deleted');
   p.close();
 });
 
