@@ -197,9 +197,26 @@ async function markExpired(slotId) {
   await chrome.storage.session.set({ loggedIn: false, pendingCheck: null });
 }
 
-// Titles of e-Boekhouden's own maintenance and error pages, never an
-// administration name.
-const NOT_A_NAME = /e-boekhouden|onderhoud|storing|niet beschikbaar|foutmelding|^fout\b|\berror\b|niet gevonden|\b(403|404|500|502|503)\b/i;
+// Titles of e-Boekhouden's own maintenance and error pages and of the web
+// server's error pages, never an administration name. Matched on the shape
+// of the whole title, not on a word in it: "Tuinonderhoud De Vries",
+// "Storingsdienst Noord B.V." and "Trial & Error B.V." are real names.
+const NOT_A_NAME = [
+  // e-Boekhouden's own pages carry the brand; an administration name does not.
+  /e-boekhouden/i,
+  // A generic word on its own, or followed by a separator: "Onderhoud",
+  // "Storing - we werken eraan", "Fout: ...".
+  /^(gepland\s+)?(onderhoud|storing|fout|foutmelding|error|melding)\s*([-|:.!]|$)/i,
+  // "500 - Internal server error.", "404 - File or directory not found."
+  /^\d{3}(\.\d+)?\s*[-:]/,
+  // Phrases of server error pages: "503 Service Unavailable", "Runtime Error".
+  /\b(internal server error|service unavailable|bad gateway|gateway time-?out|bad request|not found|access denied|page cannot be (displayed|found)|niet beschikbaar|niet gevonden)\b/i,
+  /^(runtime|server|application|http|iis\b.*)\s*error\b/i,
+];
+
+function isGenericTitle(name) {
+  return NOT_A_NAME.some((pattern) => pattern.test(name));
+}
 // A username typed for a login that never finished is not used after this.
 const USERNAME_TTL_MS = 10 * 60 * 1000;
 
@@ -222,7 +239,7 @@ async function onTopTitle(title) {
   // Matching, part one: the title only gives the name, plus the username typed
   // at login. The administration number follows from the header (part two,
   // onHeaderIdentity), which merges the entry with the same number if needed.
-  if (NOT_A_NAME.test(name)) return;
+  if (isGenericTitle(name)) return;
   const stored = await chrome.storage.session.get(['pendingUsername', 'pendingUsernameAt', 'pendingLoginFor']);
   const pendingUsername = Date.now() - (stored.pendingUsernameAt ?? 0) < USERNAME_TTL_MS ? stored.pendingUsername : null;
   const slots = await getSlots();
@@ -687,4 +704,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // For the tests.
-export { isReadOnlyPage };
+export { isReadOnlyPage, isGenericTitle };

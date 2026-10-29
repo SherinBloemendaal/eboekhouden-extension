@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createFakeChrome } from './fake-chrome.mjs';
 
 const fake = createFakeChrome();
-const { isReadOnlyPage } = await import('../src/background.js');
+const { isReadOnlyPage, isGenericTitle } = await import('../src/background.js');
 
 const ORIGIN = 'https://secure.e-boekhouden.nl';
 const APP = `${ORIGIN}/bh?v2Url=https%3A%2F%2Fsecure20.e-boekhouden.nl%2F`;
@@ -404,6 +404,15 @@ test('maintenance and error titles never become an entry', async () => {
     await fake.dispatch({ type: 'top:title', title }, top);
   }
   assert.deepEqual(await slots(), []);
+});
+
+test('error pages are told apart from names that contain the same words', () => {
+  for (const title of ['Onderhoud', 'Gepland onderhoud', 'Storing - we werken eraan', 'Fout: sessie', 'Runtime Error', 'Server Error in \'/\' Application.', '500 - Internal server error.', '404 - File or directory not found.', 'Service Unavailable', 'IIS 10.0 Detailed Error - 500.19']) {
+    assert.equal(isGenericTitle(title), true, title);
+  }
+  for (const name of ['Tuinonderhoud De Vries', 'Onderhoudsbedrijf Jansen', 'Storingsdienst Noord B.V.', 'Trial & Error B.V.', 'Bureau 500 B.V.', 'Foutloos Advies', 'Fout B.V.']) {
+    assert.equal(isGenericTitle(name), false, name);
+  }
 });
 
 test('a switch leaves the website and its analytics cookies alone', async () => {
