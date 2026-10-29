@@ -1152,13 +1152,13 @@
       const style = document.createElement('style');
       // Only the page content: the shell's header and menus are already around the dialog.
       // The page itself is projected inside app-site-navigation(-b) (#navBody), so hide the
-      // header and sidebar within it and drop its grid, the way e-Boekhouden's own print
-      // stylesheet does.
+      // header and sidebar within it and shrink their grid tracks to nothing. The grid has
+      // to stay: the page's layout fills #navBody with an absolutely positioned body, and
+      // without the grid #navBody has no height, which showed the dialog empty.
       style.textContent = `
         app-eb-header, app-header-identity, app-header-identity-b, app-notification-bar,
         :is(app-site-navigation, app-site-navigation-b) :is(#navHeader, #navSidebar, .sidebar-menu-overlay) { display: none !important; }
-        :is(app-site-navigation, app-site-navigation-b) .nav { display: block !important; width: auto !important; height: auto !important; overflow: visible !important; }
-        :is(app-site-navigation, app-site-navigation-b) #navBody { display: block !important; }
+        :is(app-site-navigation, app-site-navigation-b) .nav { grid-template-columns: 0 1fr !important; grid-template-rows: 0 1fr !important; }
       `;
       document.documentElement.append(style);
       // Esc in the page closes the dialog too, unless the page used it (a dropdown).

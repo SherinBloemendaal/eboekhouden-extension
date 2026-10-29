@@ -133,3 +133,32 @@ test('with many sessions the search filters the list and keeps its field', async
   assert.equal(p.document.querySelector('.ebs-search'), search, 'the same field, so the caret stays');
   assert.equal(p.document.activeElement, search);
 });
+
+test('the login swap waits for the whole frameset and keeps e-Boekhouden\'s other frames alive under their names', async () => {
+  const frameset = `<html><head><title>Inloggen | e-Boekhouden.nl</title></head><frameset rows="0,*">
+<frame name="topframe" id="topframe" src="top.asp?TST=55">
+<frameset cols="0,*,0">
+<frame name="menuframe" id="menuframe" src="menu.asp">
+<frame name="mainframe" id="mainframe" src="https://secure20.e-boekhouden.nl/v1login?EBM=&v2rnd=1">
+<frame name="hiddenframe" id="hiddenframe" src="leeg.html">
+<frame name="sessionframe" id="sessionframe" src="updatesessie.asp">
+<frame name="jwtframe" id="jwtframe" src="leeg.html">
+<frame name="jwtrefreshframe" id="jwtrefreshframe" src="refreshjwt.asp?ACTION=INIT&t=1">
+</frameset></frameset></html>`;
+  const p = page(frameset, { url: 'https://secure.e-boekhouden.nl/bh/', store: { settings: { onePassword: true } } });
+  p.load('shared.js', 'login-breakout.js');
+  await p.settle();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const body = p.document.getElementById('ebs-login-host');
+  assert.ok(body, 'the frameset is swapped for the login host');
+  assert.equal(p.document.querySelector('iframe#mainframe').getAttribute('src'), 'https://secure.e-boekhouden.nl/bh/inloggen.asp');
+  const kept = Object.fromEntries([...body.querySelectorAll('iframe:not(#mainframe)')].map((frame) => [frame.name, frame.getAttribute('src')]));
+  assert.deepEqual(kept, {
+    topframe: 'https://secure.e-boekhouden.nl/bh/top.asp?TST=55',
+    menuframe: 'https://secure.e-boekhouden.nl/bh/menu.asp',
+    hiddenframe: 'https://secure.e-boekhouden.nl/bh/leeg.html',
+    sessionframe: 'https://secure.e-boekhouden.nl/bh/updatesessie.asp',
+    jwtframe: 'https://secure.e-boekhouden.nl/bh/leeg.html',
+    jwtrefreshframe: 'https://secure.e-boekhouden.nl/bh/refreshjwt.asp?ACTION=INIT&t=1',
+  });
+});
