@@ -79,17 +79,6 @@
   // that one is not asked about again.
   let openingForReal = false;
 
-  // An older bridge would answer a claimed popup with null, which breaks
-  // page code like window.open(...).focus(): without the popup frames of the
-  // shared bridge change, this feature stays off.
-  // TODO-merge: drop this check once the shared bridge change is merged.
-  let supported = true;
-  try {
-    EBS.bridge.on('popupClose', onPopupClose);
-  } catch {
-    supported = false;
-  }
-
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -174,7 +163,7 @@
   }
 
   function onWindowOpen({ url, target, features }) {
-    if (!enabled || !supported || openingForReal) return null;
+    if (!enabled || openingForReal) return null;
     const name = target.trim();
     const lower = name.toLowerCase();
     if (lower === '_self' || lower === '_top' || lower === '_parent') return null;
@@ -204,7 +193,7 @@
   }
 
   function onFormSubmit({ action, target }) {
-    if (!enabled || !supported) return null;
+    if (!enabled) return null;
     const name = target.trim();
     if (!name || name.startsWith('_')) return null;
     const existing = byTarget.get(name);
@@ -388,9 +377,6 @@
       onClose: (reason) => finish(session, reason),
     });
     session.handle.body.classList.add('ebs-popup-body');
-    // TODO-merge: dialog.js does not wire its own close button yet (shared
-    // change requested); a second close() is a no-op once it does.
-    session.handle.panel.querySelector('.ebs-dialog-close')?.addEventListener('click', () => session.handle.close({ reason: 'close' }));
     underNavbar(session.handle.host);
 
     sessions.add(session);
@@ -682,7 +668,7 @@
   // Start.
   // -------------------------------------------------------------------------
 
-  if (!supported) return;
+  EBS.bridge.on('popupClose', onPopupClose);
   if (inPopupFrame) runPopupFrame();
 
   EBS.bridge.intercept('windowOpen', onWindowOpen);

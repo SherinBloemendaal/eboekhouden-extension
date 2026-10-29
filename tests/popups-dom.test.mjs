@@ -14,10 +14,6 @@ after(closeAll);
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const source = (file) => readFileSync(join(root, 'src', file), 'utf8');
-// The popup frames come with a shared change to the bridge; without it the
-// feature stays off (last test).
-const POPUP_FRAMES = source('bridge.js').includes("'popupFrame'");
-const needsFrames = POPUP_FRAMES ? false : 'needs the popup frames of the shared bridge change';
 const T = 15_000;
 
 const APP = 'https://secure20.e-boekhouden.nl';
@@ -86,7 +82,7 @@ function loaded(iframe) {
 const text = (node) => node?.textContent.replace(/\s+/g, ' ').trim();
 const noRequests = (p) => assert.deepEqual(p.sent.filter((message) => /^requests:/.test(message.type ?? '')), [], 'no requests to e-Boekhouden');
 
-test('a sized popup to an e-Boekhouden page opens in a dialog, and the page gets its window', { timeout: T, skip: needsFrames }, async () => {
+test('a sized popup to an e-Boekhouden page opens in a dialog, and the page gets its window', { timeout: T }, async () => {
   const p = await popupPage();
   p.gesture.active = true;
   const popup = p.window.open('/bh/herinnering.asp?ID=demo', '_blank', 'width=770,height=700,toolbar=no,scrollbars=yes');
@@ -116,7 +112,7 @@ test('a sized popup to an e-Boekhouden page opens in a dialog, and the page gets
   p.close();
 });
 
-test('which popups stay a real window', { timeout: T, skip: needsFrames }, async () => {
+test('which popups stay a real window', { timeout: T }, async () => {
   const p = await popupPage();
   const size = 'width=800,height=600';
   const real = (args, why) => {
@@ -148,7 +144,7 @@ test('which popups stay a real window', { timeout: T, skip: needsFrames }, async
   p.close();
 });
 
-test('with the switch off every popup is the page\'s own', { timeout: T, skip: needsFrames }, async () => {
+test('with the switch off every popup is the page\'s own', { timeout: T }, async () => {
   const p = await popupPage({ settings: { popupDialogs: false } });
   assert.equal(p.window.open, p.natives.open, 'window.open untouched');
   assert.equal(p.window.HTMLFormElement.prototype.submit, p.natives.submit, 'form submit untouched');
@@ -164,7 +160,7 @@ test('with the switch off every popup is the page\'s own', { timeout: T, skip: n
   p.close();
 });
 
-test('a print preview the page writes: Afdrukken prints the frame, close() closes the dialog', { timeout: T, skip: needsFrames }, async () => {
+test('a print preview the page writes: Afdrukken prints the frame, close() closes the dialog', { timeout: T }, async () => {
   const p = await popupPage();
   p.gesture.active = true;
   const popup = p.window.open('', '', 'height=1000, width=1200');
@@ -204,7 +200,7 @@ test('a print preview the page writes: Afdrukken prints the frame, close() close
   p.close();
 });
 
-test('inside the dialog: opener, title, messages to the page, Escape and close()', { timeout: T, skip: needsFrames }, async () => {
+test('inside the dialog: opener, title, messages to the page, Escape and close()', { timeout: T }, async () => {
   const popupHtml = '<!doctype html><html><head><title>Herinnering versturen</title></head><body><button id="save">Opslaan</button></body></html>';
   const p = await popupPage({ serve: { [`${APP}/bh/herinnering.asp?ID=demo`]: popupHtml, [`${APP}/bh/herinnering.asp?ID=2`]: popupHtml } });
   const fromPopup = [];
@@ -263,7 +259,7 @@ test('inside the dialog: opener, title, messages to the page, Escape and close()
   p.close();
 });
 
-test('window.close() in the page of the dialog closes it, with a toast', { timeout: T, skip: needsFrames }, async () => {
+test('window.close() in the page of the dialog closes it, with a toast', { timeout: T }, async () => {
   const p = await popupPage({ serve: { [`${APP}/bh/factuur_print.asp?ID=4`]: '<!doctype html><html><head><title>Factuur 2026-0412</title></head><body></body></html>' } });
   p.gesture.active = true;
   p.window.open('/bh/factuur_print.asp?ID=4', 'print', 'width=900,height=640');
@@ -287,7 +283,7 @@ test('window.close() in the page of the dialog closes it, with a toast', { timeo
   p.close();
 });
 
-test('a page that will not show in a frame: "Openen in een nieuw venster" opens it for real', { timeout: T, skip: needsFrames }, async () => {
+test('a page that will not show in a frame: "Openen in een nieuw venster" opens it for real', { timeout: T }, async () => {
   // Served, but without the extension in it: as Chrome's error page.
   const p = await popupPage({ serve: {} });
   p.gesture.active = true;
@@ -310,7 +306,7 @@ test('a page that will not show in a frame: "Openen in een nieuw venster" opens 
   p.close();
 });
 
-test('a page that does not load within 10 seconds offers the real window', { timeout: T, skip: needsFrames }, async () => {
+test('a page that does not load within 10 seconds offers the real window', { timeout: T }, async () => {
   // The 10 s timer, shortened: the page's clock stays real otherwise.
   const p = await popupPage({
     serve: {},
@@ -328,7 +324,7 @@ test('a page that does not load within 10 seconds offers the real window', { tim
   p.close();
 });
 
-test('a session that ended inside the dialog says so instead of showing the login', { timeout: T, skip: needsFrames }, async () => {
+test('a session that ended inside the dialog says so instead of showing the login', { timeout: T }, async () => {
   const p = await popupPage({ serve: { [`${CLASSIC}/bh/inloggen.asp`]: '<!doctype html><html><head><title>Inloggen</title></head><body></body></html>' } });
   p.gesture.active = true;
   p.window.open(`${CLASSIC}/bh/inloggen.asp`, '_blank', 'width=700,height=500');
@@ -343,7 +339,7 @@ test('a session that ended inside the dialog says so instead of showing the logi
   p.close();
 });
 
-test('a form posted to a named window goes into a dialog frame; frames of the page and _blank stay', { timeout: T, skip: needsFrames }, async () => {
+test('a form posted to a named window goes into a dialog frame; frames of the page and _blank stay', { timeout: T }, async () => {
   const p = await popupPage();
   const form = p.document.getElementById('f');
   p.gesture.active = true;
@@ -424,7 +420,7 @@ async function nestedPage(popupQuery) {
   return { ...p, inner, popup, seen };
 }
 
-test('a secure20 popup of a classic page: what it sends to top reaches its opener', { timeout: T, skip: needsFrames }, async () => {
+test('a secure20 popup of a classic page: what it sends to top reaches its opener', { timeout: T }, async () => {
   const p = await nestedPage('?POPUP=1');
   assert.ok(p.popup.opener === p.inner, 'the classic page is its opener');
   // hybridModeDetected: window !== top, so e-Boekhouden posts to top.
@@ -435,20 +431,11 @@ test('a secure20 popup of a classic page: what it sends to top reaches its opene
   p.close();
 });
 
-test('a popup that is not one of a classic page leaves top its messages (jwterror, settings)', { timeout: T, skip: needsFrames }, async () => {
+test('a popup that is not one of a classic page leaves top its messages (jwterror, settings)', { timeout: T }, async () => {
   const p = await nestedPage('');
   p.popup.top.postMessage({ action: 'jwterror', error: 'x' }, '*');
   await p.settle(1);
   assert.deepEqual(p.seen.top, [{ action: 'jwterror', error: 'x' }], 'as from any embedded page: the re-login sees it');
   assert.deepEqual(p.seen.inner.filter((data) => !data?.ebs), []);
-  p.close();
-});
-
-test('without the popup frames of the bridge the feature stays off', { timeout: T, skip: POPUP_FRAMES ? 'the bridge has popup frames' : false }, async () => {
-  const p = await popupPage();
-  p.gesture.active = true;
-  assert.equal(p.window.open, p.natives.open, 'window.open untouched');
-  assert.equal(p.window.open('/bh/herinnering.asp', '_blank', 'width=800,height=600'), 'real-window');
-  assert.equal(p.frame(), null);
   p.close();
 });
