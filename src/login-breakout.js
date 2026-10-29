@@ -79,8 +79,16 @@
     send({ type: 'login:host', active: false });
 
     let swapped = false;
+    // The "Inloggen met 1Password" switch in the popup. Until the setting has
+    // been read the swap waits; the parser is usually still in <head> then.
+    let enabled = null;
+    chrome.storage.local.get('settings').then(({ settings }) => {
+      enabled = EBS.settingsWithDefaults(settings).onePassword;
+      if (enabled && !entersApp) swap('parse');
+    });
 
     function swap(reason) {
+      if (enabled !== true) return enabled === false;
       if (swapped || document.getElementById(HOST_ID)) return true;
       const frameset = document.querySelector('frameset');
       const mainframe = document.querySelector('frame#mainframe, frame[name="mainframe"]');
@@ -131,6 +139,8 @@
       frameset.replaceWith(body);
       swapped = true;
       send({ type: 'login:host', active: true });
+      // login-page.js and content.js add the header and the switcher on this.
+      document.dispatchEvent(new CustomEvent('ebs-login-host'));
 
       // As in DacTecTools: after a login the iframe lands on a page that is
       // no longer a login page. Same-origin pages are checked here; a landing

@@ -58,6 +58,8 @@
 
   function role() {
     const path = location.pathname.toLowerCase();
+    // The import page inside the mutation dialog (import.js) is not part of the frameset flow.
+    if (location.hash.startsWith('#ebs-edit=')) return null;
     if (isTop && location.hostname === SECURE20) return 'shell';
     if (isTop) return ['/bh/', '/bh/index.asp', '/bh/default.asp'].includes(path) ? 'top' : null;
     if (parentIsTop && window.name === 'mainframe') return 'main';
@@ -83,9 +85,22 @@
     if ((myRole === 'main' && location.hostname === SECURE20) || myRole === 'shell') startSwitcher();
   }
 
+  async function reloginEnabled() {
+    const { settings } = await chrome.storage.local.get('settings');
+    return EBS.settingsWithDefaults(settings).relogin;
+  }
+
+  async function maybeReloginDialog() {
+    if (await reloginEnabled()) onReady(showReloginDialog);
+  }
+
   function runTop() {
     const report = () => send({ type: 'top:title', title: document.title });
     onReady(() => {
+      // The login frameset swapped for one iframe (login-breakout.js): the
+      // header that login-page.js adds there carries the switcher.
+      if (document.getElementById('ebs-login-host')) startSwitcher();
+      else document.addEventListener('ebs-login-host', startSwitcher, { once: true });
       report();
       const title = document.querySelector('title');
       if (title) new MutationObserver(report).observe(title, { childList: true, characterData: true, subtree: true });
@@ -105,7 +120,7 @@
         location.replace(response.navigate);
         return;
       }
-      if (kind === 'login' && response?.relogin) onReady(showReloginDialog);
+      if (kind === 'login' && response?.relogin) maybeReloginDialog();
     });
     const kind = classify(location.href);
     if (kind === 'login') loginFormKind(report);
@@ -132,7 +147,7 @@
           location.replace(response.navigate);
           return;
         }
-        if (pageKind === 'login' && response?.relogin) onReady(showReloginDialog);
+        if (pageKind === 'login' && response?.relogin) maybeReloginDialog();
       });
       // The classic login form loaded straight into mainframe: check it like the inner one.
       if (kind === 'login' && location.hostname !== SECURE20) loginFormKind(report);
@@ -239,13 +254,14 @@
   // task that renders the header, so it is there in the first frame.
   // -------------------------------------------------------------------------
 
-  const state = { slots: [], view: { activeSlotId: null, loggedIn: false, ready: [] }, avatars: {} };
+  const state = { slots: [], view: { activeSlotId: null, loggedIn: false, ready: [] }, avatars: {}, settings: EBS.settingsWithDefaults() };
   const renderers = new Set();
 
   async function loadState() {
     const all = await chrome.storage.local.get(null);
     state.slots = Array.isArray(all.slots) ? all.slots : [];
     state.view = all.view ?? { activeSlotId: null, loggedIn: false, ready: [] };
+    state.settings = EBS.settingsWithDefaults(all.settings);
     state.avatars = {};
     for (const [key, value] of Object.entries(all)) {
       if (key.startsWith('avatar:')) state.avatars[key.slice(7)] = value;
@@ -254,35 +270,13 @@
   }
 
   function statusOf(slot) {
-    if (slot.id === state.view.activeSlotId && state.view.loggedIn) return 'active';
-    if (slot.expired) return 'expired';
-    if (state.view.ready?.includes(slot.id)) return 'ready';
-    return 'login';
+    return EBS.statusOf(slot, state.view);
   }
 
   const STATUS_LABEL = {
     new: { active: 'Actief', ready: 'Klaar', expired: 'Verlopen', login: 'Inloggen' },
     legacy: { active: 'actief', ready: 'klaar', expired: 'verlopen', login: 'inloggen' },
   };
-
-  // Same initials as e-Boekhouden's own avatar (getAbbreviation in the shell).
-  function initials(name) {
-    try {
-      if (typeof name !== 'string' || !name) return 'EB';
-      let clean = name.replace(/[^0-9a-zA-Z ]+/g, '');
-      for (const form of ['BV', 'NV', 'CV', 'VOF']) clean = clean.replace(new RegExp(form, 'gi'), '');
-      clean = clean.trim();
-      if (!clean) return 'EB';
-      const capitals = [...clean].filter((char) => char >= 'A' && char <= 'Z');
-      let result = (capitals.length > 1 ? capitals[0] + capitals[1] : clean[0] + (capitals[0] || '')).toUpperCase();
-      if (!['SD', 'SS'].includes(result)) return result;
-      const words = clean.split(' ').map((word) => word[0]).filter(Boolean);
-      result = (words.length >= 2 ? words[0] + words[1] : clean.substring(0, 2)).toUpperCase();
-      return ['SD', 'SS'].includes(result) ? clean[0].toUpperCase() : result;
-    } catch {
-      return 'EB';
-    }
-  }
 
   function startSwitcher() {
     // The avatar picture replaces the initials circle of the new design. The
@@ -297,6 +291,7 @@
         : '';
       nav.render();
       menu.render();
+      mountNav();
     });
     loadState();
     chrome.storage.onChanged.addListener((changes, area) => {
@@ -310,8 +305,15 @@
 
   let lastIdentity = '';
   function mountNav() {
+    if (!state.settings.switcher) {
+      nav.host?.remove();
+      nav.host = null;
+      if (menu.open) menu.close();
+      return;
+    }
     const fresh = document.querySelector('app-header-identity-b .header-identity');
-    const legacy = !fresh && document.querySelector('app-header-identity .container');
+    // The login page header (login-page.js) takes the legacy item too.
+    const legacy = !fresh && (document.querySelector('app-header-identity .container') ?? document.getElementById('ebs-login-nav'));
     const container = fresh || legacy;
     if (!container) return;
     const variant = fresh ? 'new' : 'legacy';
@@ -320,7 +322,7 @@
       nav.create(variant);
       const anchor = fresh
         ? container.querySelector(':scope > .userInfo')
-        : container.querySelector(':scope > .identity') ?? container.querySelector(':scope > .logout');
+        : container.querySelector(':scope > .identity') ?? container.querySelector(':scope > .logout') ?? container.firstElementChild;
       container.insertBefore(nav.host, anchor);
     }
 
@@ -395,7 +397,7 @@
         this.button.append(icon(SWAP_ICON), el('span', 'label', 'Wissel'));
         if (state.slots.length) this.button.append(el('span', 'badge', String(state.slots.length)));
       } else {
-        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Sessies'), icon(CHEVRON_ICON));
+        this.button.append(icon(SWAP_ICON), el('span', 'label', 'Administraties'), icon(CHEVRON_ICON));
       }
     },
   };
@@ -502,7 +504,7 @@
         const file = this.fileInput.files?.[0];
         if (!file || !this.avatarTarget) return;
         try {
-          await send({ type: 'avatar:set', slotId: this.avatarTarget, dataUrl: await toAvatar(file) });
+          await send({ type: 'avatar:set', slotId: this.avatarTarget, dataUrl: await EBS.toAvatar(file) });
         } catch (error) {
           console.warn('EB Sessions: could not read the picture', error);
         }
@@ -513,7 +515,7 @@
       card.setAttribute('aria-label', 'Wissel van administratie');
 
       const head = el('div', 'head');
-      head.append(el('span', 'title', variant === 'new' ? 'Wissel van administratie' : 'Sessies'));
+      head.append(el('span', 'title', variant === 'new' ? 'Wissel van administratie' : 'Administraties'));
       if (variant === 'new') head.append(el('span', 'count', `${state.slots.length} ${state.slots.length === 1 ? 'sessie' : 'sessies'}`));
       card.append(head);
 
@@ -563,7 +565,7 @@
           image.alt = '';
           pick.append(image);
         } else {
-          pick.append(el('span', `avatar ${status}`, initials(slot.name)));
+          pick.append(el('span', `avatar ${status}`, EBS.initials(slot.name)));
         }
       } else {
         pick.append(el('span', `dot ${status}`));
@@ -625,20 +627,6 @@
       onClick();
     });
     return button;
-  }
-
-  // A square 128 px crop, compressed; the original file never leaves the page.
-  async function toAvatar(file) {
-    const bitmap = await createImageBitmap(file);
-    const size = 128;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const side = Math.min(bitmap.width, bitmap.height);
-    canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, size, size);
-    bitmap.close();
-    const webp = canvas.toDataURL('image/webp', 0.82);
-    return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', 0.85);
   }
 
   const NAV_CSS = `
