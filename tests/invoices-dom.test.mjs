@@ -364,6 +364,7 @@ test('the invoice form: e-Boekhouden\'s own rows in the new layout, and back in 
   const emailLabel = [...view.querySelectorAll('.ebs-b-check-label')].find((label) => /Per e-mail/.test(label.textContent));
   assert.equal(emailLabel.htmlFor, 'emailen');
   assert.ok(emailLabel.closest('.ebs-b-check-row').querySelector('#emailen'), 'e-Boekhouden\'s own checkbox in the card');
+  assert.equal(view.querySelector('.ebs-b-small-title').textContent, 'Versturen (twee aparte vinkjes, ook samen)');
 
   // Lines and totals, read from e-Boekhouden's list.
   const lines = [...view.querySelectorAll('.ebs-b-lines .ebs-b-line')];

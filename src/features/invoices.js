@@ -2396,7 +2396,7 @@
       onSave.append(el('span', 'ebs-b-section-title', 'Bij opslaan'));
       const checks = [
         { name: 'directVerwerken', options: { title: 'Direct verwerken in de boekhouding', sub: 'De factuur wordt meteen geboekt.' } },
-        { heading: 'Versturen' },
+        { heading: 'Versturen (twee aparte vinkjes, ook samen)' },
         { name: 'emailen', options: { title: 'Per e-mail versturen', iconName: 'mail', card: true } },
         { name: 'printen', options: { title: 'Per post versturen', iconName: 'printer', card: true } },
         { name: 'incasso', options: { title: 'Factuurbedrag incasseren' } },
