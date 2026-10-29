@@ -29,7 +29,8 @@
 //     is no polling helper.
 //   - abort(key), abortAll() and leaving the page cancel what is running.
 //
-// options: as ('json', the default, or 'text'), mode ('isolated', the
+// options: as ('json', the default, 'text', or 'blob' for a file such as a
+// preview; 'blob' only in isolated mode), mode ('isolated', the
 // default: the content script's own fetch with the page's cookies; or
 // 'main': the page's own fetch through the bridge, so whatever auth the page
 // adds to its fetch applies), ttl (ms, at most 60 s), signal (AbortSignal).
@@ -107,7 +108,8 @@
       throw new RequestError('method', 'EBS.request: GET only');
     }
     if (options.body !== undefined) throw new RequestError('method', 'EBS.request: GET only, no body');
-    if (options.as !== undefined && options.as !== 'json' && options.as !== 'text') throw new TypeError('EBS.request: as must be json or text');
+    if (options.as !== undefined && options.as !== 'json' && options.as !== 'text' && options.as !== 'blob') throw new TypeError('EBS.request: as must be json, text or blob');
+    if (options.as === 'blob' && options.mode === 'main') throw new TypeError('EBS.request: blob only in isolated mode');
     if (options.mode !== undefined && options.mode !== 'isolated' && options.mode !== 'main') throw new TypeError('EBS.request: mode must be isolated or main');
     const ttl = options.ttl === undefined ? TTL_MS : Number(options.ttl);
     if (!Number.isFinite(ttl) || ttl < 0) throw new TypeError('EBS.request: ttl must be a number of ms');
@@ -120,8 +122,10 @@
   }
 
   // Answers are parsed JSON or text, so a JSON copy is exact: each caller
-  // gets its own and cannot change what another one got.
+  // gets its own and cannot change what another one got. A Blob cannot be
+  // changed, so callers share it.
   function copy(value) {
+    if (typeof Blob === 'function' && value instanceof Blob) return value;
     return value !== null && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
   }
 
@@ -263,7 +267,7 @@
       ok: response.ok,
       redirected: response.redirected,
       retryAfter: response.headers.get('retry-after') ?? '',
-      text: await response.text(),
+      ...(job.as === 'blob' ? { blob: await response.blob() } : { text: await response.text() }),
     };
   }
 
@@ -342,7 +346,7 @@
           error = new RequestError('parse', 'EBS.request: the answer is not JSON', { status: response.status });
         }
       } else {
-        value = response.text;
+        value = job.as === 'blob' ? response.blob : response.text;
       }
       if (!error) {
         failures = 0;
