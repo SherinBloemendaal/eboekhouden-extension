@@ -8,12 +8,29 @@ after(closeAll);
 const URL_V2 = 'https://secure20.e-boekhouden.nl/boekhouden/archief';
 const HTML = '<!doctype html><html><head></head><body><main id="page"><button id="opener">Openen</button><input id="other"></main><div id="toast"></div></body></html>';
 
-async function dialogPage({ betterDesign = false, serve = null } = {}) {
+async function dialogPage({ betterDesign = false, serve = null, reduced = false, mark = true } = {}) {
   const p = page(HTML, { url: URL_V2, store: { settings: { betterDesign } }, serve });
-  p.load('shared.js', 'icons.js', 'dialog.js');
+  p.window.matchMedia = (query) => ({ matches: reduced && /prefers-reduced-motion: reduce/.test(query), addEventListener() {}, removeEventListener() {} });
+  // Every request the page makes, to show that a loading cover makes none.
+  p.fetched = [];
+  p.window.fetch = async (input) => {
+    p.fetched.push(String(input));
+    throw new Error('no network in this test');
+  };
+  p.load('shared.js', 'icons.js', ...(mark ? ['mark.js'] : []), 'dialog.js');
   await p.settle(1);
   return p;
 }
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A logo as the loader's parser hands it over (EBS.loader.markFromSvg).
+const LOGO_PARTS = {
+  disc: { d: 'M4 48A44 44 0 1 0 92 48A44 44 0 1 0 4 48Z', transform: 'matrix(1 0 0 1 0 0)', fill: '#30395f', fillRule: 'nonzero' },
+  crescent: { d: 'M0 48A44 44 0 1 0 88 48A44 44 0 1 0 0 48Z', transform: 'matrix(1 0 0 1 0 0)', fill: '#8ea0d0', fillRule: 'nonzero' },
+  e: [{ d: 'M28 44H70V52H28Z', transform: 'matrix(1 0 0 1 0 0)', fill: '#ffffff', fillRule: 'nonzero' }],
+  eBox: { x: 28, y: 30, w: 42, h: 40 },
+};
 
 function content(document) {
   const box = document.createElement('div');
@@ -206,5 +223,155 @@ test('a second dialog on top: only the top one is live, and closing it gives the
   assert.equal(document.getElementById('page').inert, true, 'the page stays inert under the first one');
   first.close();
   assert.equal(document.getElementById('page').inert, false);
+  p.close();
+});
+
+// ---------------------------------------------------------------------------
+// The loading cover: the loader's mark (EBS.mark), scaled to a dialog
+// ---------------------------------------------------------------------------
+
+test('a loading dialog shows the animated mark over its text, and no request for it', async () => {
+  const p = await dialogPage({ betterDesign: true });
+  const { document, window } = p;
+  const dialog = window.EBS.dialog.open({ title: 'Mutatie aanmaken', src: 'https://secure20.e-boekhouden.nl/boekhouden/importeren#ebs-edit=x', loading: 'Het mutatiescherm wordt geopend…', ready: 'manual' });
+  const cover = document.querySelector('.ebs-dialog-cover');
+  assert.equal(cover.hidden, false);
+  assert.equal(cover.textContent, 'Het mutatiescherm wordt geopend…', 'the mark adds no text');
+  const [slot, text] = cover.children;
+  assert.ok(slot.classList.contains('ebs-mark-slot'), 'the mark comes first');
+  assert.ok(text.classList.contains('ebs-dialog-cover-text'), 'the text under it');
+  assert.equal(slot.style.width, '120px');
+  assert.equal(slot.style.height, '120px', 'its room is kept, so the text never moves');
+  assert.equal(slot.getAttribute('aria-hidden'), 'true');
+  const mark = slot.querySelector('.ebs-mark');
+  assert.ok(mark.classList.contains('ebs-mark-light'), 'the light panel variant');
+  assert.ok(!mark.classList.contains('is-still') && !mark.classList.contains('is-settled'), 'with Better design: the whole entry');
+  // The board's drawn mark: crescent, disc, the e as crossbar and bowl.
+  assert.ok(mark.querySelector('circle.ebs-mark-cres'));
+  assert.ok(mark.querySelector('circle.ebs-mark-halo'));
+  assert.ok(mark.querySelector('rect.ebs-mark-sheen'));
+  assert.equal(mark.querySelector('.ebs-mark-white path.ebs-mark-bar').getAttribute('d'), 'M19 48H71', 'the crossbar sticks out left over the bowl');
+  assert.ok(mark.querySelector('.ebs-mark-white path.ebs-mark-bowl'));
+  // On white: the e first draws in navy, then the white one takes over.
+  assert.equal(mark.querySelector('.ebs-mark-ink path.ebs-mark-bar').getAttribute('stroke'), '#232c4f');
+  assert.equal(mark.querySelector('.ebs-mark-white path.ebs-mark-bar').getAttribute('stroke'), '#ffffff');
+  // Ids of its gradients are its own, so two dialogs never share them.
+  const fill = mark.querySelector('circle.ebs-mark-halo').getAttribute('fill');
+  assert.match(fill, /^url\(#ebs-mark-\d+-halo\)$/);
+  assert.ok(mark.querySelector(fill.slice(4, -1)));
+  const css = document.getElementById('ebs-mark-style').textContent;
+  assert.match(css, /\.ebs-mark \.ebs-mark-bar \{[^}]*animation: ebsMarkDraw 320ms/);
+  assert.match(css, /\.ebs-mark \.ebs-mark-badge \{[^}]*animation: ebsMarkBadgeIn 520ms linear 340ms/);
+  assert.match(css, /\.ebs-mark \.ebs-mark-cres \{[^}]*animation: ebsMarkCresOut 560ms linear 640ms/);
+  assert.match(css, /\.ebs-mark \{ animation: ebsMarkBreathe 2800ms ease-in-out 1250ms infinite/);
+  assert.match(css, /\.ebs-mark-light \.ebs-mark-white \{ animation: ebsMarkInkIn/);
+  // Motion uses transform, opacity and the stroke's dash only.
+  for (const [, body] of css.matchAll(/@keyframes \w+ \{([\s\S]*?\})\s*\}/g)) {
+    const props = [...body.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]).filter((name) => name !== 'animation-timing-function');
+    assert.deepEqual(props.filter((name) => !['transform', 'opacity', 'stroke-dashoffset'].includes(name)), [], body);
+  }
+  assert.deepEqual(p.fetched, [], 'no request for the logo');
+  assert.equal(p.sent.filter((sent) => sent.type === 'requests:slot').length, 0, 'not through the request layer either');
+  dialog.close({ immediate: true });
+  p.close();
+});
+
+test('the cover fades out when the page is ready, and the mark goes after it', async () => {
+  const p = await dialogPage({ betterDesign: true });
+  const { document, window } = p;
+  const dialog = window.EBS.dialog.open({ title: 'Map', content: content(document), loading: 'Map wordt geladen…' });
+  const cover = document.querySelector('.ebs-dialog-cover');
+  const first = cover.querySelector('.ebs-mark');
+  dialog.setReady();
+  assert.equal(cover.hidden, true);
+  assert.ok(first.isConnected, 'still there while the cover fades');
+  const css = document.getElementById('ebs-dialog-style').textContent;
+  assert.match(css, /\.ebs-dialog-cover\[hidden\] \{ display: flex !important; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 150ms ease-out, visibility 0s linear 150ms; \}/, 'a fade, never a jump');
+  await sleep(260);
+  assert.equal(first.isConnected, false, 'no loop keeps running behind the page');
+  // Loading again: a new mark, so its entry plays from the start.
+  dialog.setLoading('Opnieuw laden…');
+  const second = cover.querySelector('.ebs-mark');
+  assert.ok(second && second !== first);
+  assert.equal(cover.querySelectorAll('.ebs-mark').length, 1);
+  // A second setLoading while it loads keeps the mark that is drawing.
+  dialog.setLoading('Nog even…');
+  assert.equal(cover.querySelector('.ebs-mark'), second);
+  assert.equal(cover.textContent, 'Nog even…');
+  // An error shows its text alone.
+  dialog.setError('De map opende niet.');
+  assert.equal(cover.querySelector('.ebs-mark'), null);
+  assert.match(document.getElementById('ebs-dialog-style').textContent, /\.ebs-dialog-cover\.error \.ebs-dialog-cover-mark \{ display: none; \}/);
+  dialog.setLoading();
+  assert.ok(cover.querySelector('.ebs-mark'), 'back when it loads again');
+  dialog.close({ immediate: true });
+  p.close();
+});
+
+test('without Better design the mark stands still and complete', async () => {
+  const p = await dialogPage({ betterDesign: false });
+  const { document, window } = p;
+  window.EBS.dialog.open({ title: 'Map', content: content(document), loading: 'Map wordt geladen…' });
+  const mark = document.querySelector('.ebs-dialog-cover .ebs-mark');
+  assert.ok(mark.classList.contains('is-still'));
+  const css = document.getElementById('ebs-mark-style').textContent;
+  assert.match(css, /\.ebs-mark\.is-still \.ebs-mark-bar, \.ebs-mark\.is-still \.ebs-mark-bowl \{ animation: none; stroke-dashoffset: 0; \}/);
+  assert.match(css, /\.ebs-mark\.is-still \.ebs-mark-badge \{ animation: none; transform: none; \}/);
+  assert.match(css, /\.ebs-mark\.is-still \.ebs-mark-ink \{ animation: none; opacity: 0; \}/);
+  assert.match(css, /\.ebs-mark\.is-still \.ebs-mark-sheen \{ animation: none; opacity: 0; \}/);
+  p.close();
+});
+
+test('less motion: the mark is static and complete; only the cover fades', async () => {
+  const p = await dialogPage({ betterDesign: true, reduced: true });
+  const { document, window } = p;
+  // Also e-Boekhouden's own logo, when the loader read it on this page: no mask that draws its e.
+  assert.equal(window.EBS.mark.useLogo(LOGO_PARTS), true);
+  window.EBS.dialog.open({ title: 'Map', content: content(document), loading: 'Map wordt geladen…' });
+  const mark = document.querySelector('.ebs-dialog-cover .ebs-mark');
+  assert.equal(mark.querySelector('mask'), null);
+  assert.equal(mark.querySelector('[mask]'), null);
+  const css = document.getElementById('ebs-mark-style').textContent;
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.ebs-mark, \.ebs-mark \.ebs-mark-halo, \.ebs-mark \.ebs-mark-cres \{ animation: none; \}/, 'no breathing, glow or crescent');
+  assert.match(reduced, /\.ebs-mark \.ebs-mark-bar, \.ebs-mark \.ebs-mark-bowl \{ animation: none; stroke-dashoffset: 0; \}/, 'the e is drawn');
+  assert.match(reduced, /\.ebs-mark \.ebs-mark-badge \{ animation: none; transform: none; \}/, 'the disc is there');
+  assert.match(reduced, /\.ebs-mark \.ebs-mark-white \{ animation: none; opacity: 1; \}/, 'the e is white');
+  assert.match(reduced, /\.ebs-mark \.ebs-mark-ink \{ animation: none; opacity: 0; \}/);
+  assert.match(reduced, /\.ebs-mark \.ebs-mark-sheen \{ animation: none; opacity: 0; \}/, 'no gleam');
+  p.close();
+});
+
+test('the logo the loader read on this page is used, the drawn mark otherwise; never fetched for a dialog', async () => {
+  const p = await dialogPage({ betterDesign: true });
+  const { document, window } = p;
+  assert.equal(window.EBS.mark.logo(), null);
+  const drawn = window.EBS.dialog.open({ title: 'Een', content: content(document), loading: 'Laden…' });
+  assert.ok(drawn.body.querySelector('circle.ebs-mark-cres'), 'our drawn crescent');
+  drawn.close({ immediate: true });
+  assert.equal(window.EBS.mark.useLogo({ disc: LOGO_PARTS.disc }), false, 'parts that are not the mark are ignored');
+  assert.equal(window.EBS.mark.useLogo(LOGO_PARTS), true);
+  const own = window.EBS.dialog.open({ title: 'Twee', content: content(document), loading: 'Laden…' });
+  const mark = own.body.querySelector('.ebs-mark');
+  assert.equal(mark.querySelector('circle.ebs-mark-cres'), null);
+  assert.equal(mark.querySelector('g.ebs-mark-cres > path').getAttribute('d'), LOGO_PARTS.crescent.d);
+  assert.equal(mark.querySelector('.ebs-mark-white > path').getAttribute('fill'), '#ffffff');
+  assert.equal(mark.querySelector('.ebs-mark-ink > path').getAttribute('fill'), '#232c4f', 'the navy e first, on white');
+  const maskId = mark.querySelector('mask').id;
+  assert.equal(mark.querySelector('.ebs-mark-white').getAttribute('mask'), `url(#${maskId})`, 'the strokes uncover their e');
+  await sleep(800);
+  assert.equal(mark.querySelector('[mask]'), null, 'the mask goes once the e is drawn');
+  assert.deepEqual(p.fetched, []);
+  own.close({ immediate: true });
+  p.close();
+});
+
+test('without EBS.mark (a page that did not load it) the cover keeps its text', async () => {
+  const p = await dialogPage({ mark: false });
+  const { document, window } = p;
+  window.EBS.dialog.open({ title: 'Map', content: content(document), loading: 'Map wordt geladen…' });
+  const cover = document.querySelector('.ebs-dialog-cover');
+  assert.equal(cover.textContent, 'Map wordt geladen…');
+  assert.equal(cover.querySelector('.ebs-mark-slot'), null);
   p.close();
 });

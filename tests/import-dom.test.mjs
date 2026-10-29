@@ -30,7 +30,7 @@ const html = (rows = 6, { amounts = null, count = null, pages = false } = {}) =>
 
 // In manifest order: import.js uses the store, the icons, the shared dialog
 // and the request layer.
-const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'request.js', 'import.js'];
+const SCRIPTS = ['shared.js', 'store.js', 'icons.js', 'mark.js', 'dialog.js', 'request.js', 'import.js'];
 
 // The request budget of the service worker always has room here.
 const answer = (message) => (message.type === 'requests:slot' ? { ok: true, lease: `lease-${Math.random()}` } : {});
@@ -167,6 +167,8 @@ test('a line opens the mutation screen in the shared dialog, and Escape brings f
   assert.equal(document.querySelector('.ebs-dialog-title').textContent, 'Mutatie aanmaken');
   assert.match(document.querySelector('.ebs-dialog-frame').src, /\/boekhouden\/importeren#ebs-edit=/);
   assert.equal(document.querySelector('.ebs-dialog-cover').textContent, 'Het mutatiescherm wordt geopend…');
+  assert.ok(document.querySelector('.ebs-dialog-cover > .ebs-mark-slot + .ebs-dialog-cover-text'), 'the loader\'s mark over the text');
+  assert.ok(document.querySelector('.ebs-dialog-cover .ebs-mark.ebs-mark-light:not(.is-still)'), 'animated, with Better design');
   assert.equal(document.querySelector('.ebs-dialog-link').textContent, 'Openen in nieuw tabblad');
   assert.equal(document.getElementById('content').inert, true, 'the page behind is inert');
   assert.ok(document.querySelector('.ebs-dialog-backdrop').classList.contains('ebs-motion'), 'Better design moves');
