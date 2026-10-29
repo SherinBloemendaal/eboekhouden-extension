@@ -98,6 +98,8 @@
   };
   const KOPPEL_SELECTOR = Object.keys(KOPPEL_KIND).join(', ').toLowerCase();
   const OURS = '.ebs-ar, .ebs-ar-bar, .ebs-ar-native-toggle, #ebs-archive-style';
+  // Where a key is typing, not a shortcut of ours.
+  const TYPING = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 
   let settings = EBS.settingsWithDefaults();
   let settingsLoaded = false;
@@ -1127,7 +1129,7 @@
         if (!event.isTrusted || event.defaultPrevented) return;
         const plain = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
         const up = (event.key === 'Backspace' && plain) || (event.key === 'ArrowUp' && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey);
-        if (!up || event.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+        if (!up || event.target.closest?.(TYPING)) return;
         event.preventDefault();
         this.goUp();
       });
@@ -1597,7 +1599,11 @@
         if (this.focusKey) {
           const line = this.rowNodes.get(this.focusKey)?.firstElementChild;
           this.focusKey = null;
-          line?.focus({ preventScroll: true });
+          // Not when the user went on elsewhere meanwhile: typing in a field
+          // (ours or e-Boekhouden's), a Backspace there would then go up.
+          const active = document.activeElement;
+          const elsewhere = active && active !== document.body && (!this.root.contains(active) || active.closest(TYPING));
+          if (!elsewhere) line?.focus({ preventScroll: true });
           line?.scrollIntoView?.({ block: 'nearest' });
         }
       } else if (!ui.pending) {

@@ -747,3 +747,27 @@ test('files dropped on a folder row with files wait for its rows, then go to its
   assert.equal(p.$('.ebs-ar-head-message').textContent, '', 'no "ging niet open"');
   assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 1'], 'once, and not started');
 });
+
+test('after Terug the folder you came from is selected, but the focus stays in a field you went to meanwhile', async () => {
+  const p = await archivePage({ slow: 800 });
+  click(p, folderButton(p, 'Oktober'));
+  await wait(900);
+  await settleAll(p, 6);
+  const back = p.$('.ebs-ar-tools .ebs-ar-back');
+  back.focus();
+  trusted(p, back);
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar').dataset.state, 'loading');
+  // The user goes to the search field while the parent still loads.
+  const search = p.$('.ebs-ar-search input');
+  search.focus();
+  await wait(900);
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026');
+  assert.ok(rowNode(p, 'Oktober').querySelector('.ebs-ar-file').classList.contains('current'), 'Oktober is selected');
+  assert.equal(p.document.activeElement, search, 'the focus stays in the search field');
+  const typed = trusted(p, search, 'keydown', { key: 'Backspace' });
+  await settleAll(p, 6);
+  assert.equal(typed.defaultPrevented, false, 'Backspace deletes text there');
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026', 'and goes nowhere');
+});
