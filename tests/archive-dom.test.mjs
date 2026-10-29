@@ -14,7 +14,9 @@ const FOUNDATION = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'bridge.js
 // e-Boekhouden's own GETs; anything else that goes out is ours.
 const NATIVE = /\/folder\/(directory|\d+\/(header|filelist|koppel))(\?|$)/;
 
-async function archivePage({ slow = 0, data = demoData(), settings = { betterDesign: true }, store = {}, fakeRequest = false, nativeFirst = false, url = URL_ARCHIVE } = {}) {
+// previewTypes: { id: content type } for a preview answer; unreadable: folder
+// ids whose filelist answer the observe hook cannot read (not JSON or text).
+async function archivePage({ slow = 0, data = demoData(), settings = { betterDesign: true }, store = {}, fakeRequest = false, nativeFirst = false, url = URL_ARCHIVE, previewTypes = {}, unreadable = [] } = {}) {
   const p = page(shellHtml(), {
     url,
     store: { settings, ...store },
@@ -28,11 +30,18 @@ async function archivePage({ slow = 0, data = demoData(), settings = { betterDes
     const href = new URL(String(input?.url ?? input), window.location.href).href;
     calls.push(href);
     if (slow && /\/filelist/.test(href)) await new Promise((resolve) => setTimeout(resolve, slow));
-    const reply = answer(data, new URL(href).pathname);
-    if (reply.preview) return new Response(new Blob(['%PDF-1.7'], { type: reply.preview }), { status: 200, headers: { 'content-type': reply.preview } });
-    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } });
+    const path = new URL(href).pathname;
+    const reply = answer(data, path);
+    if (reply.preview) {
+      const type = previewTypes[/\/folder\/(\d+)\//.exec(path)[1]] ?? reply.preview;
+      return new Response(new Blob(['%PDF-1.7'], { type }), { status: 200, headers: { 'content-type': type } });
+    }
+    const hidden = unreadable.some((id) => path.endsWith(`/folder/${id}/filelist`));
+    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': hidden ? 'application/octet-stream' : 'application/json' } });
   };
   window.fetch = fetchAnswer;
+  const pageXhr = { open: window.XMLHttpRequest.prototype.open, send: window.XMLHttpRequest.prototype.send };
+  const blobs = { made: [], revoked: [] };
   const items = [];
   const boot = () => window.eval(`(${nativeScript})(${JSON.stringify(data)}, { transport: 'fetch' })`);
   p.load('main-world.js', 'shared.js');
@@ -48,8 +57,12 @@ async function archivePage({ slow = 0, data = demoData(), settings = { betterDes
       },
       abort() {},
     }));
-    window.URL.createObjectURL = (blob) => `blob:${URL_ARCHIVE}#${blob.size}`;
-    window.URL.revokeObjectURL = () => {};
+    window.URL.createObjectURL = (blob) => {
+      const href = `blob:${URL_ARCHIVE}#${blobs.made.length}`;
+      blobs.made.push({ href, type: blob.type });
+      return href;
+    };
+    window.URL.revokeObjectURL = (href) => blobs.revoked.push(href);
   }
   if (nativeFirst) {
     boot();
@@ -60,7 +73,7 @@ async function archivePage({ slow = 0, data = demoData(), settings = { betterDes
   if (!nativeFirst) boot();
   await settleAll(p);
   const ours = () => calls.filter((href) => !NATIVE.test(href));
-  return { ...p, calls, ours, items, data, $: (selector) => p.document.querySelector(selector), $$: (selector) => [...p.document.querySelectorAll(selector)] };
+  return { ...p, calls, ours, items, data, blobs, fetchAnswer, pageXhr, $: (selector) => p.document.querySelector(selector), $$: (selector) => [...p.document.querySelectorAll(selector)] };
 }
 
 async function settleAll(p, rounds = 4) {
@@ -410,4 +423,143 @@ test('motion: hovers fade, things that appear fade in, reduced motion only fades
       assert.match(part.trim(), /^(opacity|transform|background-color|color|border-color|visibility|none)\b/, `only cheap properties move: ${part}`);
     }
   }
+});
+
+test('leaving the archive switches the observation off and removes the view; coming back starts it again', async () => {
+  const p = await archivePage();
+  const { window } = p;
+  assert.notEqual(window.fetch, p.fetchAnswer, 'the page\'s fetch is observed on this screen');
+  assert.notEqual(window.XMLHttpRequest.prototype.open, p.pageXhr.open);
+  window.history.pushState({}, '', '/overig/bericht');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await settleAll(p);
+  assert.equal(window.fetch, p.fetchAnswer, 'fetch is the page\'s own again');
+  assert.equal(window.XMLHttpRequest.prototype.open, p.pageXhr.open, 'XMLHttpRequest is the page\'s own again');
+  assert.equal(window.XMLHttpRequest.prototype.send, p.pageXhr.send);
+  assert.equal(p.$('.ebs-ar, .ebs-ar-bar'), null);
+  assert.equal(p.document.documentElement.classList.contains('ebs-better-archive'), false);
+
+  window.history.pushState({}, '', '/overig/digitaal-archief');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await settleAll(p);
+  assert.notEqual(window.fetch, p.fetchAnswer);
+  assert.ok(p.$('.ebs-ar'));
+  assert.equal(p.$('.ebs-ar-folder .ebs-ar-badge').textContent, '4', 'the count of the new visit (from the 60 s cache)');
+  assert.equal(p.ours().length, 1);
+});
+
+test('a file list e-Boekhouden answered for another folder never gives a row its id', async () => {
+  // The inbox's own answer cannot be read; folder 12 also has a
+  // "Bonnetje tankstation.jpg" of the same date, with another id.
+  const p = await archivePage({ fakeRequest: true, unreadable: [11] });
+  click(p, p.$$('.ebs-ar-folder').find((node) => node.textContent.startsWith('Inbox')));
+  await settleAll(p, 6);
+  assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Scan 0043.pdf']);
+  click(p, rowNode(p, 'Bonnetje tankstation.jpg').querySelector('.ebs-ar-file'));
+  await settleAll(p);
+  assert.deepEqual(p.items, [], 'no preview of file 102 from the other folder');
+  assert.match(p.$('.ebs-ar-preview-stage').textContent, /Kies de map opnieuw/);
+});
+
+test('the preview shows only a PDF or a bitmap image, and frees each blob', async () => {
+  const p = await archivePage({ fakeRequest: true, previewTypes: { 101: 'text/html', 106: 'image/svg+xml', 103: 'application/pdf; charset=binary' } });
+  const open = async (name) => {
+    click(p, rowNode(p, name).querySelector('.ebs-ar-file'));
+    await settleAll(p);
+  };
+  await open('Factuur 2026-0412 Demo Leverancier.pdf');
+  assert.equal(p.$('.ebs-ar-preview-stage iframe, .ebs-ar-preview-stage img'), null, 'an HTML answer is not shown');
+  assert.equal(p.$('.ebs-ar-preview-stage [role="alert"] span').textContent, 'e-Boekhouden gaf geen voorbeeld van dit bestand terug.');
+  await open('Parkeren Utrecht.png');
+  assert.equal(p.$('.ebs-ar-preview-stage iframe, .ebs-ar-preview-stage img'), null, 'an SVG answer is not shown');
+  assert.equal(p.blobs.made.length, 0);
+
+  await open('Telefoonabonnement oktober.pdf');
+  const frame = p.$('.ebs-ar-preview-stage iframe');
+  assert.ok(frame);
+  assert.deepEqual(p.blobs.made.map((blob) => blob.type), ['application/pdf'], 'the blob carries exactly the checked type');
+  assert.equal(frame.src, p.blobs.made[0].href);
+  await open('Bonnetje tankstation.jpg');
+  assert.ok(p.$('.ebs-ar-preview-stage img'));
+  assert.deepEqual(p.blobs.revoked, [p.blobs.made[0].href], 'the PDF is freed once another file shows');
+  p.window.history.pushState({}, '', '/overig/bericht');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  await settleAll(p);
+  assert.deepEqual(p.blobs.revoked, p.blobs.made.map((blob) => blob.href), 'leaving the screen frees the last one');
+});
+
+test('names from the page are shown as text, never as markup', async () => {
+  const data = demoData();
+  const naam = '<img src=x onerror="window.__pwned=1">"<b>Bon</b>.pdf';
+  data.files[12].push({ id: 120, naam, soort: 'F', datum: '2026-10-10T10:00:00', size: 1000, koppelCount: 0, isDeleted: false });
+  const p = await archivePage({ data, fakeRequest: true });
+  const node = rowNode(p, naam);
+  assert.ok(node, 'the row shows the name as it is');
+  assert.equal(node.querySelector('.ebs-ar-name').title, naam);
+  click(p, node.querySelector('.ebs-ar-file'));
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-preview-name').textContent, naam);
+  assert.equal(p.$('.ebs-ar-preview-stage iframe').title, `Voorbeeld van ${naam}`);
+  assert.equal(p.$$('.ebs-ar b, .ebs-ar img').length, 0, 'no element made from the name');
+  assert.equal(p.window.__pwned, undefined);
+});
+
+test('files dropped on the list go to e-Boekhouden\'s own upload window, which is not started', async () => {
+  const p = await archivePage();
+  const { window } = p;
+  // jsdom has neither DataTransfer nor DragEvent: small stand-ins.
+  window.DataTransfer = class DataTransfer {
+    constructor() {
+      this.files = [];
+      this.types = ['Files'];
+      this.items = { add: (file) => this.files.push(file) };
+    }
+  };
+  window.DragEvent = class DragEvent extends window.Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+  };
+  const list = p.$('.ebs-ar-files');
+  const drag = (type, dataTransfer) => {
+    const event = new window.DragEvent(type, { bubbles: true, cancelable: true, dataTransfer });
+    list.dispatchEvent(event);
+    return event;
+  };
+  const text = { types: ['text/plain'], files: [] };
+  assert.equal(drag('dragover', text).defaultPrevented, false, 'dragging text is not ours');
+  assert.equal(drag('drop', text).defaultPrevented, false);
+  assert.equal(p.$('app-digitaal-archief-upload'), null);
+
+  const files = { types: ['Files'], files: [new window.File(['a'], 'a.pdf'), new window.File(['b'], 'b.jpg')] };
+  assert.equal(drag('dragover', files).defaultPrevented, true);
+  assert.ok(list.classList.contains('dragging'));
+  assert.equal(drag('drop', files).defaultPrevented, true);
+  await settleAll(p);
+  assert.equal(list.classList.contains('dragging'), false);
+  assert.ok(p.$('app-digitaal-archief-upload'), 'e-Boekhouden\'s own upload window');
+  assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 2']);
+  assert.ok(!nativeLog(p).includes('Start upload'), 'the upload itself is the user\'s own click');
+  assert.equal(p.ours().length, 1);
+});
+
+test('Downloaden for a selection double-clicks at most 20 rows, only after the click', async () => {
+  const p = await archivePage({ data: demoData({ many: 25 }) });
+  click(p, p.$$('.ebs-ar-folder').find((node) => node.textContent === 'Oktober'));
+  await settleAll(p, 6);
+  click(p, p.$('.ebs-ar-row-head .ebs-ar-check'));
+  await settleAll(p);
+  assert.equal(p.window.__archive.state.selected.size, 25);
+  assert.deepEqual(nativeLog(p), [], 'selecting downloads nothing');
+  const download = p.$$('.ebs-ar-bar-button').find((node) => node.textContent === 'Downloaden');
+  click(p, download);
+  await new Promise((resolve) => setTimeout(resolve, 20 * 250 + 400));
+  await settleAll(p);
+  const downloads = nativeLog(p).filter((line) => line.startsWith('download '));
+  assert.equal(downloads.length, 20);
+  assert.equal(new Set(downloads).size, 20, 'twenty different files');
+  assert.equal(p.$('.ebs-ar-bar-message').textContent, 'Downloaden gaat per keer voor ten hoogste 20 bestanden; de eerste 20 komen nu.');
+  assert.equal(download.getAttribute('aria-busy'), null, 'no longer busy once done');
+  assert.equal(p.ours().length, 1, 'the downloads are e-Boekhouden\'s own');
 });

@@ -308,6 +308,7 @@ export const nativeScript = String.raw`
     node.innerHTML = '<app-file-upload><app-file-upload-header><span>Bestanden uploaden</span><a class="close">x</a></app-file-upload-header><app-file-upload-list><div class="file-container"><div class="file-drop"></div><div class="file-list"></div></div></app-file-upload-list><div class="hr"></div><app-file-upload-actions><button class="upload">Start upload</button><div class="progress"><span>0%</span></div><span>0/3 bestanden geüpload</span></app-file-upload-actions></app-file-upload>';
     node.querySelector('.file-container').addEventListener('drop', (event) => { event.preventDefault(); log.push('dropped ' + event.dataTransfer.files.length); });
     node.querySelector('.close').addEventListener('click', () => { state.upload = false; node.remove(); });
+    node.querySelector('.upload').addEventListener('click', () => log.push('Start upload'));
     container.insertBefore(node, container.querySelector('app-digitaal-archief-folder-form'));
   }
 
