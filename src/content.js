@@ -536,6 +536,7 @@
         clearTimeout(this.leaving.timer);
         ({ host: this.host, root: this.root, body: this.body, fileInput: this.fileInput } = this.leaving);
         this.leaving = null;
+        this.host.inert = false;
         this.host.style.pointerEvents = '';
         this.listen();
         this.render();
@@ -633,8 +634,10 @@
       document.removeEventListener('keydown', this.onKey, true);
       window.removeEventListener('resize', this.onResize);
       if (this.host && this.variant === 'new') {
-        // Fade and slide out, then leave the page. Clicks go through meanwhile.
+        // Fade and slide out, then leave the page. Clicks go through meanwhile,
+        // and inert keeps Tab (and a focused row's actions) out of it.
         const leaving = { variant: this.variant, host: this.host, root: this.root, body: this.body, fileInput: this.fileInput };
+        leaving.host.inert = true;
         leaving.host.style.pointerEvents = 'none';
         leaving.body.classList.remove('shown');
         leaving.timer = setTimeout(() => {
@@ -663,8 +666,21 @@
       let bar = this.anchor;
       while (bar.parentElement && bar.getBoundingClientRect().height < 48) bar = bar.parentElement;
       const top = Math.max(rect.bottom, bar.getBoundingClientRect().bottom);
-      const right = Math.max(8, document.documentElement.clientWidth - rect.right);
+      const width = document.documentElement.clientWidth;
+      if (this.variant !== 'new') {
+        const right = Math.max(8, width - rect.right);
+        Object.assign(this.host.style, { position: 'fixed', top: `${top}px`, right: `${right}px`, zIndex: '2147483600' });
+        return;
+      }
+      // The new item is the Wissel button plus a divider: line up with the
+      // button. In a narrow window the menu keeps 8px from the left edge, and
+      // in a short one it scrolls (--ebs-menu-max-height in MENU_CSS).
+      // The card's own width: the host is not fixed yet on the first call.
+      const edge = nav.button?.isConnected ? nav.button.getBoundingClientRect() : rect;
+      const menuWidth = this.body.querySelector('.card')?.offsetWidth ?? 0;
+      const right = Math.min(Math.max(8, width - edge.right), Math.max(8, width - menuWidth - 8));
       Object.assign(this.host.style, { position: 'fixed', top: `${top}px`, right: `${right}px`, zIndex: '2147483600' });
+      this.host.style.setProperty('--ebs-menu-max-height', `${Math.max(160, document.documentElement.clientHeight - top - 8)}px`);
     },
 
     origin() {
@@ -955,7 +971,9 @@
       --radius: var(--ebs-native-radius, 12px);
       /* The native items' size and weight take more room than the old card:
          as wide as the names need, within bounds. */
-      width: max-content; min-width: 340px; max-width: min(440px, calc(100vw - 16px));
+      width: max-content; min-width: min(340px, calc(100vw - 16px)); max-width: min(440px, calc(100vw - 16px));
+      max-height: var(--ebs-menu-max-height, none); overflow-y: auto; overscroll-behavior: contain;
+      scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--fg) 40%, transparent) transparent;
       border-radius: 0 0 var(--radius) var(--radius);
       background: var(--bg); color: var(--fg);
       box-shadow: var(--ebs-native-shadow, 0 0 24px #0003, inset 0 24px 24px -10px #0003);
@@ -980,11 +998,13 @@
     .new .avatar.login { border-style: dashed; }
     .new .text { gap: 2px; }
     .new .name { line-height: 1.25; }
-    .new .number { font-size: 12px; font-weight: 400; color: color-mix(in srgb, var(--ink) 70%, transparent); }
+    /* 85% keeps 4.5:1 on both: 8.6:1 on navy, 5.4:1 on the light hover. */
+    .new .number { font-size: 12px; font-weight: 400; color: color-mix(in srgb, var(--ink) 85%, transparent); }
     .new .status { display: flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; line-height: 18px; white-space: nowrap; color: var(--ink); background: color-mix(in srgb, var(--ink) 14%, transparent); }
     .new .status.active { background: color-mix(in srgb, var(--ink) 22%, transparent); }
     .new .status.login { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 40%, transparent); }
-    .new .actions { padding-right: 8px; }
+    /* Room for all three actions on every row, so the status labels line up. */
+    .new .actions { min-width: 108px; justify-content: flex-end; padding-right: 8px; }
     .new .action { color: color-mix(in srgb, var(--ink) 75%, transparent); }
     .new .action:hover { background: color-mix(in srgb, var(--ink) 14%, transparent); color: var(--ink); }
     .new .foot { padding-bottom: 4px; }

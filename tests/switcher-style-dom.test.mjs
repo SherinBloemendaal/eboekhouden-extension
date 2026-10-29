@@ -124,6 +124,10 @@ test('the new menu CSS: native shape, ink that flips on the light hover, fades, 
   assert.match(rule('.new.sheet'), /opacity: 0; transform: translateY\(-4px\); transition: opacity 150ms ease, transform 150ms/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ \.new\.sheet \{ transform: none; \} \}/);
   assert.match(rule('.new .avatar, .new .status, .new .number, .new .add .icon'), /transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease/);
+  assert.match(rule('.new .number'), /color: color-mix\(in srgb, var\(--ink\) 85%, transparent\)/, '4.5:1 on navy and on the light hover');
+  assert.match(rule('.new .actions'), /min-width: 108px; justify-content: flex-end/, 'the status labels line up');
+  assert.match(rule('.new.card'), /min-width: min\(340px, calc\(100vw - 16px\)\)/, 'never wider than a narrow window');
+  assert.match(rule('.new.card'), /max-height: var\(--ebs-menu-max-height, none\); overflow-y: auto/, 'scrolls in a short window');
   assert.doesNotMatch(css, /display: none/, 'nothing toggles display');
   p.close();
 });
@@ -135,6 +139,7 @@ test('the new menu fades out before it leaves, and fades back in when opened aga
   await p.settle(1);
   assert.ok(host.isConnected, 'still there while it fades out');
   assert.equal(host.style.pointerEvents, 'none', 'clicks go through meanwhile');
+  assert.equal(host.inert, true, 'Tab and a focused row cannot reach it meanwhile');
   assert.equal(menu.querySelector('.sheet').classList.contains('shown'), false);
   assert.equal(button.getAttribute('aria-expanded'), 'false');
 
@@ -144,6 +149,7 @@ test('the new menu fades out before it leaves, and fades back in when opened aga
   assert.equal(p.document.getElementById('ebs-menu'), host);
   assert.ok(menu.querySelector('.sheet').classList.contains('shown'));
   assert.equal(host.style.pointerEvents, '');
+  assert.equal(host.inert, false);
   await wait(200);
   assert.ok(host.isConnected, 'the cancelled fade-out does not remove it');
 
@@ -158,6 +164,37 @@ test('the new menu hangs flush under the header, like the native one', async () 
   // jsdom has no layout: every rect is 0, so the top is the header bottom with no gap.
   assert.equal(host.style.top, '0px');
   assert.equal(host.style.position, 'fixed');
+  p.close();
+});
+
+test('the new menu lines up with the Wissel button, and stays inside a narrow or short window', async () => {
+  const { p, shadow, host, menu } = await open(NEW_HEADER);
+  const rect = (values) => () => ({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0, ...values });
+  const root = p.document.documentElement;
+  const size = (width, height) => {
+    Object.defineProperty(root, 'clientWidth', { configurable: true, value: width });
+    Object.defineProperty(root, 'clientHeight', { configurable: true, value: height });
+  };
+  // The item is the button plus a divider of 23px; the header is 72px high.
+  p.document.getElementById('ebs-nav').getBoundingClientRect = rect({ right: 923, bottom: 58, height: 44 });
+  shadow('ebs-nav').querySelector('button').getBoundingClientRect = rect({ right: 900, bottom: 58, height: 44 });
+  p.document.querySelector('.header-identity').getBoundingClientRect = rect({ bottom: 72, height: 72 });
+  Object.defineProperty(host, 'offsetWidth', { configurable: true, value: 1280 }); // not fixed yet: page wide
+  Object.defineProperty(menu.querySelector('.card'), 'offsetWidth', { configurable: true, value: 400 });
+
+  size(1280, 800);
+  p.window.dispatchEvent(new p.window.Event('resize'));
+  assert.equal(host.style.top, '72px', 'flush under the header');
+  assert.equal(host.style.right, '380px', 'right edge on the button, not on the divider');
+  assert.equal(host.style.getPropertyValue('--ebs-menu-max-height'), '720px');
+
+  // Narrow: the button's right edge at 300 of 420 would push a 400px menu
+  // off the left edge.
+  shadow('ebs-nav').querySelector('button').getBoundingClientRect = rect({ right: 300, bottom: 58, height: 44 });
+  size(420, 300);
+  p.window.dispatchEvent(new p.window.Event('resize'));
+  assert.equal(host.style.right, '12px', '8px from the left edge');
+  assert.equal(host.style.getPropertyValue('--ebs-menu-max-height'), '220px');
   p.close();
 });
 
