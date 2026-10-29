@@ -1,6 +1,13 @@
 // Service worker: owns the saved sessions, the cookie swap and the per-tab
 // re-login state. Cookie values never leave this context. Pages only see what
 // it mirrors into chrome.storage.local: names, numbers, statuses and pictures.
+//
+// Messages go through a small router: the handlers below, plus those each
+// feature module in src/bg/ registers for itself (see "Messages" at the end).
+
+import './shared.js';
+import { register as registerAi } from './bg/ai.js';
+import { register as registerRequests } from './bg/requests.js';
 
 const COOKIE_DOMAIN = 'e-boekhouden.nl';
 const EB_TAB_PATTERN = 'https://*.e-boekhouden.nl/*';
@@ -98,14 +105,8 @@ async function publishView() {
   await chrome.storage.local.set({ view: { activeSlotId, loggedIn, ready } });
 }
 
-const SETTINGS_DEFAULTS = {
-  betterDesign: false,
-  onePassword: true,
-  switcher: true,
-  relogin: true,
-  shiftSelect: true,
-  actionBar: true,
-};
+// The same defaults the pages use (shared.js).
+const { SETTINGS_DEFAULTS } = globalThis.EBS;
 
 async function ensureSettings() {
   const { settings = {} } = await chrome.storage.local.get('settings');
@@ -656,48 +657,79 @@ async function onLoginDone(tabId, topUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// Messages from content scripts
+// Messages
+//
+// router.on(type, handler, options) registers one message type, once:
+//   serialized    true (default): the handler runs inside the mutex above, one
+//                 at a time with every other serialized handler. false: it
+//                 runs at once, beside them, for long work such as an AI call;
+//                 it then must not read-then-write session state, or must wrap
+//                 that step in router.serialized(task).
+//   fromTab       true (default): content scripts may send it.
+//   fromExtension false (default): the extension's own pages (the popup, an
+//                 offscreen document) may send it too.
+// The handler gets (message, sender) and returns (a promise of) the answer.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_ORIGIN = 'https://secure.e-boekhouden.nl';
 
-// Messages that the extension popup may send too (it has no sender.tab).
-const POPUP_TYPES = new Set(['switcher:switch', 'switcher:add', 'switcher:remove', 'avatar:set', 'avatar:remove']);
+const routes = new Map();
 
-const handlers = {
-  'top:title': (message) => onTopTitle(message.title),
-  'login:username': (message) => onLoginUsername(message.username),
-  'login:for': async (message) => {
-    const slots = await getSlots();
-    const slotId = slots.some((slot) => slot.id === message.slotId) ? message.slotId : null;
-    await chrome.storage.session.set({ pendingLoginFor: slotId });
-    return {};
+const router = Object.freeze({
+  on(type, handler, { serialized: inMutex = true, fromTab = true, fromExtension = false } = {}) {
+    if (typeof type !== 'string' || !type) throw new TypeError('router.on needs a message type');
+    if (typeof handler !== 'function') throw new TypeError(`router.on(${type}) needs a handler`);
+    if (routes.has(type)) throw new Error(`message type ${type} is already registered`);
+    routes.set(type, { handler, serialized: Boolean(inMutex), fromTab: Boolean(fromTab), fromExtension: Boolean(fromExtension) });
   },
-  // What the login page needs to know: the administration picked for this
-  // login, and whether the re-login dialog takes the form in this tab.
-  'login:context': async (message, sender) => {
-    const { pendingLoginFor = null } = await chrome.storage.session.get('pendingLoginFor');
-    const tab = sender.tab ? await getTab(sender.tab.id) : {};
-    return { pendingLoginFor, relogin: Boolean(tab.relogin) };
-  },
-  'header:identity': (message) => onHeaderIdentity(message),
-  'main:page': (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url),
-  'login:host': (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}),
-  'login:done': (message, sender) => onLoginDone(sender.tab.id, sender.tab.url),
-  'inner:page': (message, sender) => onInnerPage(sender.tab.id, message),
-  'relogin:cancel': (message, sender) => cancelRelogin(sender.tab.id),
-  'switcher:switch': (message, sender) => switchTo(message.slotId, message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab),
-  'switcher:add': (message, sender) => addSession(message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab),
-  'switcher:remove': (message) => removeSlot(message.slotId),
-  'avatar:set': (message) => setAvatar(message.slotId, message.dataUrl),
-  'avatar:remove': (message) => chrome.storage.local.remove(`avatar:${message.slotId}`),
-};
+  serialized,
+});
+
+// The popup may send these too (it has no sender.tab).
+const FROM_POPUP = { fromExtension: true };
+
+router.on('top:title', (message) => onTopTitle(message.title));
+router.on('login:username', (message) => onLoginUsername(message.username));
+router.on('login:for', async (message) => {
+  const slots = await getSlots();
+  const slotId = slots.some((slot) => slot.id === message.slotId) ? message.slotId : null;
+  await chrome.storage.session.set({ pendingLoginFor: slotId });
+  return {};
+});
+// What the login page needs to know: the administration picked for this
+// login, and whether the re-login dialog takes the form in this tab.
+router.on('login:context', async (message, sender) => {
+  const { pendingLoginFor = null } = await chrome.storage.session.get('pendingLoginFor');
+  const tab = sender.tab ? await getTab(sender.tab.id) : {};
+  return { pendingLoginFor, relogin: Boolean(tab.relogin) };
+});
+router.on('header:identity', (message) => onHeaderIdentity(message));
+router.on('main:page', (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url));
+router.on('login:host', (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}));
+router.on('login:done', (message, sender) => onLoginDone(sender.tab.id, sender.tab.url));
+router.on('inner:page', (message, sender) => onInnerPage(sender.tab.id, message));
+router.on('relogin:cancel', (message, sender) => cancelRelogin(sender.tab.id));
+router.on('switcher:switch', (message, sender) => switchTo(message.slotId, message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab), FROM_POPUP);
+router.on('switcher:add', (message, sender) => addSession(message.origin ?? DEFAULT_ORIGIN, message.confirmed, sender.tab), FROM_POPUP);
+router.on('switcher:remove', (message) => removeSlot(message.slotId), FROM_POPUP);
+router.on('avatar:set', (message) => setAvatar(message.slotId, message.dataUrl), FROM_POPUP);
+router.on('avatar:remove', (message) => chrome.storage.local.remove(`avatar:${message.slotId}`), FROM_POPUP);
+
+// Feature modules add their own types; a clash with one above throws here.
+for (const register of [registerAi, registerRequests]) register(router);
+
+// The popup and other pages of this extension: no tab, and our own id.
+function fromExtensionPage(sender) {
+  return !sender.tab && sender.id === chrome.runtime.id;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = handlers[message?.type];
-  const fromPopup = !sender.tab && sender.id === chrome.runtime.id && POPUP_TYPES.has(message?.type);
-  if (!handler || (!sender.tab && !fromPopup)) return false;
-  serialized(() => handler(message, sender))
+  const route = typeof message?.type === 'string' ? routes.get(message.type) : undefined;
+  if (!route) return false;
+  const allowed = sender.tab ? route.fromTab : route.fromExtension && fromExtensionPage(sender);
+  if (!allowed) return false;
+  const run = () => route.handler(message, sender);
+  (route.serialized ? serialized(run) : Promise.resolve().then(run))
     .then((result) => sendResponse(result ?? {}))
     .catch((error) => {
       console.error('EB Sessions:', message.type, error);
@@ -707,4 +739,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // For the tests.
-export { isReadOnlyPage, isGenericTitle };
+export { isReadOnlyPage, isGenericTitle, router };

@@ -91,6 +91,14 @@ export function createFakeChrome() {
         for (const listener of listeners.message) listener(message, sender, resolve);
       });
     },
+    // Like dispatch, but resolves undefined when no listener takes the message.
+    deliver(message, sender) {
+      return new Promise((resolve) => {
+        let taken = false;
+        for (const listener of listeners.message) taken = listener(message, sender, resolve) === true || taken;
+        if (!taken) resolve(undefined);
+      });
+    },
     reset() {
       fake.jar = [];
       fake.tabs = [];
