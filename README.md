@@ -48,7 +48,7 @@ git clone https://github.com/SherinBloemendaal/eboekhouden-extension.git
 3. Click **Load unpacked** and choose the `eboekhouden-extension` folder.
 4. Reload any open e-Boekhouden tab.
 
-To update, run `git pull` in the folder and click the reload icon on the extension's card in `chrome://extensions`. To remove it, click **Remove** on that card; that also deletes everything it stored.
+To update, run `git pull` in the folder and click the reload icon on the extension's card in `chrome://extensions`. Then reload the open e-Boekhouden tabs: the copy of the extension that was running in them stops working after a reload. To remove it, click **Remove** on that card; that also deletes everything it stored.
 
 ## 🔑 1Password on the login page
 
@@ -96,7 +96,7 @@ The form itself stays e-Boekhouden's own: its fields, hidden fields and button p
 
 On *Boekhouden > Invoeren > Importeren* (the *Niet verwerkte afschriftregels* grid):
 
-- **Shift-click** a checkbox to give every line between it and the last one you clicked the same state, as in Gmail. Hold shift over a line to see the range first.
+- **Shift-click** a checkbox to give every line between it and the last one you clicked (the anchor) the anchor's state: was the anchor ticked, the range is ticked; was it not, the range is cleared. Hold shift over a line to see the range first.
 - **The action bar** appears at the bottom as soon as a line is ticked: how many lines, their total, and *Wegboeken*, *Verwijderen* and *Selectie wissen*. The buttons click e-Boekhouden's own actions under *Acties*; e-Boekhouden asks for confirmation as it always does.
 
 Both have their own switch in the popup.

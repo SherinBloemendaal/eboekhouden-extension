@@ -110,6 +110,10 @@ async function ensureSettings() {
 }
 
 chrome.runtime.onStartup.addListener(() => { serialized(publishView); });
+// Also on every start of the service worker: after the extension was
+// disabled and enabled again the in-memory sessions are gone, and the
+// mirror must not keep calling them Klaar.
+serialized(publishView);
 chrome.runtime.onInstalled.addListener(() => {
   serialized(async () => {
     await ensureSettings();
