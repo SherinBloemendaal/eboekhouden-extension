@@ -46,7 +46,7 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', 
     }
   };
   const context = {
-    console, URL, AbortController, DOMException, Response,
+    console, URL, AbortController, DOMException, Response, Blob,
     Date: FakeDate,
     location: new URL(url),
     setTimeout: (fn, ms) => {
@@ -112,6 +112,7 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', 
   };
   return {
     request,
+    layer,
     calls,
     maxRunning: () => maxRunning,
     // A real click of the user (event.isTrusted), and one a page script made.
@@ -286,7 +287,8 @@ test('only GET, only the same e-Boekhouden origin', async () => {
   await assert.rejects(s.request.bulk('k', 'https://secure.e-boekhouden.nl/bh/x.asp'), { code: 'origin' }, 'another e-Boekhouden host is another origin');
   await assert.rejects(s.request.bulk('k', 'http://secure20.e-boekhouden.nl/api/x'), { code: 'origin' });
   await assert.rejects(s.request.bulk('', '/api/x'), { code: 'key' });
-  await assert.rejects(s.request.bulk('k', '/api/x', { as: 'blob' }), { name: 'TypeError' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { as: 'arraybuffer' }), { name: 'TypeError' });
+  await assert.rejects(s.request.bulk('k', '/api/x', { as: 'blob', mode: 'main' }), { name: 'TypeError' }, 'a blob only in isolated mode');
   assert.equal(s.calls.length, 0);
   s.request.bulk('k', '/api/x', { method: 'get' });
   assert.equal(s.request.stats().active + s.request.stats().queued, 1, 'GET in any case is fine');
@@ -386,6 +388,23 @@ test('text answers and broken JSON', async () => {
   s.calls[1].respond('<html>not json</html>');
   assert.equal(await page, '<table></table>');
   assert.equal((await broken).error.code, 'parse');
+});
+
+test('a blob answer for a file, such as a preview: one request per click, the Blob as it came', async () => {
+  const s = sandbox();
+  s.click();
+  const href = '/v1/api/folder/1/preview?inline=true';
+  const first = s.layer.item('preview:1', href, { userAction: true, as: 'blob' });
+  await flush();
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0].init.headers.Accept, '*/*');
+  s.calls[0].respond('%PDF-1.7', { headers: { 'content-type': 'application/pdf' } });
+  const blob = await first;
+  assert.ok(blob instanceof Blob);
+  assert.equal(blob.type, 'application/pdf');
+  assert.equal(await blob.text(), '%PDF-1.7');
+  assert.equal(await s.layer.item('preview:1', href, { userAction: true, as: 'blob' }), blob, 'cached for 60 s: the same Blob, no request');
+  assert.equal(s.calls.length, 1);
 });
 
 test('a feature that asks per row (another key per row) is cut off: 2 running and 20 waiting, the rest refused', async () => {
