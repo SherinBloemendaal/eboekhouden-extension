@@ -160,6 +160,8 @@ test('Herschrijven, Formeler: one call with the text and the variables, then a p
   await wait(30);
   const proposal = p.panel();
   assert.equal(proposal.getAttribute('role'), 'dialog');
+  assert.equal(proposal, working, 'the same panel: it does not close and open again');
+  assert.ok(proposal.classList.contains('swap'), 'the answer fades in over the wait instead of popping');
   assert.match(proposal.querySelector('.title').textContent, /Voorstel: formeler/);
   assert.equal(proposal.querySelector('.meta').textContent, 'variabelen ongewijzigd · 1 alinea');
   assert.deepEqual([...proposal.querySelectorAll('del')].map((node) => node.textContent), ['Hierbij ontvangt']);

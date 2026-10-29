@@ -636,9 +636,17 @@
     @keyframes ebs-ai-shimmer { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
     @keyframes ebs-ai-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes ebs-ai-fade { from { opacity: 0; } to { opacity: 1; } }
+    /* Only a start: they end on the element's own opacity (a disabled button stays dimmed). */
+    @keyframes ebs-ai-appear { from { opacity: 0; transform: translateY(4px); } }
+    @keyframes ebs-ai-appear-fade { from { opacity: 0; } }
+    /* New content in the bar (another state) and in an open panel (the
+       answer after the wait) fades in instead of popping. */
+    .bar > :not(.menu) { animation: ebs-ai-appear-fade 150ms ease-out; }
+    .panel.swap > :not(.skel) { animation: ebs-ai-appear 150ms ${EASE}; }
     @media (prefers-reduced-motion: reduce) {
       .menu, .menu.open, .panel, .panel.in { transform: none; }
       .chip.new { animation: ebs-ai-fade 150ms ease-out both; }
+      .panel.swap > :not(.skel) { animation-name: ebs-ai-appear-fade; }
       .skel { animation: none; }
     }
   `;
@@ -964,6 +972,7 @@
     showPanel(className, children, { role, label } = {}) {
       clearTimeout(this.doneTimer);
       let panel = this.panel;
+      const swap = Boolean(panel);
       if (!panel) {
         panel = el('div', { class: 'panel' });
         panel.addEventListener('keydown', (event) => {
@@ -976,7 +985,7 @@
         this.panel = panel;
         requestAnimationFrame(() => panel.classList.add('in'));
       }
-      panel.className = `panel ${className}${panel.classList.contains('in') ? ' in' : ''}`;
+      panel.className = `panel ${className}${panel.classList.contains('in') ? ' in' : ''}${swap ? ' swap' : ''}`;
       for (const name of ['role', 'aria-label', 'aria-live']) panel.removeAttribute(name);
       if (role) panel.setAttribute('role', role);
       if (label) panel.setAttribute('aria-label', label);
