@@ -440,6 +440,12 @@
     let lastFor = null;
     let current = null;
     let shown = [];
+    // The list shows its rows nine at a time, as the board does ("Scroll voor
+    // meer · 9 van 100 getoond"); scrolling to the end adds the next nine,
+    // and "Alles tonen" shows every row at once.
+    const STEP = 9;
+    let limit = STEP;
+    let rendered = 0;
 
     // Everything on the left is built once and stays in place across
     // redraws: typing in the search keeps its caret and input method, and
@@ -479,6 +485,7 @@
 
     searchInput.addEventListener('input', () => {
       query = searchInput.value;
+      limit = STEP;
       if (current) view.render(current);
     });
     let scrollFrame = 0;
@@ -489,6 +496,16 @@
         updateMore();
       });
     }, { passive: true });
+
+    // The next nine rows, added below the ones there are: the rows above and
+    // the scroll position stay as they are.
+    function showMore() {
+      if (!current || showAll || rendered >= shown.length) return;
+      const next = shown.slice(rendered, rendered + STEP);
+      limit = rendered + next.length;
+      rendered = limit;
+      list.append(...next.flatMap((slot) => row(slot, current)));
+    }
 
     function isReady(status) {
       return status === 'ready' || status === 'active';
@@ -505,21 +522,27 @@
       return `${ready} van ${total} administraties ${ready === 1 ? 'is' : 'zijn'} nog ingelogd. Klik om direct verder te gaan.`;
     }
 
-    // Below the list: how many there are, or, while the list scrolls, how
-    // far you are ("Scroll voor meer · 9 van 100 getoond").
+    // Below the list: how many there are, or, while there is more, how many
+    // rows the list holds so far ("Scroll voor meer · 9 van 100 getoond").
     function updateMore() {
       if (!current) return;
       const total = current.slots.length;
+      // Near the end (the last row in view) the next rows come in; a list
+      // that does not fill its height gets them straight away.
+      for (let guard = 0; guard < shown.length && !showAll && rendered < shown.length; guard += 1) {
+        const room = list.scrollHeight - (list.scrollTop + list.clientHeight);
+        if (room > 60) break;
+        showMore();
+      }
       const overflow = !showAll && list.scrollHeight > list.clientHeight + 1;
       const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
+      const hasMore = !showAll && rendered < shown.length;
       // The scroll styling (room for the thin scrollbar) follows the whole
       // list, not a search, so the rows keep their width while you type.
       if (!query.trim()) list.classList.toggle('scrolls', overflow);
       fade.classList.toggle('on', overflow && !atEnd);
-      if (overflow && !atEnd) {
-        const bottom = list.scrollTop + list.clientHeight;
-        const seen = [...list.querySelectorAll('.ebs-row')].filter((row) => row.offsetTop < bottom).length;
-        const text = `Scroll voor meer · ${seen} van ${shown.length} getoond`;
+      if ((overflow && !atEnd) || hasMore) {
+        const text = `Scroll voor meer · ${rendered} van ${shown.length} getoond`;
         if (moreText.dataset.text !== text) {
           moreText.dataset.text = text;
           moreText.className = 'ebs-more-text scroll';
@@ -604,7 +627,10 @@
           // Focus stays on the same row across a redraw (a storage change).
           const focused = list.contains(document.activeElement) ? document.activeElement.dataset.slot : null;
           list.classList.toggle('all', showAll);
-          list.replaceChildren(...shown.flatMap((slot) => row(slot, state)));
+          // A redraw keeps the rows the list already showed.
+          const rows = showAll ? shown : shown.slice(0, Math.max(limit, STEP));
+          rendered = rows.length;
+          list.replaceChildren(...rows.flatMap((slot) => row(slot, state)));
           if (!shown.length) list.append(el('span', 'ebs-no-match', `Geen administratie gevonden voor "${query.trim()}".`));
           if (focused) list.querySelector(`.ebs-row[data-slot="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
           updateMore();
@@ -637,8 +663,10 @@
     #ebs-better .ebs-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; flex-wrap: wrap; padding: 64px 40px 0; }
     #ebs-better .ebs-left { position: relative; z-index: 0; width: 460px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 14px; background: #f7f8fb; border-radius: 16px 0 0 16px; box-shadow: 0 18px 48px rgba(20, 26, 48, .10); }
     #ebs-better .ebs-right { position: relative; z-index: 1; width: 420px; max-width: 100%; box-sizing: border-box; padding: 32px; display: flex; flex-direction: column; gap: 20px; background: #fff; border-left: 1px solid #e3e6ee; border-radius: 0 16px 16px 0; box-shadow: 0 1px 0 rgba(20, 26, 48, .04), 0 18px 48px rgba(20, 26, 48, .10); }
+    /* The page's own h2 rule (19px, #30395f, inline-block, 10px padding
+       below) and its "a { font-size: 13px }" must not reach the panels. */
     #ebs-better h1 { margin: 0; font-size: 24px; font-weight: 700; color: #232c4f; }
-    #ebs-better h2 { margin: 0; font-size: 22px; font-weight: 700; }
+    #ebs-better h2 { display: block; margin: 0; padding: 0; font-size: 22px; font-weight: 700; color: inherit; }
     #ebs-better .ebs-left-head { display: flex; flex-direction: column; gap: 4px; }
     #ebs-better .ebs-right-head { display: flex; flex-direction: column; gap: 6px; }
     #ebs-better .ebs-sub { font-size: 13px; color: #5d6584; }
@@ -670,7 +698,7 @@
     #ebs-better .ebs-search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; box-sizing: border-box; border: 1px solid #d6dbe8; border-radius: 10px; background: #fff; font-size: 13px; color: #5d6584; transition: border-color 150ms ease; }
     #ebs-better .ebs-search:focus-within { border-color: #232c4f; }
     #ebs-better .ebs-search svg { flex: none; }
-    #ebs-better .ebs-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
+    #ebs-better .ebs-search input { flex: 1; min-width: 0; height: 100%; padding: 1px 2px; border: 0; outline: none; background: transparent; font: 13px Ubuntu, system-ui, sans-serif; color: #232c4f; }
     #ebs-better .ebs-list { position: relative; display: flex; flex-direction: column; gap: 6px; max-height: 400px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #9aa3bf #e3e6ee; }
     #ebs-better .ebs-list.scrolls { padding-right: 8px; }
     #ebs-better .ebs-list.all { max-height: none; overflow: visible; }
@@ -712,7 +740,7 @@
     #ebs-better .ebs-confirm-no { border: 1px solid #e0d3a8; background: #fff; color: #6b5310; }
     #ebs-better .ebs-confirm-yes { border: 0; background: #232c4f; color: #fff !important; }
     #ebs-better .ebs-footer { padding: 20px 40px; display: flex; justify-content: center; gap: 4px; font-size: 12px; color: #6b7290; }
-    #ebs-better .ebs-footer a { color: #4a5272; transition: color 150ms ease; }
+    #ebs-better .ebs-footer a { font-size: inherit; color: #4a5272; transition: color 150ms ease; }
     @media (max-width: 920px) {
       #ebs-better .ebs-left { border-radius: 16px 16px 0 0; }
       #ebs-better .ebs-right { border-left: 0; border-top: 1px solid #e3e6ee; border-radius: 0 0 16px 16px; }

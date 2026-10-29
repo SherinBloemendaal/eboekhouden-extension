@@ -221,29 +221,38 @@ test('opening a session waits visibly until the answer is there', async () => {
   assert.equal(document.querySelector('.ebs-sub').textContent, 'Openen lukte niet. Probeer het opnieuw.');
 });
 
-test('a long list says how far you scrolled, fades its last rows and can show everything', async () => {
+test('a long list shows nine rows at a time, as the board says, fades its last rows and can show everything', async () => {
   const list = Array.from({ length: 100 }, (_, i) => ({ id: `s${i}`, name: `Administratie ${i}`, number: String(i) }));
   const p = await betterPage({ slots: list, view: { ready: list.map((slot) => slot.id) } });
   const { document, window } = p;
   const box = document.querySelector('.ebs-list');
   // jsdom does no layout: rows of 60 px in a list of 400 px.
-  Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => (box.classList.contains('all') ? 6000 : 400) });
-  Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 6000 });
-  [...box.querySelectorAll('.ebs-row')].forEach((row, i) => Object.defineProperty(row, 'offsetTop', { configurable: true, get: () => i * 60 }));
-  box.dispatchEvent(new window.Event('scroll'));
+  const rows = () => box.querySelectorAll('.ebs-row').length;
+  Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => (box.classList.contains('all') ? rows() * 60 : 400) });
+  Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => rows() * 60 });
+  // The first render had no layout yet: start again from nine rows.
+  document.querySelector('.ebs-search input').dispatchEvent(new window.Event('input'));
   await p.settle(2);
-  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 7 van 100 getoond');
+  assert.equal(rows(), 9, 'nine rows, as on the board');
+  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 9 van 100 getoond');
   assert.ok(document.querySelector('.ebs-more-text svg.lucide-arrow-down'));
   assert.ok(document.querySelector('.ebs-fade').classList.contains('on'));
   assert.ok(box.classList.contains('scrolls'), 'room for the thin scrollbar');
-  box.scrollTop = 600;
+  box.scrollTop = 140;
   box.dispatchEvent(new window.Event('scroll'));
   await p.settle(2);
-  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 17 van 100 getoond');
+  assert.equal(rows(), 18, 'the end of the list brings the next nine');
+  assert.equal(document.querySelector('.ebs-more-text').textContent, 'Scroll voor meer · 18 van 100 getoond');
+  assert.equal(box.querySelector('.ebs-row').dataset.slot, 's0', 'the rows above stay');
+  // A redraw (a storage change) keeps the rows that were there.
+  await p.window.chrome.storage.local.set({ view: { ready: list.map((slot) => slot.id) } });
+  await p.settle(3);
+  assert.equal(rows(), 18, 'a redraw keeps the rows that were there');
   const all = [...document.querySelectorAll('.ebs-more .ebs-link')].find((button) => button.textContent === 'Alles tonen');
   all.click();
   await p.settle(1);
   assert.ok(box.classList.contains('all'));
+  assert.equal(rows(), 100);
   assert.equal(document.querySelector('.ebs-more-text').textContent, '100 administraties');
   assert.ok(!document.querySelector('.ebs-fade').classList.contains('on'));
 });
