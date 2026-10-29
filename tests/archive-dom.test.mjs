@@ -4,86 +4,11 @@
 // bridge and makes only its own few requests, which the tests count.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeAll, page } from './dom.mjs';
-import { answer, demoData, nativeScript, shellHtml } from './archive-mock.mjs';
+import { closeAll } from './dom.mjs';
+import { demoData } from './archive-mock.mjs';
+import { archivePage, click, folderButton, nativeLog, rowNames, rowNode, settleAll, trusted, wait } from './archive-page.mjs';
 
 after(closeAll);
-
-const URL_ARCHIVE = 'https://secure20.e-boekhouden.nl/overig/digitaal-archief';
-const FOUNDATION = ['shared.js', 'store.js', 'icons.js', 'dialog.js', 'bridge.js'];
-// e-Boekhouden's own GETs; anything else that goes out is ours.
-const NATIVE = /\/folder\/(directory|\d+\/(header|filelist|koppel))(\?|$)/;
-
-// previewTypes: { id: content type } for a preview answer; unreadable: folder
-// ids whose filelist answer the observe hook cannot read (not JSON or text).
-async function archivePage({ slow = 0, data = demoData(), settings = { betterDesign: true }, store = {}, fakeRequest = false, nativeFirst = false, url = URL_ARCHIVE, previewTypes = {}, unreadable = [] } = {}) {
-  const p = page(shellHtml(), {
-    url,
-    store: { settings, ...store },
-    answer: (message) => (message.type === 'requests:slot' ? { ok: true, lease: 'test' } : {}),
-  });
-  const { window } = p;
-  window.Response ??= Response;
-  window.Blob ??= Blob;
-  const calls = [];
-  const fetchAnswer = async (input) => {
-    const href = new URL(String(input?.url ?? input), window.location.href).href;
-    calls.push(href);
-    if (slow && /\/filelist/.test(href)) await new Promise((resolve) => setTimeout(resolve, slow));
-    const path = new URL(href).pathname;
-    const reply = answer(data, path);
-    if (reply.preview) {
-      const type = previewTypes[/\/folder\/(\d+)\//.exec(path)[1]] ?? reply.preview;
-      return new Response(new Blob(['%PDF-1.7'], { type }), { status: 200, headers: { 'content-type': type } });
-    }
-    const hidden = unreadable.some((id) => path.endsWith(`/folder/${id}/filelist`));
-    return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': hidden ? 'application/octet-stream' : 'application/json' } });
-  };
-  window.fetch = fetchAnswer;
-  const pageXhr = { open: window.XMLHttpRequest.prototype.open, send: window.XMLHttpRequest.prototype.send };
-  const blobs = { made: [], revoked: [] };
-  const items = [];
-  const boot = () => window.eval(`(${nativeScript})(${JSON.stringify(data)}, { transport: 'fetch' })`);
-  p.load('main-world.js', 'shared.js');
-  if (fakeRequest) {
-    // A request layer that answers a blob, for the preview (jsdom has no
-    // trusted clicks for the real one); it keeps the rules that matter here.
-    window.EBS.define('request', Object.freeze({
-      bulk: (key, href) => fetchAnswer(href).then((response) => response.json()),
-      item: (key, href, options = {}) => {
-        if (options.userAction !== true) return Promise.reject(new Error('user-action'));
-        items.push({ key, href, as: options.as });
-        return fetchAnswer(href).then((response) => response.blob());
-      },
-      abort() {},
-    }));
-    window.URL.createObjectURL = (blob) => {
-      const href = `blob:${URL_ARCHIVE}#${blobs.made.length}`;
-      blobs.made.push({ href, type: blob.type });
-      return href;
-    };
-    window.URL.revokeObjectURL = (href) => blobs.revoked.push(href);
-  }
-  if (nativeFirst) {
-    boot();
-    await p.settle();
-  }
-  p.load(...FOUNDATION.slice(1), 'request.js', 'features/archive.js');
-  await p.settle();
-  if (!nativeFirst) boot();
-  await settleAll(p);
-  const ours = () => calls.filter((href) => !NATIVE.test(href));
-  return { ...p, calls, ours, items, data, blobs, fetchAnswer, pageXhr, $: (selector) => p.document.querySelector(selector), $$: (selector) => [...p.document.querySelectorAll(selector)] };
-}
-
-async function settleAll(p, rounds = 4) {
-  for (let i = 0; i < rounds; i += 1) await p.settle();
-}
-
-const rowNames = (p) => p.$$('.ebs-ar-body .ebs-ar-item').map((node) => node.querySelector('.ebs-ar-name').textContent);
-const rowNode = (p, name) => p.$$('.ebs-ar-body .ebs-ar-item').find((node) => node.querySelector('.ebs-ar-name').textContent === name);
-const nativeLog = (p) => [...p.window.__archive.log];
-const click = (p, node, init = {}) => node.dispatchEvent(new p.window.MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
 
 test('the new view replaces the native archive and shows its rows, folders and inbox', async () => {
   const p = await archivePage();
@@ -91,12 +16,13 @@ test('the new view replaces the native archive and shows its rows, folders and i
   assert.ok(p.$('#ebs-archive-style').textContent.includes('.container-da > .main { display: none !important; }'));
   assert.equal(p.$('.ebs-ar h1').textContent, 'Digitaal archief');
   assert.equal(p.$('.ebs-ar-subtitle').textContent, '7 bestanden in Inkoopfacturen 2026 · 2,3 GB van 5 GB gebruikt');
+  // Datum, newest first: the folders first, then the files.
   assert.deepEqual(rowNames(p), [
-    'Oktober', 'Bonnetje tankstation.jpg', 'Factuur 2026-0412 Demo Leverancier.pdf', 'Factuur 88231 Voorbeeld Hosting.pdf',
-    'Huur kantoor november.pdf', 'Parkeren Utrecht.png', 'Software licentie.xml', 'Telefoonabonnement oktober.pdf',
+    'Oktober', 'Factuur 2026-0412 Demo Leverancier.pdf', 'Bonnetje tankstation.jpg', 'Telefoonabonnement oktober.pdf',
+    'Huur kantoor november.pdf', 'Software licentie.xml', 'Parkeren Utrecht.png', 'Factuur 88231 Voorbeeld Hosting.pdf',
   ]);
   const hosting = rowNode(p, 'Factuur 88231 Voorbeeld Hosting.pdf');
-  assert.equal(hosting.querySelector('.ebs-ar-date').textContent, '15-10-2026');
+  assert.equal(hosting.querySelector('.ebs-ar-date').textContent, '15-10-2026 09:15', 'the date with its time');
   assert.equal(hosting.querySelector('.ebs-ar-status').textContent, 'Ingevoerd');
   assert.equal(hosting.querySelector('.ebs-ar-meta').textContent, '88 kb');
   assert.equal(hosting.querySelector('.ebs-ar-linkbutton').textContent, 'Gekoppeld (2)', 'koppelCount from the page\'s own file list');
@@ -144,7 +70,7 @@ test('a preview asks for one file per click, never before', async () => {
   await settleAll(p);
   assert.deepEqual(p.items, [{ key: 'archive:preview:101', href: 'https://secure20.e-boekhouden.nl/v1/api/folder/101/preview?inline=true', as: 'blob' }]);
   assert.equal(p.$('.ebs-ar-preview-name').textContent, 'Factuur 2026-0412 Demo Leverancier.pdf');
-  assert.equal(p.$('.ebs-ar-preview-meta').textContent, '28-10-2026 · 182 kb · Ingevoerd');
+  assert.equal(p.$('.ebs-ar-preview-meta').textContent, '28-10-2026 09:15 · 182 kb · Ingevoerd');
   assert.match(p.$('.ebs-ar-preview-stage iframe').src, /^blob:/);
   assert.equal(p.$('.ebs-ar-preview-links').textContent, '1 koppeling; klap de regel uit voor de details.');
   assert.equal(p.$('.ebs-ar-pbutton.green').textContent, 'Koppeling bekijken');
@@ -212,7 +138,7 @@ test('search covers name, date and status; quick-selects use the links', async (
   search('25-10-2026');
   assert.deepEqual(rowNames(p), ['Telefoonabonnement oktober.pdf']);
   search('niet ingevoerd');
-  assert.deepEqual(rowNames(p), ['Software licentie.xml', 'Telefoonabonnement oktober.pdf']);
+  assert.deepEqual(rowNames(p), ['Telefoonabonnement oktober.pdf', 'Software licentie.xml']);
   search('zzz');
   await p.settle();
   assert.equal(p.$('.ebs-ar').dataset.state, 'nomatch');
@@ -225,10 +151,10 @@ test('search covers name, date and status; quick-selects use the links', async (
 
   const chip = (label) => p.$$('.ebs-ar-chip').find((node) => node.textContent.startsWith(label));
   click(p, chip('Met koppeling'));
-  assert.deepEqual(rowNames(p), ['Factuur 2026-0412 Demo Leverancier.pdf', 'Factuur 88231 Voorbeeld Hosting.pdf', 'Huur kantoor november.pdf', 'Telefoonabonnement oktober.pdf']);
+  assert.deepEqual(rowNames(p), ['Factuur 2026-0412 Demo Leverancier.pdf', 'Telefoonabonnement oktober.pdf', 'Huur kantoor november.pdf', 'Factuur 88231 Voorbeeld Hosting.pdf']);
   assert.equal(chip('Met koppeling').getAttribute('aria-pressed'), 'true');
   click(p, chip('Zonder koppeling'));
-  assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Parkeren Utrecht.png', 'Software licentie.xml']);
+  assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg', 'Software licentie.xml', 'Parkeren Utrecht.png']);
   click(p, chip('Herkend, nog invoeren'));
   assert.deepEqual(rowNames(p), ['Bonnetje tankstation.jpg']);
 });
@@ -240,18 +166,19 @@ test('shift-click selects a range on e-Boekhouden\'s checkboxes; the bar counts 
   await settleAll(p);
   click(p, check('Parkeren Utrecht.png'), { shiftKey: true });
   await settleAll(p);
-  assert.deepEqual([...p.window.__archive.state.selected].sort(), [101, 102, 104, 106, 107]);
+  // The range in the order on screen (Datum, newest first).
+  assert.deepEqual([...p.window.__archive.state.selected].sort(), [102, 103, 104, 105, 106]);
   assert.equal(check('Huur kantoor november.pdf').getAttribute('aria-checked'), 'true');
   assert.equal(p.$('.ebs-ar-bar').classList.contains('show'), true);
   assert.equal(p.$('.ebs-ar-bar-count').textContent, '5 bestanden geselecteerd');
-  assert.equal(p.$('.ebs-ar-bar-sub').textContent, '2 zonder koppeling');
+  assert.equal(p.$('.ebs-ar-bar-sub').textContent, '3 zonder koppeling');
   assert.equal(p.$('.ebs-ar').dataset.bar, 'on', 'room after the last row while the bar floats over the list');
   // Shift-click back to the anchor's state: the range is cleared.
   click(p, check('Huur kantoor november.pdf'));
   await settleAll(p);
   click(p, check('Factuur 2026-0412 Demo Leverancier.pdf'), { shiftKey: true });
   await settleAll(p);
-  assert.deepEqual([...p.window.__archive.state.selected].sort(), [102, 106]);
+  assert.deepEqual([...p.window.__archive.state.selected].sort(), [105, 106]);
 
   click(p, p.$$('.ebs-ar-bar-button').find((node) => node.textContent === 'Selectie wissen'));
   await settleAll(p);
@@ -356,8 +283,13 @@ test('folders: loading, empty and the upload window', async () => {
 test('a failing folder shows the error, and "Opnieuw laden" is e-Boekhouden\'s refresh', async () => {
   const p = await archivePage({ data: demoData({ fail: true }) });
   assert.equal(p.$('.ebs-ar').dataset.state, 'error');
-  assert.equal(p.$('.ebs-ar-error-text').textContent, 'De bestanden in deze map konden niet worden geladen. e-Boekhouden meldt: "Er is iets misgegaan." Je bestanden zijn niet weg.');
+  assert.equal(p.$('.ebs-ar-error-title').textContent, 'Deze map kon niet worden geladen');
+  assert.equal(p.$('.ebs-ar-error-text').textContent, 'e-Boekhouden meldt: "Er is iets misgegaan." Je bestanden zijn niet weg.');
+  assert.equal(p.$('.ebs-ar-error .ebs-ar-button').textContent, 'Opnieuw laden');
   click(p, p.$('.ebs-ar-error .ebs-ar-button'));
+  await settleAll(p);
+  assert.equal(nativeLog(p).filter((line) => line === 'Lijst vernieuwen').length, 0, 'a script click does nothing');
+  trusted(p, p.$('.ebs-ar-error .ebs-ar-button'));
   await settleAll(p);
   assert.equal(nativeLog(p).filter((line) => line === 'Lijst vernieuwen').length, 1);
 });
@@ -562,4 +494,224 @@ test('Downloaden for a selection double-clicks at most 20 rows, only after the c
   assert.equal(p.$('.ebs-ar-bar-message').textContent, 'Downloaden gaat per keer voor ten hoogste 20 bestanden; de eerste 20 komen nu.');
   assert.equal(download.getAttribute('aria-busy'), null, 'no longer busy once done');
   assert.equal(p.ours().length, 1, 'the downloads are e-Boekhouden\'s own');
+});
+
+test('Datum sorts newest first; a click turns it round, folders stay first', async () => {
+  const p = await archivePage();
+  const sort = p.$('.ebs-ar-row-head .ebs-ar-sort');
+  assert.equal(sort.textContent, 'Datum');
+  assert.equal(sort.getAttribute('aria-label'), 'Sorteren: Datum, nieuwste eerst');
+  assert.equal(sort.title, 'Gesorteerd op datum, nieuwste eerst. Klik: oudste eerst');
+  assert.ok(sort.querySelector('svg'), 'an arrow at Datum');
+  const arrow = sort.querySelector('svg').innerHTML;
+  click(p, sort);
+  await p.settle();
+  assert.deepEqual(rowNames(p), [
+    'Oktober', 'Factuur 88231 Voorbeeld Hosting.pdf', 'Parkeren Utrecht.png', 'Software licentie.xml',
+    'Huur kantoor november.pdf', 'Telefoonabonnement oktober.pdf', 'Bonnetje tankstation.jpg', 'Factuur 2026-0412 Demo Leverancier.pdf',
+  ]);
+  assert.equal(sort.getAttribute('aria-label'), 'Sorteren: Datum, oudste eerst');
+  assert.notEqual(sort.querySelector('svg').innerHTML, arrow, 'the arrow turns');
+  // Shift-click takes the range in the order on screen.
+  click(p, rowNode(p, 'Factuur 88231 Voorbeeld Hosting.pdf').querySelector('.ebs-ar-check'));
+  await settleAll(p);
+  click(p, rowNode(p, 'Software licentie.xml').querySelector('.ebs-ar-check'), { shiftKey: true });
+  await settleAll(p);
+  assert.deepEqual([...p.window.__archive.state.selected].sort(), [105, 106, 107]);
+  click(p, sort);
+  await p.settle();
+  assert.equal(rowNames(p)[1], 'Factuur 2026-0412 Demo Leverancier.pdf');
+});
+
+test('dates show their time, and only the date when e-Boekhouden has no time', async () => {
+  const data = demoData();
+  data.files[12].push(
+    { id: 130, naam: 'Alleen een datum.pdf', soort: 'F', datum: '2026-10-10T00:00:00', size: 1000, koppelCount: 0, isDeleted: false },
+    { id: 131, naam: 'Datum zonder tijd.pdf', soort: 'F', datum: '2026-10-09', size: 1000, koppelCount: 0, isDeleted: false },
+    { id: 132, naam: 'Om kwart over twee.pdf', soort: 'F', datum: '2026-10-08T14:15:42', size: 1000, koppelCount: 0, isDeleted: false },
+  );
+  const p = await archivePage({ data, fakeRequest: true });
+  const date = (name) => rowNode(p, name).querySelector('.ebs-ar-date').textContent;
+  assert.equal(date('Factuur 2026-0412 Demo Leverancier.pdf'), '28-10-2026 09:15');
+  assert.equal(date('Alleen een datum.pdf'), '10-10-2026', 'midnight is a date without a time');
+  assert.equal(date('Datum zonder tijd.pdf'), '09-10-2026');
+  assert.equal(date('Om kwart over twee.pdf'), '08-10-2026 14:15');
+  assert.equal(date('Oktober'), '01-10-2026 09:15', 'a folder has its date and time too');
+  assert.deepEqual(rowNames(p).slice(-3), ['Alleen een datum.pdf', 'Datum zonder tijd.pdf', 'Om kwart over twee.pdf']);
+  click(p, rowNode(p, 'Om kwart over twee.pdf').querySelector('.ebs-ar-file'));
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-preview-meta').textContent, '08-10-2026 14:15 · 1 kb', 'the preview shows the time as well');
+});
+
+test('without the page\'s answer the date comes from e-Boekhouden\'s own list, 00:00 as a date only', async () => {
+  const data = demoData();
+  data.files[12].push({ id: 130, naam: 'Alleen een datum.pdf', soort: 'F', datum: '2026-10-10T00:00:00', size: 1000, koppelCount: 0, isDeleted: false });
+  const p = await archivePage({ data, nativeFirst: true });
+  assert.equal(rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-date').textContent, '24-10-2026 09:15');
+  assert.equal(rowNode(p, 'Alleen een datum.pdf').querySelector('.ebs-ar-date').textContent, '10-10-2026');
+  assert.equal(rowNames(p)[1], 'Factuur 2026-0412 Demo Leverancier.pdf', 'sorted on the shown date and time');
+});
+
+test('Vernieuwen clicks e-Boekhouden\'s Lijst vernieuwen in a real click; the rows stay, dimmed, without a skeleton', async () => {
+  const p = await archivePage({ slow: 300 });
+  const refresh = p.$('.ebs-ar-tools .ebs-ar-refresh');
+  assert.equal(p.$('.ebs-ar-tools').lastElementChild, refresh, 'at the right of the toolbar');
+  assert.equal(refresh.getAttribute('aria-label'), 'Vernieuwen');
+  assert.equal(refresh.querySelector('.ebs-ar-tip').textContent, 'Vernieuwen');
+  click(p, refresh);
+  await settleAll(p);
+  assert.deepEqual(nativeLog(p), [], 'a script click does nothing');
+  const before = rowNames(p);
+  trusted(p, refresh);
+  assert.deepEqual(nativeLog(p), ['Lijst vernieuwen'], 'e-Boekhouden\'s own refresh, during the click');
+  const seen = new Set();
+  for (let i = 0; i < 8; i += 1) {
+    await new Promise((resolve) => p.window.requestAnimationFrame(resolve));
+    await wait(25);
+    seen.add(`${p.$('.ebs-ar').dataset.state}|${p.$('.ebs-ar-skeleton').hidden}|${rowNames(p).length}`);
+    if (i === 2) {
+      assert.equal(refresh.getAttribute('aria-busy'), 'true', 'busy while it reloads');
+      assert.equal(refresh.getAttribute('aria-label'), 'Bezig met vernieuwen');
+      assert.ok(p.$('.ebs-ar').classList.contains('ebs-ar-refreshing'), 'the rows dim');
+      trusted(p, refresh);
+      assert.deepEqual(nativeLog(p), ['Lijst vernieuwen'], 'a second click while busy does nothing');
+    }
+  }
+  assert.deepEqual([...seen], ['rows|true|8'], 'never a skeleton, never an empty list');
+  await settleAll(p, 6);
+  assert.equal(refresh.getAttribute('aria-busy'), 'false');
+  assert.equal(p.$('.ebs-ar').classList.contains('ebs-ar-refreshing'), false);
+  assert.deepEqual(rowNames(p), before);
+  const css = p.$('#ebs-archive-style').textContent;
+  assert.match(css, /\.ebs-ar\.ebs-ar-refreshing \.ebs-ar-body, \.ebs-ar\.ebs-ar-refreshing \.ebs-ar-empty \{ opacity: \.6; pointer-events: none; \}/);
+  assert.match(css, /\.ebs-ar-refresh\[aria-busy="true"\] \.ebs-ar-spin \{ animation: ebs-ar-spin 800ms linear infinite; \}/);
+  const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(reduced, /\.ebs-ar-refresh\[aria-busy="true"\] \.ebs-ar-spin \{ animation: none; \}/, 'with less motion the icon stands still');
+});
+
+test('Terug goes one folder up and selects the folder you came from; off in Basismap', async () => {
+  const p = await archivePage();
+  const back = p.$('.ebs-ar-tools .ebs-ar-back');
+  assert.equal(p.$('.ebs-ar-tools').firstElementChild, back, 'at the far left of the toolbar');
+  assert.equal(back.getAttribute('aria-disabled'), 'false');
+  assert.equal(back.getAttribute('aria-label'), 'Terug naar Basismap');
+  assert.equal(back.querySelector('.ebs-ar-tip').textContent, 'Terug naar Basismap · Backspace');
+  click(p, folderButton(p, 'Oktober'));
+  await settleAll(p, 6);
+  assert.equal(back.getAttribute('aria-label'), 'Terug naar Inkoopfacturen 2026');
+  click(p, back);
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Oktober', 'a script click does nothing');
+  trusted(p, back);
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026');
+  const came = rowNode(p, 'Oktober').querySelector('.ebs-ar-file');
+  assert.ok(came.classList.contains('current'), 'the folder you came from is selected');
+  assert.equal(p.document.activeElement, came, 'so Enter goes straight back in');
+
+  // Backspace in the list goes up too; not while typing in the search field.
+  const search = p.$('.ebs-ar-search input');
+  search.focus();
+  const typed = trusted(p, search, 'keydown', { key: 'Backspace' });
+  assert.equal(typed.defaultPrevented, false);
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026');
+  trusted(p, came, 'keydown', { key: 'Backspace' });
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Basismap');
+  assert.deepEqual(rowNames(p), ['Inkoopfacturen 2026', 'Inbox', 'Leeg'], 'folders as rows, newest first');
+  assert.ok(rowNode(p, 'Inkoopfacturen 2026').querySelector('.ebs-ar-file').classList.contains('current'));
+
+  // In Basismap: off, with its own tooltip, and nothing happens.
+  assert.equal(back.getAttribute('aria-disabled'), 'true');
+  assert.equal(back.querySelector('.ebs-ar-tip').textContent, 'Je bent al in de bovenste map');
+  const log = nativeLog(p).length;
+  trusted(p, back);
+  trusted(p, rowNode(p, 'Inbox').querySelector('.ebs-ar-file'), 'keydown', { key: 'ArrowUp', altKey: true });
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Basismap');
+  assert.equal(nativeLog(p).length, log);
+
+  // Alt+pijl omhoog from a subfolder opened with Enter: the focus stays in
+  // the list, so the keys still work.
+  const into = rowNode(p, 'Inkoopfacturen 2026').querySelector('.ebs-ar-file');
+  into.focus();
+  trusted(p, into, 'keydown', { key: 'Enter' });
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Inkoopfacturen 2026');
+  assert.ok(p.$('.ebs-ar-files').contains(p.document.activeElement), 'the focus is still in the list');
+  trusted(p, p.document.activeElement, 'keydown', { key: 'ArrowUp', altKey: true });
+  await settleAll(p, 6);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Basismap');
+  assert.equal(p.ours().length, 1, 'going up makes no request of ours');
+});
+
+test('folder rows: Map, date and time, dashes, selection and e-Boekhouden\'s own right-click menu', async () => {
+  const p = await archivePage();
+  const folder = rowNode(p, 'Oktober');
+  assert.equal(p.$('.ebs-ar-body .ebs-ar-item'), folder, 'first in the list');
+  assert.equal(folder.querySelector('.ebs-ar-meta').textContent, 'Map');
+  assert.equal(folder.querySelector('.ebs-ar-date').textContent, '01-10-2026 09:15');
+  assert.equal(folder.querySelector('.ebs-ar-statuscell .ebs-ar-none').textContent, '-');
+  assert.equal(folder.querySelector('.ebs-ar-statuscell .ebs-ar-none').getAttribute('aria-label'), 'Geen status');
+  assert.equal(folder.querySelector('.ebs-ar-links').textContent, '-');
+  assert.ok(folder.querySelector('.ebs-ar-type svg'), 'a folder icon');
+
+  click(p, folder.querySelector('.ebs-ar-check'));
+  await settleAll(p);
+  assert.deepEqual([...p.window.__archive.state.selected], [13], 'e-Boekhouden\'s own checkbox');
+  assert.equal(p.$('.ebs-ar-bar-count').textContent, '1 map geselecteerd');
+  click(p, rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-check'));
+  await settleAll(p);
+  assert.equal(p.$('.ebs-ar-bar-count').textContent, '1 map en 1 bestand geselecteerd');
+
+  const line = folder.querySelector('.ebs-ar-file');
+  const script = new p.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 200 });
+  line.dispatchEvent(script);
+  assert.equal(script.defaultPrevented, false, 'a script event opens nothing');
+  assert.equal(p.$('.contextMenu').hasAttribute('custom-hidden'), true);
+  const right = trusted(p, line, 'contextmenu', { clientX: 300, clientY: 200, button: 2 });
+  assert.equal(right.defaultPrevented, true);
+  assert.equal(p.$('.contextMenu').hasAttribute('custom-hidden'), false, 'e-Boekhouden\'s own menu opens');
+  assert.equal(p.window.__archive.state.menu.item.id, 13, 'for the folder');
+  const html = p.document.documentElement;
+  assert.ok(html.classList.contains('ebs-archive-menu'));
+  assert.equal(html.style.getPropertyValue('--ebs-ar-menu-x'), '300px', 'at the mouse');
+  assert.equal(html.style.getPropertyValue('--ebs-ar-menu-y'), '200px');
+  p.document.body.dispatchEvent(new p.window.MouseEvent('pointerup', { bubbles: true }));
+  await settleAll(p);
+  assert.equal(p.$('.contextMenu').hasAttribute('custom-hidden'), true);
+  assert.equal(html.classList.contains('ebs-archive-menu'), false, 'closed, it is e-Boekhouden\'s own again');
+  assert.deepEqual(nativeLog(p), [], 'nothing was clicked in the menu');
+});
+
+test('files dropped on a folder row open that folder and go to its upload window', async () => {
+  const p = await archivePage();
+  const { window } = p;
+  window.DataTransfer = class DataTransfer {
+    constructor() {
+      this.files = [];
+      this.types = ['Files'];
+      this.items = { add: (file) => this.files.push(file) };
+    }
+  };
+  window.DragEvent = class DragEvent extends window.Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.dataTransfer = init.dataTransfer ?? null;
+    }
+  };
+  const files = [new window.File(['a'], 'a.pdf'), new window.File(['b'], 'b.jpg')];
+  const dataTransfer = { types: ['Files'], files, items: files.map(() => ({ kind: 'file' })) };
+  const line = rowNode(p, 'Oktober').querySelector('.ebs-ar-file');
+  const over = trusted(p, line, 'dragover', { dataTransfer }, window.DragEvent);
+  assert.equal(over.defaultPrevented, true);
+  assert.ok(line.classList.contains('ebs-ar-drop'), 'the folder row lights up');
+  assert.equal(line.querySelector('.ebs-ar-droplabel').textContent, 'Hierheen · 2');
+  assert.equal(rowNode(p, 'Huur kantoor november.pdf').querySelector('.ebs-ar-droplabel'), null, 'a file row is no target');
+  trusted(p, line, 'drop', { dataTransfer }, window.DragEvent);
+  await settleAll(p, 8);
+  assert.equal(p.$('.ebs-ar-folder.current').textContent, 'Oktober', 'the folder opened');
+  assert.ok(p.$('app-digitaal-archief-upload'), 'e-Boekhouden\'s own upload window, for that folder');
+  assert.deepEqual(nativeLog(p), ['Bestanden uploaden', 'dropped 2'], 'once, and not started');
 });

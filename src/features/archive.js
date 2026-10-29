@@ -77,6 +77,12 @@
   const MANY = 100;
   // Downloads go one by one through e-Boekhouden's own double-click.
   const MAX_DOWNLOADS = 20;
+  // A folder load ends in rows, an empty folder or an error within this time,
+  // also when e-Boekhouden's answer never comes; a late answer still shows.
+  const LOAD_TIMEOUT = 6000;
+  // e-Boekhouden draws its rows 20 ms after its answer. Longer than this and
+  // the files of the answer did not come on screen.
+  const ROWS_GRACE = 1500;
   const STATUS_TONE = {
     'Ingevoerd': 'done',
     'Niet ingevoerd': 'todo',
@@ -135,6 +141,12 @@
     if (label && label.textContent !== text) label.textContent = text;
   }
 
+  // A tooltip of ours: one line, or two when it is long.
+  function tip(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+    node.classList.toggle('two', text.length > 34);
+  }
+
   const text = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
   const plural = (count, one, more) => `${count} ${count === 1 ? one : more}`;
 
@@ -174,8 +186,12 @@
     folderId: null,
     // The newest filelist answer failed: { folderId, message, at } or null.
     error: null,
+    // When the newest filelist answer for each folder came in, also a failed
+    // or unreadable one: folderId -> time.
+    answered: new Map(),
     menhFolderId: null,
     directories: null,
+    // When the newest filelist answer came in (0: none yet on this visit).
     lastAt: 0,
   };
 
@@ -213,18 +229,20 @@
     const list = FILELIST.exec(data.url);
     if (list && data.method === 'GET') {
       const folderId = Number(list[1]);
+      const now = Date.now();
       observed.folderId = folderId;
       if (data.status >= 400 || data.status === 0) {
         const answer = parseJson(data.body);
-        observed.error = { folderId, message: str(answer?.message, 300) || 'Er is iets misgegaan.', at: Date.now() };
+        observed.error = { folderId, message: str(answer?.message, 300) || 'Er is iets misgegaan.', at: now };
       } else {
         const answer = parseJson(data.body);
         if (Array.isArray(answer)) {
           observed.error = null;
-          observed.lists = [{ folderId, items: answer.map(cleanItem).filter(Boolean), at: Date.now() }, ...observed.lists.filter((one) => one.folderId !== folderId)].slice(0, 4);
+          observed.lists = [{ folderId, items: answer.map(cleanItem).filter(Boolean), at: now }, ...observed.lists.filter((one) => one.folderId !== folderId)].slice(0, 4);
         }
       }
-      observed.lastAt = Date.now();
+      observed.answered.set(folderId, now);
+      observed.lastAt = now;
       schedule();
       return;
     }
@@ -262,7 +280,15 @@
       observed.lists = [];
       observed.folderId = null;
       observed.error = null;
+      observed.answered.clear();
+      observed.lastAt = 0;
     }
+  }
+
+  // Whether this visit reads the page's filelist answers at all (the first
+  // one of a page load can go out before the hook is on).
+  function observing() {
+    return observed.on && observed.lastAt > 0;
   }
 
   // The page's own answer for the folder it shows now, if it could be read.
@@ -274,14 +300,76 @@
     return observed.apiBase ?? `${location.origin}/v1/api/`;
   }
 
+  const two = (number) => String(number).padStart(2, '0');
+  const ZONED = /(Z|[+-]\d{2}:?\d{2})$/;
+
   // "2026-10-28T14:03:12" -> "28-10-2026 14:03", as e-Boekhouden shows it.
   function nativeDate(value) {
     const local = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
-    if (local && !/(Z|[+-]\d{2}:?\d{2})$/.test(value)) return `${local[3]}-${local[2]}-${local[1]} ${local[4]}:${local[5]}`;
+    if (local && !ZONED.test(value)) return `${local[3]}-${local[2]}-${local[1]} ${local[4]}:${local[5]}`;
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '';
-    const two = (number) => String(number).padStart(2, '0');
     return `${two(date.getDate())}-${two(date.getMonth() + 1)}-${date.getFullYear()} ${two(date.getHours())}:${two(date.getMinutes())}`;
+  }
+
+  // A moment in local time, { y, mo, d, h, mi, s, time }, from the datum of
+  // e-Boekhouden's filelist answer ("2026-10-28T14:32:05"). `time` is false
+  // when the value has no time: no time part, or midnight to the second,
+  // which is how a date without a time is stored.
+  function datumMoment(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?/.exec(value ?? '');
+    if (!match) return null;
+    if (match[4] !== undefined && ZONED.test(value)) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return null;
+      const midnight = date.getUTCHours() + date.getUTCMinutes() + date.getUTCSeconds() === 0;
+      return { y: date.getFullYear(), mo: date.getMonth() + 1, d: date.getDate(), h: date.getHours(), mi: date.getMinutes(), s: date.getSeconds(), time: !midnight };
+    }
+    const [y, mo, d, h, mi, s] = match.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
+    return { y, mo, d, h, mi, s, time: h + mi + s > 0 };
+  }
+
+  // The same from e-Boekhouden's own text ("28-10-2026 14:32"). Its list
+  // always prints a time; 00:00 is a date without one.
+  function shownMoment(value) {
+    const match = /^(\d{2})-(\d{2})-(\d{4})(?: (\d{2}):(\d{2}))?$/.exec(value ?? '');
+    if (!match) return null;
+    const [d, mo, y, h, mi] = match.slice(1).map((part) => (part === undefined ? 0 : Number(part)));
+    return { y, mo, d, h, mi, s: 0, time: h + mi > 0 };
+  }
+
+  // "28-10-2026 14:32", or "28-10-2026" without a time: never a made-up one.
+  function showMoment(moment) {
+    if (!moment) return '';
+    const date = `${two(moment.d)}-${two(moment.mo)}-${moment.y}`;
+    return moment.time ? `${date} ${two(moment.h)}:${two(moment.mi)}` : date;
+  }
+
+  const stampOf = (moment) => (moment ? ((((moment.y * 100 + moment.mo) * 100 + moment.d) * 100 + moment.h) * 100 + moment.mi) * 100 + moment.s : null);
+
+  const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+  // A folder's id by its path in the tree, from the page's own folder/directory
+  // answer; Basismap is 0. Null while that answer is not in, or when two
+  // folders have the same path.
+  let pathIds = { from: null, ids: null };
+  function folderIdOf(folder) {
+    if (!folder) return null;
+    if (folder.root) return 0;
+    const directories = observed.directories;
+    if (!directories) return null;
+    if (pathIds.from !== directories) {
+      const byId = new Map(directories.map((item) => [item.id, item]));
+      const ids = new Map();
+      for (const item of directories) {
+        const path = [];
+        for (let at = item; at && path.length < 30; at = at.parentId ? byId.get(at.parentId) : null) path.unshift(norm(at.naam));
+        const key = JSON.stringify(path);
+        ids.set(key, ids.has(key) ? null : item.id);
+      }
+      pathIds = { from: directories, ids };
+    }
+    return pathIds.ids.get(JSON.stringify(folder.path)) ?? null;
   }
 
   // Id and koppelCount per rendered row, from the page's own filelist answer
@@ -307,6 +395,8 @@
       used.add(item.id);
       row.id = item.id;
       row.koppelCount = item.koppelCount;
+      // The answer's own datum: to the second, and it tells a date without a time.
+      row.moment = datumMoment(item.datum) ?? row.moment;
     }
   }
 
@@ -319,6 +409,18 @@
     const container = host?.querySelector(':scope > .container-da');
     if (!container) return null;
     return { host, container, main: container.querySelector(':scope > .main') };
+  }
+
+  // e-Boekhouden rebuilds its whole folder tree (new elements) each time its
+  // folder/directory answer comes in, which is after every folder change.
+  // So a click finds the folder in the tree as it is now, by its path, and
+  // never uses an element read for an earlier draw: that one may be gone
+  // from the page, and a click on it does nothing.
+  function liveFolder(path) {
+    const host = findNative()?.host;
+    if (!host) return null;
+    const key = JSON.stringify(path);
+    return readFolders(host).find((folder) => JSON.stringify(folder.path) === key) ?? null;
   }
 
   function readFolders(host) {
@@ -418,7 +520,9 @@
         name,
         soort,
         dateText,
-        date: dateText.split(' ')[0] ?? '',
+        moment: shownMoment(dateText),
+        date: '',
+        stamp: null,
         status: STATUS_TONE[status] ? status : '',
         size: text(native.querySelector('.g-size .size')),
         deleted: native.classList.contains('deleted'),
@@ -432,6 +536,8 @@
     for (const row of rows) {
       // Once expanded, e-Boekhouden's own details are the most current count.
       if (row.details && !row.details.loading) row.koppelCount = row.details.lines.length;
+      row.date = showMoment(row.moment) || row.dateText;
+      row.stamp = stampOf(row.moment);
     }
     return { ready: true, rows };
   }
@@ -492,6 +598,7 @@
     document.documentElement.classList.add('ebs-archive-driving');
     try {
       closeMenu();
+      nativeMenu.close();
       const rect = row.native.getBoundingClientRect();
       row.native.dispatchEvent(new MouseEvent('contextmenu', {
         bubbles: true, cancelable: true, button: 2, buttons: 2,
@@ -523,6 +630,60 @@
     if (tool.disabled) return `e-Boekhouden staat "${TOOLBAR[key]}" nu niet toe.`;
     tool.node.click();
     return '';
+  }
+
+  // e-Boekhouden's own right-click menu for a row of ours, on the user's
+  // right-click: its handler builds the menu for that row (file or folder)
+  // and the selection, as on its own list, and the user clicks its items.
+  // It places the menu against its .main, which is hidden here, so our
+  // stylesheet puts it at the mouse, inside the window.
+  const nativeMenu = {
+    open(row, event, line) {
+      let x = event.clientX;
+      let y = event.clientY;
+      // From the keyboard (the menu key, Shift+F10): under the row.
+      if (!x && !y) {
+        const rect = line.getBoundingClientRect();
+        x = rect.left + 24;
+        y = rect.bottom;
+      }
+      const html = document.documentElement;
+      html.classList.remove('ebs-archive-driving');
+      html.classList.add('ebs-archive-menu');
+      this.place(x, y);
+      row.native.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, buttons: 2, clientX: Math.round(x), clientY: Math.round(y) }));
+      // Angular draws the menu during that event: keep it inside the window.
+      const box = menuNode()?.getBoundingClientRect();
+      if (box?.width) this.place(Math.min(x, window.innerWidth - box.width - 8), Math.min(y, window.innerHeight - box.height - 8));
+    },
+    place(x, y) {
+      const html = document.documentElement;
+      html.style.setProperty('--ebs-ar-menu-x', `${Math.max(8, Math.round(x))}px`);
+      html.style.setProperty('--ebs-ar-menu-y', `${Math.max(8, Math.round(y))}px`);
+    },
+    // Once e-Boekhouden closed it, its menu is its own again.
+    update() {
+      const html = document.documentElement;
+      if (!html.classList.contains('ebs-archive-menu')) return;
+      const menu = menuNode();
+      if (!menu || menu.hasAttribute('custom-hidden')) this.close();
+    },
+    close() {
+      const html = document.documentElement;
+      html.classList.remove('ebs-archive-menu');
+      html.style.removeProperty('--ebs-ar-menu-x');
+      html.style.removeProperty('--ebs-ar-menu-y');
+    },
+  };
+
+  const hasFiles = (event) => [...(event.dataTransfer?.types ?? [])].includes('Files');
+
+  // The dropped files, as e-Boekhouden's upload window takes them.
+  function transferOf(fileList) {
+    if (typeof DataTransfer !== 'function') return null;
+    const transfer = new DataTransfer();
+    for (const file of fileList ?? []) transfer.items.add(file);
+    return transfer.files.length ? transfer : null;
   }
 
   // e-Boekhouden downloads a file on a double-click of its row.
@@ -563,12 +724,24 @@
   const ui = {
     query: '',
     quick: 'all',
+    // Datum, newest first; a click on the column turns it round.
+    sortDir: 'desc',
     // Key of the row in the preview, and of the shift-select anchor.
     previewKey: null,
     anchorKey: null,
-    // After a click on a folder: { name, since, signature, observedAt }.
+    // The row that has the cursor after Terug: the folder you came from. Its
+    // name until the parent's rows are in, then its key.
+    cursorName: null,
+    cursorKey: null,
+    // A folder load the user started (see startLoad), until its answer is in.
     pending: null,
+    // A load that got no answer in time: { at, signature }, until the answer
+    // comes after all or e-Boekhouden draws other rows.
+    failure: null,
+    // Since when the view waits for e-Boekhouden's first list on this visit.
+    bootSince: 0,
     emptySince: 0,
+    rowsWaitSince: 0,
     shownState: '',
     inboxCount: null,
     inboxAsked: null,
@@ -577,50 +750,168 @@
     messages: { bar: '', preview: '' },
   };
 
+  const collator = new Intl.Collator('nl', { numeric: true, sensitivity: 'base' });
+
+  // Folders first, then files; each newest first (or oldest first with the
+  // column turned round), then by name. Without a date: last.
+  function sortRows(rows) {
+    const sign = ui.sortDir === 'asc' ? 1 : -1;
+    return rows.sort((a, b) => {
+      if (a.soort !== b.soort) return a.soort === 'D' ? -1 : 1;
+      if (a.stamp !== b.stamp) {
+        if (a.stamp === null) return 1;
+        if (b.stamp === null) return -1;
+        return sign * (a.stamp - b.stamp);
+      }
+      return collator.compare(a.name, b.name);
+    });
+  }
+
   function visibleRows(rows) {
     const needle = ui.query.trim().toLowerCase();
-    return rows.filter((row) => {
+    return sortRows(rows.filter((row) => {
       if (ui.quick !== 'all' && row.soort !== 'F') return false;
       if (ui.quick === 'without' && row.hasLinks) return false;
       if (ui.quick === 'with' && !row.hasLinks) return false;
       if (ui.quick === 'recognized' && row.status !== 'Is herkend') return false;
-      if (needle && ![row.name, row.dateText, row.status].join(' ').toLowerCase().includes(needle)) return false;
+      if (needle && ![row.name, row.date, row.status].join(' ').toLowerCase().includes(needle)) return false;
       return true;
-    });
+    }));
   }
 
   function rowsSignature(rows) {
     return rows.map((row) => row.key).join('\n');
   }
 
+  // One render when `time` comes, for a wait that no change of the page ends.
+  let wake = { timer: null, at: 0 };
+  function wakeAt(time) {
+    if (wake.timer && wake.at <= time) return;
+    clearTimeout(wake.timer);
+    wake = {
+      at: time,
+      timer: setTimeout(() => {
+        wake = { timer: null, at: 0 };
+        schedule();
+      }, Math.max(0, time - Date.now()) + 20),
+    };
+  }
+
+  // A folder load starts with the user's click on a folder, a folder row,
+  // Terug, a drop on a folder or the refresh: { since, folderId (null when
+  // the view cannot tell it yet), name, headerBefore, signature, refresh,
+  // dim }. It ends when e-Boekhouden's answer for that folder is in, when its
+  // rows are on screen, or after LOAD_TIMEOUT with "Kon de map niet laden".
+  // It never waits for e-Boekhouden's header: that skips a folder change
+  // while its own GET still runs (its loadDirectory has a `loading` guard),
+  // so after a quick second click, or a click during the first load of the
+  // screen, the header keeps the folder before.
+  function startLoad({ folderId = null, name = '', refresh = false, dim = false } = {}) {
+    const native = view.native;
+    ui.pending = {
+      since: Date.now(), folderId, name, headerBefore: native?.header.name ?? '',
+      signature: rowsSignature(native?.rows ?? []), refresh, dim,
+    };
+    ui.failure = null;
+    ui.emptySince = 0;
+    ui.rowsWaitSince = 0;
+    wakeAt(ui.pending.since + LOAD_TIMEOUT);
+  }
+
+  function answeredSince(folderId, since) {
+    return (folderId === null ? observed.lastAt : observed.answered.get(folderId) ?? 0) > since;
+  }
+
+  // The state of the list, and whether to hold what is on screen meanwhile
+  // (e-Boekhouden empties its list for a moment before it draws the new
+  // rows; a refresh keeps the rows, dimmed). Every wait has an end: a
+  // timer wakes the view when no change of the page does.
   function listState(native, visible) {
+    const now = Date.now();
+    const signature = rowsSignature(native.rows);
+    const selected = native.folders.find((folder) => folder.selected) ?? null;
+    const selectedId = folderIdOf(selected);
     const pending = ui.pending;
     if (pending) {
-      const arrived = observed.lastAt > pending.since;
-      const changed = rowsSignature(native.rows) !== pending.signature;
-      if (Date.now() - pending.since > 4000 || (native.header.name === pending.name && (arrived || changed))) ui.pending = null;
-      else return 'loading';
-    }
-    if (observed.error && observed.error.folderId === observed.folderId && observed.error.at >= (currentList()?.at ?? 0)) return 'error';
-    if (!native.ready) return 'loading';
-    if (!native.rows.length) {
-      // e-Boekhouden empties the list for a moment before it draws the new
-      // rows: an empty folder only counts once its answer says so, or after
-      // 300 ms without rows.
-      const expected = currentList()?.items.length ?? null;
-      if (expected) return ui.shownState || 'loading';
-      if (expected !== 0) {
-        ui.emptySince ||= Date.now();
-        if (Date.now() - ui.emptySince < 300) {
-          setTimeout(schedule, 320);
-          return ui.shownState || 'loading';
-        }
+      const changed = signature !== pending.signature;
+      // Without the page's answers on this visit, the rows (or, from one empty
+      // folder to another, the header) tell that the folder is in.
+      const blind = !observing();
+      const headerMoved = blind && !signature && !pending.signature && pending.name && native.header.name === pending.name && native.header.name !== pending.headerBefore;
+      if (answeredSince(pending.folderId, pending.since) || (changed && (blind || pending.folderId === null)) || headerMoved) {
+        ui.pending = null;
+      } else if (now - pending.since >= LOAD_TIMEOUT) {
+        ui.pending = null;
+        // No answer and nothing new on screen. A refresh that cannot be
+        // watched (no answer read on this visit) ends quietly.
+        if (!changed && !(pending.refresh && blind)) ui.failure = { at: now, signature };
+      } else {
+        wakeAt(pending.since + LOAD_TIMEOUT);
+        return pending.dim && ui.shownState ? { state: ui.shownState, hold: true } : { state: 'loading', hold: false };
       }
-      return 'empty';
+    }
+    if (ui.failure) {
+      if (answeredSince(selectedId, ui.failure.at) || signature !== ui.failure.signature) ui.failure = null;
+      else return { state: 'failed', hold: false };
+    }
+    // e-Boekhouden shows its newest answer, also one for a folder clicked
+    // earlier that came in last: then these rows are not the chosen folder's.
+    if (observing() && selectedId !== null && observed.folderId !== null && observed.folderId !== selectedId) {
+      // The chosen folder was asked before the first answer of this visit
+      // came in: its answer is still to come.
+      if (!observed.answered.has(selectedId)) {
+        startLoad({ folderId: selectedId, name: folderLabel(selected) });
+        return { state: 'loading', hold: false };
+      }
+      return { state: 'mismatch', hold: false };
+    }
+    if (observed.error && observed.error.folderId === observed.folderId && observed.error.at >= (currentList()?.at ?? 0)) return { state: 'error', hold: false };
+    if (!native.ready) {
+      ui.bootSince ||= now;
+      if (now - ui.bootSince < LOAD_TIMEOUT) {
+        wakeAt(ui.bootSince + LOAD_TIMEOUT);
+        return { state: 'loading', hold: false };
+      }
+      ui.failure = { at: now, signature };
+      return { state: 'failed', hold: false };
+    }
+    const hold = (until) => {
+      wakeAt(until);
+      return ui.shownState ? { state: ui.shownState, hold: true } : { state: 'loading', hold: false };
+    };
+    if (!native.rows.length) {
+      const list = currentList();
+      const expected = list ? list.items.length : null;
+      if (expected) {
+        // The answer has files: e-Boekhouden draws them in a moment.
+        ui.rowsWaitSince ||= now;
+        if (now - ui.rowsWaitSince < ROWS_GRACE) return hold(ui.rowsWaitSince + ROWS_GRACE);
+        ui.rowsWaitSince = 0;
+        ui.failure = { at: now, signature };
+        return { state: 'failed', hold: false };
+      }
+      ui.rowsWaitSince = 0;
+      // Without its answer an empty folder counts after 300 ms without rows.
+      if (expected !== 0) {
+        ui.emptySince ||= now;
+        if (now - ui.emptySince < 300) return hold(ui.emptySince + 300);
+      }
+      return { state: 'empty', hold: false };
     }
     ui.emptySince = 0;
-    return visible.length ? 'rows' : 'nomatch';
+    ui.rowsWaitSince = 0;
+    return { state: visible.length ? 'rows' : 'nomatch', hold: false };
   }
+
+  // The folder that has the selected folder in it, as the tree shows them.
+  function parentOf(folders) {
+    const current = folders.find((folder) => folder.selected) ?? null;
+    if (!current || current.root) return { current, parent: null };
+    const path = JSON.stringify(current.path.slice(0, -1));
+    return { current, parent: folders.find((folder) => JSON.stringify(folder.path) === path) ?? null };
+  }
+
+  const folderLabel = (folder) => (folder.root ? 'Basismap' : folder.name);
 
   function adminNumber() {
     const number = document.querySelector('app-header-identity-b .administratieId, app-header-identity #administratieId, app-header-identity .administratieId')?.textContent.trim();
@@ -753,6 +1044,8 @@
     native: null,
     rows: [],
     rowNodes: new Map(),
+    // A row to give the focus once it is drawn (after Terug).
+    focusKey: null,
 
     mount(native) {
       if (this.root?.isConnected && this.root.parentElement === native.container) return;
@@ -770,7 +1063,13 @@
       this.bar.remove();
       preview.reset();
       ui.previewKey = null;
+      ui.cursorKey = null;
+      ui.cursorName = null;
+      ui.pending = null;
+      ui.failure = null;
+      ui.bootSince = 0;
       ui.shownState = '';
+      nativeMenu.close();
     },
 
     build() {
@@ -807,7 +1106,42 @@
       const files = el('section', 'ebs-ar-files');
       files.setAttribute('aria-label', 'Bestanden');
       this.files = files;
+      // Backspace and Alt+pijl omhoog go up one folder, as Terug does, but
+      // not while typing in the search field.
+      files.addEventListener('keydown', (event) => {
+        if (!event.isTrusted || event.defaultPrevented) return;
+        const plain = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+        const up = (event.key === 'Backspace' && plain) || (event.key === 'ArrowUp' && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey);
+        if (!up || event.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+        event.preventDefault();
+        this.goUp();
+      });
       const tools = el('div', 'ebs-ar-tools');
+      // Terug: always in its place, off in Basismap (as Finder and Verkenner),
+      // so the toolbar never shifts.
+      this.back = el('button', 'ebs-ar-iconbutton ebs-ar-back');
+      this.back.type = 'button';
+      this.back.setAttribute('aria-keyshortcuts', 'Backspace Alt+ArrowUp');
+      this.backTip = el('span', 'ebs-ar-tip l');
+      this.backTip.setAttribute('role', 'tooltip');
+      this.backTip.setAttribute('aria-hidden', 'true');
+      this.back.append(EBS.icon('arrow-left'), this.backTip);
+      this.back.addEventListener('click', (event) => {
+        if (event.isTrusted) this.goUp();
+      });
+      // Vernieuwen: e-Boekhouden's own Lijst vernieuwen, in the user's click.
+      this.refreshButton = el('button', 'ebs-ar-iconbutton ebs-ar-refresh');
+      this.refreshButton.type = 'button';
+      const spin = el('span', 'ebs-ar-spin');
+      spin.append(EBS.icon('rotate-cw'));
+      this.refreshTip = el('span', 'ebs-ar-tip r');
+      this.refreshTip.setAttribute('role', 'tooltip');
+      this.refreshTip.setAttribute('aria-hidden', 'true');
+      this.refreshButton.append(spin, this.refreshTip);
+      this.refreshButton.addEventListener('click', (event) => {
+        if (!event.isTrusted || this.refreshButton.getAttribute('aria-disabled') === 'true' || ui.pending?.refresh) return;
+        this.reloadFolder();
+      });
       const search = el('label', 'ebs-ar-search');
       search.append(EBS.icon('search'));
       this.searchInput = el('input');
@@ -820,7 +1154,11 @@
       });
       search.append(this.searchInput);
       this.chips = el('span', 'ebs-ar-chips');
-      tools.append(search, this.chips);
+      // Search and quick-selects wrap between Terug and Vernieuwen, which
+      // keep their corners.
+      const toolsMain = el('div', 'ebs-ar-tools-main');
+      toolsMain.append(search, this.chips);
+      tools.append(this.back, toolsMain, this.refreshButton);
 
       const headRow = el('div', 'ebs-ar-row ebs-ar-row-head');
       this.allCheck = el('button', 'ebs-ar-check');
@@ -829,9 +1167,18 @@
       this.allCheck.setAttribute('aria-label', 'Alles in beeld selecteren');
       this.allCheck.append(EBS.icon('check', { size: 14 }));
       this.allCheck.addEventListener('click', () => this.toggleAll());
-      headRow.append(this.allCheck, el('span', '', 'Bestand'), el('span', '', 'Datum'), el('span', '', 'Status'), el('span', '', 'Koppelingen'));
+      this.sortButton = el('button', 'ebs-ar-sort');
+      this.sortButton.type = 'button';
+      this.sortButton.addEventListener('click', () => {
+        ui.sortDir = ui.sortDir === 'desc' ? 'asc' : 'desc';
+        this.draw();
+      });
+      headRow.append(this.allCheck, el('span', '', 'Bestand'), this.sortButton, el('span', '', 'Status'), el('span', '', 'Koppelingen'));
 
       this.scroll = el('div', 'ebs-ar-scroll');
+      // Holds the focus when the focused row goes (a folder opened from the
+      // keyboard), so Backspace and Alt+pijl omhoog keep working.
+      this.scroll.tabIndex = -1;
       this.skeleton = el('div', 'ebs-ar-skeleton');
       this.skeleton.setAttribute('aria-busy', 'true');
       this.skeleton.setAttribute('aria-label', 'De bestanden worden geladen');
@@ -853,10 +1200,15 @@
       this.empty.append(this.emptyTitle, this.emptyText, this.emptyAction);
       this.error = el('div', 'ebs-ar-error');
       this.error.setAttribute('role', 'alert');
+      const errorCopy = el('span', 'ebs-ar-error-copy');
+      this.errorTitle = el('strong', 'ebs-ar-error-title');
       this.errorText = el('span', 'ebs-ar-error-text');
-      this.reload = button('ebs-ar-button primary small', 'Opnieuw laden', () => this.toolbarAction(this.reload, 'refresh'), 'refresh-cw');
-      this.reload.title = 'De vernieuwknop van e-Boekhouden';
-      this.error.append(this.errorText, this.reload);
+      errorCopy.append(this.errorTitle, this.errorText);
+      this.reload = button('ebs-ar-button small', 'Opnieuw laden', (event) => {
+        if (event.isTrusted) this.reloadFolder();
+      }, 'rotate-cw');
+      this.reload.title = 'Lijst vernieuwen van e-Boekhouden, zoals de knop rechtsboven';
+      this.error.append(errorCopy, this.reload);
       this.uploadStatus = el('div', 'ebs-ar-upload');
       this.uploadStatus.setAttribute('role', 'status');
       this.uploadTitle = el('span', 'ebs-ar-upload-title');
@@ -902,9 +1254,9 @@
     },
 
     // Files dropped on the list go to e-Boekhouden's own upload window, as if
-    // dropped there; uploading still takes its "Start upload".
+    // dropped there; uploading still takes its "Start upload". On a folder
+    // row they go to that folder (see makeRow).
     dropTarget(files) {
-      const hasFiles = (event) => [...(event.dataTransfer?.types ?? [])].includes('Files');
       files.addEventListener('dragover', (event) => {
         if (!hasFiles(event)) return;
         event.preventDefault();
@@ -913,22 +1265,40 @@
       files.addEventListener('dragleave', (event) => {
         if (!files.contains(event.relatedTarget)) files.classList.remove('dragging');
       });
-      files.addEventListener('drop', async (event) => {
+      files.addEventListener('drop', (event) => {
         if (!hasFiles(event)) return;
         event.preventDefault();
         files.classList.remove('dragging');
-        if (typeof DataTransfer !== 'function') return;
-        const transfer = new DataTransfer();
-        for (const file of event.dataTransfer.files) transfer.items.add(file);
-        if (!transfer.files.length) return;
-        const problem = readNative()?.upload ? '' : clickToolbar('upload');
-        if (problem) {
-          this.headMessage.textContent = problem;
-          return;
-        }
-        const zone = await waitFor(() => document.querySelector('app-digitaal-archief-upload app-file-upload-list .file-container'));
-        zone?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        const transfer = transferOf(event.dataTransfer.files);
+        if (transfer) this.uploadFiles(transfer);
       });
+    },
+
+    // Into e-Boekhouden's own upload window, for the folder that is open.
+    async uploadFiles(transfer) {
+      const problem = readNative()?.upload ? '' : clickToolbar('upload');
+      if (problem) {
+        this.headMessage.textContent = problem;
+        return;
+      }
+      const zone = await waitFor(() => document.querySelector('app-digitaal-archief-upload app-file-upload-list .file-container'));
+      zone?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    },
+
+    // Dropped on a folder row: that folder opens (e-Boekhouden uploads to the
+    // folder that is open), then its upload window gets the files.
+    async uploadToFolder(row, fileList) {
+      const transfer = transferOf(fileList);
+      if (!transfer) return;
+      this.headMessage.textContent = '';
+      this.activate(row);
+      const state = await waitFor(() => (ui.pending ? null : this.root?.dataset.state), LOAD_TIMEOUT + 1000);
+      const open = this.native?.folders.find((folder) => folder.selected);
+      if (!['rows', 'empty', 'nomatch'].includes(state) || open?.name !== row.name) {
+        this.headMessage.textContent = `De map "${row.name}" ging niet open, dus er is niets geüpload. Probeer het opnieuw.`;
+        return;
+      }
+      await this.uploadFiles(transfer);
     },
 
     async toolbarAction(node, key) {
@@ -936,13 +1306,43 @@
       this.headMessage.textContent = '';
       await busy(node, async () => {
         await afterThisEvent();
-        if (key === 'refresh') ui.pending = { name: this.native?.header.name ?? '', since: Date.now(), signature: rowsSignature(this.native?.rows ?? []) };
         const problem = clickToolbar(key);
-        if (problem) {
-          ui.pending = null;
-          this.headMessage.textContent = problem;
-        }
+        if (problem) this.headMessage.textContent = problem;
       });
+    },
+
+    // e-Boekhouden's own Lijst vernieuwen, only from a trusted click (the
+    // refresh button, or Opnieuw proberen). Rows on screen stay, dimmed,
+    // until the answer is in: no skeleton.
+    reloadFolder() {
+      const native = this.native;
+      if (!native) return;
+      this.headMessage.textContent = '';
+      const selected = native.folders.find((folder) => folder.selected) ?? null;
+      startLoad({
+        folderId: folderIdOf(selected),
+        name: selected ? folderLabel(selected) : '',
+        refresh: true,
+        dim: ['rows', 'empty', 'nomatch'].includes(ui.shownState),
+      });
+      const problem = clickToolbar('refresh');
+      if (problem) {
+        ui.pending = null;
+        this.headMessage.textContent = problem;
+      }
+      this.draw();
+    },
+
+    // One folder up, as Terug, Backspace and Alt+pijl omhoog. Once the
+    // parent's rows are in, the folder you came from has the cursor, so
+    // Enter goes back in.
+    goUp() {
+      const host = findNative()?.host;
+      if (!host || !this.native) return;
+      const { current, parent } = parentOf(readFolders(host));
+      if (!parent) return;
+      this.openFolder(parent);
+      ui.cursorName = current.name;
     },
 
     emptyClick() {
@@ -958,21 +1358,35 @@
     },
 
     openFolder(folder) {
+      if (!folder?.label?.isConnected) {
+        this.headMessage.textContent = 'Deze map staat niet meer in de lijst van e-Boekhouden.';
+        return;
+      }
+      this.headMessage.textContent = '';
       preview.reset();
       ui.previewKey = null;
       ui.anchorKey = null;
-      ui.pending = { name: folder.root ? 'Basismap' : folder.name, since: Date.now(), signature: rowsSignature(this.native?.rows ?? []) };
+      ui.cursorKey = null;
+      ui.cursorName = null;
+      startLoad({ folderId: folderIdOf(folder), name: folderLabel(folder) });
       folder.label?.click();
       this.draw();
     },
 
     toggleFolder(folder) {
-      folder.toggle?.click();
+      if (folder?.toggle?.isConnected) folder.toggle.click();
       schedule();
     },
 
+    // What e-Boekhouden shows now, for an action of the user.
+    fresh() {
+      const native = readNative();
+      if (native) this.native = native;
+      return this.native;
+    },
+
     toggleAll() {
-      const visible = visibleRows(this.native?.rows ?? []);
+      const visible = visibleRows(this.fresh()?.rows ?? []);
       const every = visible.length > 0 && visible.every((row) => row.check?.checked);
       setChecked(visible, !every);
       ui.anchorKey = null;
@@ -980,7 +1394,7 @@
     },
 
     toggleRow(row, shift) {
-      const visible = visibleRows(this.native.rows);
+      const visible = visibleRows(this.fresh().rows);
       const at = visible.findIndex((one) => one.key === row.key);
       const from = ui.anchorKey ? visible.findIndex((one) => one.key === ui.anchorKey) : -1;
       if (shift && from >= 0 && at >= 0 && from !== at) {
@@ -1008,16 +1422,25 @@
       for (const [key, node] of this.rowNodes) node.firstElementChild.classList.toggle('ebs-ar-range', range.has(key));
     },
 
+    // The row as e-Boekhouden has it now: its list too renders new elements
+    // with each answer.
     rowByKey(key) {
-      return this.native?.rows.find((row) => row.key === key) ?? null;
+      const row = this.native?.rows.find((one) => one.key === key) ?? null;
+      if (!row || row.native.isConnected) return row;
+      const fresh = readNative();
+      if (fresh) this.native = fresh;
+      return fresh?.rows.find((one) => one.key === key) ?? null;
     },
 
     activate(row) {
+      ui.cursorKey = null;
+      ui.cursorName = null;
       if (row.soort === 'D') {
         // A folder in the list opens, as with e-Boekhouden's double-click.
-        ui.pending = { name: row.name, since: Date.now(), signature: rowsSignature(this.native.rows) };
+        startLoad({ folderId: row.id, name: row.name });
         preview.reset();
         ui.previewKey = null;
+        ui.anchorKey = null;
         download(row);
         this.draw();
         return;
@@ -1062,13 +1485,18 @@
       const native = this.native;
       const rows = native.rows;
       const visible = visibleRows(rows);
-      const state = listState(native, visible);
+      const { state, hold } = listState(native, visible);
       const files = rows.filter((row) => row.soort === 'F');
-      const folderName = native.header.name || native.folders.find((folder) => folder.selected)?.name || '';
-      if (native.header.isInbox) {
-        const current = native.folders.find((folder) => folder.selected);
-        if (current && !current.root) ui.inboxPath = current.path.join('/');
-      }
+      // The tree shows the chosen folder at once; e-Boekhouden's header can
+      // lag a folder behind (see startLoad).
+      const selected = native.folders.find((folder) => folder.selected) ?? null;
+      const folderName = selected ? folderLabel(selected) : native.header.name;
+      if (native.header.isInbox && selected && !selected.root && native.header.name === selected.name) ui.inboxPath = selected.path.join('/');
+
+      this.drawFolders(native);
+      this.drawTools(native, state);
+      // Until e-Boekhouden's rows are in, what is on screen stays as it is.
+      if (hold) return;
 
       // Header.
       const storage = native.header.storage ? ` · ${native.header.storage.used} van ${native.header.storage.limit} gebruikt` : '';
@@ -1081,21 +1509,23 @@
       }
       this.paste.title = native.toolbar.paste.disabled ? 'Eerst knippen in een andere map; daarna plak je hier' : 'Plak de geknipte bestanden in deze map';
 
-      this.drawFolders(native);
       this.drawChips(files);
 
       // The list and its states.
+      const failed = state === 'error' || state === 'failed' || state === 'mismatch';
       this.root.dataset.state = state;
       if (state !== ui.shownState) {
         for (const node of [this.empty, this.error, this.uploadStatus, this.more]) node.classList.remove('ebs-ar-in');
-        const shown = { empty: this.empty, nomatch: this.empty, error: this.error }[state];
+        const shown = failed ? this.error : { empty: this.empty, nomatch: this.empty }[state];
         if (shown && ui.shownState) shown.classList.add('ebs-ar-in');
         ui.shownState = state;
       }
+      const focusHere = this.body.contains(document.activeElement) && state !== 'rows';
       this.skeleton.hidden = state !== 'loading';
       this.body.hidden = state !== 'rows';
+      if (focusHere) this.scroll.focus({ preventScroll: true });
       this.empty.hidden = state !== 'empty' && state !== 'nomatch';
-      this.error.hidden = state !== 'error';
+      this.error.hidden = !failed;
       if (state === 'empty') {
         this.emptyTitle.textContent = 'Deze map is leeg';
         this.emptyText.textContent = 'Sleep bestanden hierheen of upload ze. Pdf, jpg en png krijgen een voorbeeld; e-Boekhouden kan ze ook herkennen.';
@@ -1115,7 +1545,15 @@
         this.emptyAction.disabled = false;
       }
       if (state === 'error') {
-        this.errorText.textContent = `De bestanden in deze map konden niet worden geladen. e-Boekhouden meldt: "${observed.error?.message || 'Er is iets misgegaan.'}" Je bestanden zijn niet weg.`;
+        this.errorTitle.textContent = 'Deze map kon niet worden geladen';
+        this.errorText.textContent = `e-Boekhouden meldt: "${observed.error?.message || 'Er is iets misgegaan.'}" Je bestanden zijn niet weg.`;
+        setLabel(this.reload, 'Opnieuw laden');
+      } else if (state === 'failed' || state === 'mismatch') {
+        this.errorTitle.textContent = 'Kon de map niet laden';
+        this.errorText.textContent = state === 'failed'
+          ? 'e-Boekhouden gaf de lijst van deze map niet door. Je bestanden zijn niet weg.'
+          : 'e-Boekhouden toont de lijst van een andere map dan die je koos. Je bestanden zijn niet weg.';
+        setLabel(this.reload, 'Opnieuw proberen');
       }
       this.more.hidden = state !== 'rows' || files.length < MANY;
       this.more.textContent = `Alle ${files.length} bestanden staan in beeld: e-Boekhouden laadt een map in één keer. Zoeken en snelselectie gelden voor de hele map.`;
@@ -1127,7 +1565,23 @@
         this.uploadBar.style.transform = `scaleX(${upload.percent / 100})`;
       }
 
-      if (state === 'rows') this.drawRows(visible);
+      if (state === 'rows') {
+        // After Terug: the folder you came from gets the cursor.
+        if (ui.cursorName) {
+          ui.cursorKey = visible.find((row) => row.soort === 'D' && row.name === ui.cursorName)?.key ?? null;
+          ui.cursorName = null;
+          this.focusKey = ui.cursorKey;
+        }
+        this.drawRows(visible);
+        if (this.focusKey) {
+          const line = this.rowNodes.get(this.focusKey)?.firstElementChild;
+          this.focusKey = null;
+          line?.focus({ preventScroll: true });
+          line?.scrollIntoView?.({ block: 'nearest' });
+        }
+      } else if (!ui.pending) {
+        ui.cursorName = null;
+      }
       const allOn = state === 'rows' && visible.length > 0 && visible.every((row) => row.check?.checked);
       this.allCheck.setAttribute('aria-checked', String(allOn));
       this.allCheck.classList.toggle('on', allOn);
@@ -1135,6 +1589,31 @@
 
       this.drawPreview(native, state, visible);
       this.bar.update(rows.filter((row) => row.check?.checked));
+    },
+
+    drawTools(native, state) {
+      const { parent } = parentOf(native.folders);
+      const backTip = parent ? `Terug naar ${folderLabel(parent)} · Backspace` : 'Je bent al in de bovenste map';
+      this.back.setAttribute('aria-disabled', String(!parent));
+      this.back.setAttribute('aria-label', parent ? `Terug naar ${folderLabel(parent)}` : 'Terug: je bent al in Basismap, de bovenste map');
+      tip(this.backTip, backTip);
+
+      const refreshing = Boolean(ui.pending?.refresh);
+      const waiting = state === 'loading' && !refreshing;
+      this.refreshButton.setAttribute('aria-busy', String(refreshing));
+      this.refreshButton.setAttribute('aria-disabled', String(waiting));
+      this.refreshButton.setAttribute('aria-label', refreshing ? 'Bezig met vernieuwen' : 'Vernieuwen');
+      tip(this.refreshTip, refreshing ? 'Bezig met vernieuwen' : waiting ? 'Vernieuwen kan als de map er is' : 'Vernieuwen');
+      this.root.classList.toggle('ebs-ar-refreshing', Boolean(ui.pending?.dim));
+
+      const desc = ui.sortDir === 'desc';
+      const sortKey = ui.sortDir;
+      if (this.sortButton.dataset.dir !== sortKey) {
+        this.sortButton.dataset.dir = sortKey;
+        this.sortButton.replaceChildren('Datum', EBS.icon(desc ? 'arrow-down' : 'arrow-up', { size: 14 }));
+        this.sortButton.title = desc ? 'Gesorteerd op datum, nieuwste eerst. Klik: oudste eerst' : 'Gesorteerd op datum, oudste eerst. Klik: nieuwste eerst';
+        this.sortButton.setAttribute('aria-label', `Sorteren: Datum, ${desc ? 'nieuwste' : 'oudste'} eerst`);
+      }
     },
 
     drawFolders(native) {
@@ -1170,7 +1649,7 @@
           if (ui.inboxCount !== null) badge.setAttribute('aria-label', `${plural(ui.inboxCount, 'nieuw bestand', 'nieuwe bestanden')}`);
           pick.append(badge);
         }
-        pick.addEventListener('click', () => this.openFolder(folder));
+        pick.addEventListener('click', () => this.openFolder(liveFolder(folder.path)));
         line.append(pick);
         if (folder.toggle) {
           const toggle = el('button', 'ebs-ar-folder-toggle');
@@ -1179,7 +1658,7 @@
           toggle.setAttribute('aria-expanded', String(folder.open));
           toggle.setAttribute('aria-label', `${folder.open ? 'Submappen verbergen' : 'Submappen tonen'}: ${folder.root ? 'Basismap' : folder.name}`);
           toggle.append(EBS.icon(folder.open ? 'chevron-down' : 'chevron-right', { size: 14 }));
-          toggle.addEventListener('click', () => this.toggleFolder(folder));
+          toggle.addEventListener('click', () => this.toggleFolder(liveFolder(folder.path)));
           line.append(toggle);
         }
         this.folderList.append(line);
@@ -1219,12 +1698,15 @@
     // updates them in place, so focus and hover stay where they are.
     drawRows(visible) {
       const keep = new Set(visible.map((row) => row.key));
+      let lostFocus = false;
       for (const [key, node] of this.rowNodes) {
         if (!keep.has(key)) {
+          lostFocus ||= node.contains(document.activeElement);
           node.remove();
           this.rowNodes.delete(key);
         }
       }
+      if (lostFocus) this.scroll.focus({ preventScroll: true });
       let previous = null;
       for (const row of visible) {
         let node = this.rowNodes.get(row.key);
@@ -1275,6 +1757,38 @@
         const current = this.rowByKey(row.key);
         if (current) this.activate(current);
       });
+      // Right-click: e-Boekhouden's own menu for this file or folder.
+      line.addEventListener('contextmenu', (event) => {
+        const current = this.rowByKey(row.key);
+        if (!event.isTrusted || !current?.native.isConnected) return;
+        event.preventDefault();
+        nativeMenu.open(current, event, line);
+      });
+      // Files from the computer dropped on a folder row go to that folder.
+      const overFolder = (event) => this.rowByKey(row.key)?.soort === 'D' && hasFiles(event);
+      for (const type of ['dragenter', 'dragover']) {
+        line.addEventListener(type, (event) => {
+          if (!overFolder(event)) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+          const count = [...(event.dataTransfer?.items ?? [])].filter((item) => item.kind === 'file').length;
+          const label = line.querySelector('.ebs-ar-droplabel');
+          if (label) label.textContent = count ? `Hierheen · ${count}` : 'Hierheen';
+          line.classList.add('ebs-ar-drop');
+        });
+      }
+      line.addEventListener('dragleave', (event) => {
+        if (!line.contains(event.relatedTarget)) line.classList.remove('ebs-ar-drop');
+      });
+      line.addEventListener('drop', (event) => {
+        if (!overFolder(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        line.classList.remove('ebs-ar-drop');
+        this.files.classList.remove('dragging');
+        const current = this.rowByKey(row.key);
+        if (event.isTrusted && current) this.uploadToFolder(current, event.dataTransfer?.files);
+      });
       const details = el('div', 'ebs-ar-details');
       wrap.append(line, details);
       return wrap;
@@ -1283,11 +1797,12 @@
     fillRow(node, row) {
       const [line, details] = node.children;
       const checked = Boolean(row.check?.checked);
-      const key = JSON.stringify([row.name, row.date, row.size, row.status, row.hasLinks, row.koppelCount, row.expanded, row.details, checked, row.deleted, ui.previewKey === row.key, row.soort]);
+      const current = (ui.previewKey ?? ui.cursorKey) === row.key;
+      const key = JSON.stringify([row.name, row.date, row.size, row.status, row.hasLinks, row.koppelCount, row.expanded, row.details, checked, row.deleted, current, row.soort]);
       if (node.dataset.fill === key) return;
       node.dataset.fill = key;
       line.classList.toggle('checked', checked);
-      line.classList.toggle('current', ui.previewKey === row.key);
+      line.classList.toggle('current', current);
       line.classList.toggle('deleted', row.deleted);
       const [check, fileCell, date, status, links] = line.children;
       check.setAttribute('aria-checked', String(checked));
@@ -1301,8 +1816,21 @@
       date.textContent = row.date;
       status.replaceChildren();
       if (row.status) status.append(el('span', `ebs-ar-status ${STATUS_TONE[row.status]}`, row.status));
+      if (row.soort === 'D') {
+        // A folder has no status and no links: a dash, and room for
+        // "Hierheen" while files are dragged over it.
+        const none = el('span', 'ebs-ar-none', '-');
+        none.setAttribute('aria-label', 'Geen status');
+        const drop = el('span', 'ebs-ar-droplabel', 'Hierheen');
+        drop.setAttribute('aria-hidden', 'true');
+        status.append(none, drop);
+      }
       links.replaceChildren();
-      if (row.hasLinks) {
+      if (row.soort === 'D') {
+        const none = el('span', 'ebs-ar-none', '-');
+        none.setAttribute('aria-label', 'Geen koppelingen');
+        links.append(none);
+      } else if (row.hasLinks) {
         const toggle = el('button', 'ebs-ar-linkbutton');
         toggle.type = 'button';
         toggle.setAttribute('aria-expanded', String(row.expanded));
@@ -1406,7 +1934,7 @@
         this.count = el('span', 'ebs-ar-bar-count');
         this.sub = el('span', 'ebs-ar-bar-sub');
         summary.append(this.count, this.sub);
-        const selected = () => view.native?.rows.filter((row) => row.check?.checked) ?? [];
+        const selected = () => view.fresh()?.rows.filter((row) => row.check?.checked) ?? [];
         this.recognize = button('ebs-ar-bar-button green', 'Herkennen', () => this.menu(this.recognize, MENU.recognize, (row) => RECOGNIZABLE.test(row.name)));
         this.relation = button('ebs-ar-bar-button ghost', 'Koppelen aan relatie', () => this.menu(this.relation, MENU.linkRelation, () => true));
         this.cut = button('ebs-ar-bar-button ghost', 'Knippen', () => view.toolbarAction(this.cut, 'cut'), 'scissors');
@@ -1446,7 +1974,7 @@
       menu(node, label, accepts) {
         return busy(node, async () => {
           this.say('');
-          const rows = view.native?.rows.filter((row) => row.check?.checked && row.soort === 'F' && !row.deleted) ?? [];
+          const rows = view.fresh()?.rows.filter((row) => row.check?.checked && row.soort === 'F' && !row.deleted) ?? [];
           const row = rows.find(accepts);
           if (!row) {
             this.say(label === MENU.recognize ? 'Alleen pdf, jpg en png kunnen worden herkend.' : 'Kies eerst een bestand.');
@@ -1472,7 +2000,11 @@
           return;
         }
         const files = selected.filter((row) => row.soort === 'F' && !row.deleted);
-        this.count.textContent = `${plural(selected.length, 'bestand', 'bestanden')} geselecteerd`;
+        const folders = selected.filter((row) => row.soort === 'D').length;
+        const others = selected.length - folders;
+        this.count.textContent = folders
+          ? `${plural(folders, 'map', 'mappen')}${others ? ` en ${plural(others, 'bestand', 'bestanden')}` : ''} geselecteerd`
+          : `${plural(selected.length, 'bestand', 'bestanden')} geselecteerd`;
         this.sub.textContent = `${files.filter((row) => !row.hasLinks).length} zonder koppeling`;
         const toolbar = view.native.toolbar;
         const idle = (node) => node.getAttribute('aria-busy') !== 'true';
@@ -1549,6 +2081,7 @@
     view.mount(native);
     view.native = native;
     askInboxCount();
+    nativeMenu.update();
     view.draw();
   }
 
@@ -1569,6 +2102,8 @@
     html.ebs-better-archive app-digitaal-archief .container-da > .main { display: none !important; }
     html.ebs-better-archive app-digitaal-archief .container-da { position: relative; height: 100%; }
     html.ebs-archive-driving app-digitaal-archief-context-menu .contextMenu { opacity: 0 !important; pointer-events: none !important; }
+    /* e-Boekhouden's own right-click menu, opened from a row of ours: at the mouse. */
+    html.ebs-better-archive.ebs-archive-menu app-digitaal-archief-context-menu .contextMenu { position: fixed !important; left: var(--ebs-ar-menu-x, 0) !important; top: var(--ebs-ar-menu-y, 0) !important; z-index: 2147482500 !important; border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(20, 26, 48, .18); animation: ebs-ar-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
     /* e-Boekhouden's upload window, as a panel you can work beside. */
     html.ebs-better-archive app-digitaal-archief-upload { position: fixed !important; inset: auto 24px 24px auto !important; width: 640px; max-width: calc(100vw - 48px); background: transparent !important; z-index: 2147482000; animation: ebs-ar-in 150ms cubic-bezier(0.23, 1, 0.32, 1) both; }
     html.ebs-better-archive app-digitaal-archief-upload app-file-upload { position: static !important; left: auto !important; top: auto !important; transform: none !important; width: 100% !important; display: block; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 44px rgba(20, 26, 48, .25); }
@@ -1599,7 +2134,21 @@
     .ebs-ar-button.small { height: 38px; }
     .ebs-ar-error .ebs-ar-button.small { height: 36px; padding: 0 14px; font-size: 13px; }
     .ebs-ar-button:active:not(:disabled) { transform: scale(0.97); }
-    .ebs-ar-button:focus-visible, .ebs-ar-chip:focus-visible, .ebs-ar-folder:focus-visible, .ebs-ar-folder-toggle:focus-visible, .ebs-ar-check:focus-visible, .ebs-ar-linkbutton:focus-visible, .ebs-ar-pbutton:focus-visible, .ebs-ar-file:focus-visible, .ebs-ar-classic:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    .ebs-ar-iconbutton { position: relative; flex: none; width: 36px; height: 36px; padding: 0; border: 1px solid #cfd4e2; border-radius: 999px; background: #ffffff; color: #232c4f; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
+    .ebs-ar-iconbutton:not([aria-disabled="true"]):hover { background: #f3f5fa; border-color: #b9c0d4; }
+    .ebs-ar-iconbutton[aria-disabled="true"] { color: #b9c0d4; border-color: #e6e9f1; cursor: default; }
+    .ebs-ar-iconbutton[aria-busy="true"] { cursor: progress; }
+    .ebs-ar-spin { display: flex; }
+    .ebs-ar-refresh[aria-busy="true"] .ebs-ar-spin { animation: ebs-ar-spin 800ms linear infinite; }
+    .ebs-ar-tip { position: absolute; z-index: 30; left: 50%; top: calc(100% + 8px); box-sizing: border-box; width: max-content; max-width: 240px; padding: 5px 10px; border-radius: 999px; background: #232c4f; color: #ffffff; font-size: 12px; line-height: 16px; font-weight: 400; text-align: left; white-space: nowrap; box-shadow: 0 8px 20px rgba(20, 26, 48, .22); pointer-events: none; opacity: 0; transform: translate(-50%, -4px); transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-ar-tip.two { white-space: normal; width: 240px; padding: 6px 10px; border-radius: 10px; }
+    .ebs-ar-tip.l { left: 0; transform: translate(0, -4px); }
+    .ebs-ar-tip.r { left: auto; right: 0; transform: translate(0, -4px); }
+    .ebs-ar-iconbutton:hover > .ebs-ar-tip, .ebs-ar-iconbutton:focus-visible > .ebs-ar-tip { opacity: 1; transform: translate(-50%, 0); transition-delay: 300ms; }
+    .ebs-ar-iconbutton:hover > .ebs-ar-tip.l, .ebs-ar-iconbutton:focus-visible > .ebs-ar-tip.l, .ebs-ar-iconbutton:hover > .ebs-ar-tip.r, .ebs-ar-iconbutton:focus-visible > .ebs-ar-tip.r { transform: none; }
+    .ebs-ar-sort { padding: 0; border: 0; background: transparent; color: #232c4f; font-family: Ubuntu, system-ui, sans-serif; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; justify-self: start; cursor: pointer; transition: color 150ms ease; }
+    .ebs-ar-sort:hover { color: #3a4677; }
+    .ebs-ar-button:focus-visible, .ebs-ar-chip:focus-visible, .ebs-ar-iconbutton:focus-visible, .ebs-ar-sort:focus-visible, .ebs-ar-folder:focus-visible, .ebs-ar-folder-toggle:focus-visible, .ebs-ar-check:focus-visible, .ebs-ar-linkbutton:focus-visible, .ebs-ar-pbutton:focus-visible, .ebs-ar-file:focus-visible, .ebs-ar-classic:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     .ebs-ar-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0, 1fr) 380px; gap: 14px; }
     .ebs-ar-nav { background: #ffffff; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
@@ -1622,7 +2171,8 @@
 
     .ebs-ar-files { position: relative; background: #ffffff; border-radius: 12px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; transition: background-color 150ms ease; }
     .ebs-ar-files.dragging { background: #f3f6fd; }
-    .ebs-ar-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #e6e9f1; }
+    .ebs-ar-tools { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 12px 14px; border-bottom: 1px solid #e6e9f1; }
+    .ebs-ar-tools-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
     .ebs-ar-search { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 9px; flex: 1 1 240px; color: #5d6584; font-size: 13px; transition: border-color 150ms ease; }
     .ebs-ar-search:focus-within { border-color: #596aaf; }
     .ebs-ar-search input { border: 0; outline: none; flex: 1; min-width: 0; font-size: 13px; background: transparent; color: #232c4f; }
@@ -1630,7 +2180,7 @@
     .ebs-ar-chip { height: 32px; padding: 0 12px; border: 1px solid #d6dbe8; border-radius: 16px; background: #ffffff; color: #232c4f; font-size: 13px; cursor: pointer; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
     .ebs-ar-chip:hover { background: #f3f5fa; }
     .ebs-ar-chip.on { border-color: #232c4f; background: #232c4f; color: #ffffff; }
-    .ebs-ar-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 96px 150px 160px; align-items: center; padding: 0 14px; }
+    .ebs-ar-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) 124px 150px 160px; align-items: center; padding: 0 14px; }
     .ebs-ar-row-head { height: 36px; font-size: 12px; color: #5d6584; background: #f7f8fb; border-bottom: 1px solid #e6e9f1; }
     .ebs-ar-check { width: 18px; height: 18px; padding: 0; border: 1.5px solid #8c93ab; border-radius: 4px; background: #ffffff; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     .ebs-ar-check svg { opacity: 0; transition: opacity 150ms ease; }
@@ -1639,7 +2189,7 @@
     .ebs-ar-row-head .ebs-ar-check { color: #232c4f; }
     .ebs-ar-file .ebs-ar-check[aria-checked="true"] { border-color: #232c4f; background: #232c4f; }
     .ebs-ar-check:disabled { opacity: .45; cursor: default; }
-    .ebs-ar-scroll { flex: 1; min-height: 0; overflow: auto; }
+    .ebs-ar-scroll { flex: 1; min-height: 0; overflow: auto; outline: none; }
     /* Room after the last row while the action bar floats over the list. */
     .ebs-ar[data-bar="on"] .ebs-ar-scroll::after { content: ''; display: block; height: 96px; }
     .ebs-ar-item { border-bottom: 1px solid #eef0f5; }
@@ -1649,6 +2199,16 @@
     .ebs-ar-file.current { background: #f3f6fd; box-shadow: inset 3px 0 0 #232c4f; }
     .ebs-ar-file.checked { background: #e8eefb; }
     .ebs-ar-file.deleted { font-style: italic; opacity: .7; }
+    /* A folder row with files dragged over it: a dashed ring and "Hierheen". */
+    .ebs-ar-file::after { content: ''; position: absolute; inset: 2px; border: 2px dashed #4a6fb5; border-radius: 8px; pointer-events: none; opacity: 0; transition: opacity 150ms ease; }
+    .ebs-ar-file { position: relative; }
+    .ebs-ar-file.ebs-ar-drop { background: #e3ebfb; }
+    .ebs-ar-file.ebs-ar-drop::after { opacity: 1; }
+    .ebs-ar-statuscell { position: relative; display: flex; align-items: center; min-height: 22px; }
+    .ebs-ar-droplabel { position: absolute; left: 0; top: 50%; height: 22px; padding: 0 8px; border-radius: 999px; background: #232c4f; color: #ffffff; font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; white-space: nowrap; opacity: 0; transform: translateY(calc(-50% + 4px)); transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); pointer-events: none; }
+    .ebs-ar-drop .ebs-ar-droplabel { opacity: 1; transform: translateY(-50%); }
+    .ebs-ar-drop .ebs-ar-statuscell .ebs-ar-none { opacity: 0; }
+    .ebs-ar-statuscell .ebs-ar-none { transition: opacity 150ms ease; }
     .ebs-ar-filecell { display: flex; align-items: center; gap: 10px; min-width: 0; }
     .ebs-ar-type { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; line-height: 1; }
     .ebs-ar-namecol { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -1680,8 +2240,13 @@
     .ebs-ar-empty { margin: 28px; padding: 36px 20px; border: 2px dashed #c5cbdc; border-radius: 14px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
     .ebs-ar-empty-title { font-size: 16px; font-weight: 700; }
     .ebs-ar-empty-text { font-size: 13px; color: #5d6584; max-width: 380px; }
-    .ebs-ar-error { margin: 28px; padding: 20px; border-radius: 12px; background: #fdf0ef; border: 1px solid #f1c7c2; display: flex; align-items: center; gap: 14px; }
-    .ebs-ar-error-text { font-size: 13px; color: #8f1d14; flex: 1; }
+    .ebs-ar-error { margin: 28px; padding: 18px 20px; border-radius: 12px; background: #fdf0ef; border: 1px solid #f1c7c2; display: flex; align-items: center; gap: 14px; }
+    .ebs-ar-error-copy { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+    .ebs-ar-error-title { font-size: 14px; font-weight: 700; color: #b42318; }
+    .ebs-ar-error-text { font-size: 13px; color: #232c4f; }
+    /* Vernieuwen: the list stays, dimmed and not clickable, until it is back. */
+    .ebs-ar-body, .ebs-ar-empty { transition: opacity 150ms ease; }
+    .ebs-ar.ebs-ar-refreshing .ebs-ar-body, .ebs-ar.ebs-ar-refreshing .ebs-ar-empty { opacity: .6; pointer-events: none; }
     .ebs-ar-upload { margin: 14px; padding: 14px; border-radius: 10px; background: #eef4ff; display: flex; flex-direction: column; gap: 8px; }
     .ebs-ar-upload-title { font-size: 13px; font-weight: 500; }
     .ebs-ar-progress { display: block; height: 6px; border-radius: 3px; background: #d6deef; overflow: hidden; }
@@ -1747,9 +2312,14 @@
     @keyframes ebs-ar-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes ebs-ar-fade { from { opacity: 0; } to { opacity: 1; } }
     @keyframes ebs-ar-shimmer { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+    @keyframes ebs-ar-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) {
-      .ebs-ar-in, html.ebs-better-archive app-digitaal-archief-upload { animation: ebs-ar-fade 150ms ease-out both; }
+      .ebs-ar-in, html.ebs-better-archive app-digitaal-archief-upload, html.ebs-better-archive.ebs-archive-menu app-digitaal-archief-context-menu .contextMenu { animation: ebs-ar-fade 150ms ease-out both; }
       .ebs-ar-skel, .ebs-ar-page-loading { animation: none; }
+      .ebs-ar-refresh[aria-busy="true"] .ebs-ar-spin { animation: none; }
+      .ebs-ar-tip { transform: translate(-50%, 0); }
+      .ebs-ar-tip.l, .ebs-ar-tip.r { transform: none; }
+      .ebs-ar-droplabel { transform: translateY(-50%); }
       .ebs-ar-bar, .ebs-ar-bar.show { transform: translate(-50%, 0); }
       .ebs-ar-bar.show { transition: opacity 150ms ease-out, visibility 0s; }
       .ebs-ar-progress-bar { transition: none; }
@@ -1826,6 +2396,7 @@
       ui.anchorKey = null;
       ui.query = '';
       ui.quick = 'all';
+      ui.sortDir = 'desc';
       update();
     }, 300);
   }
