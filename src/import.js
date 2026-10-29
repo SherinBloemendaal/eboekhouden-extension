@@ -1288,6 +1288,7 @@
     .ebs-hidden-toggle { height: 36px; padding: 0 14px; border: 1px dashed #b9c0d4; border-radius: 18px; background: #fff; color: #3a4677; font-size: 13px; cursor: pointer; }
     .ebs-hidden-toggle.on { background: #eef1f8; }
     .ebs-row { display: grid; grid-template-columns: 44px 150px minmax(0, 1.2fr) minmax(0, 1.6fr) 130px 170px; align-items: center; min-height: 54px; padding: 0 14px; border-bottom: 1px solid #eef0f5; background: #fff; cursor: pointer; }
+    .ebs-row, .ebs-row-head, .ebs-tab, .ebs-tab-action, .ebs-tab-add, .ebs-group-item, .ebs-action, .ebs-chip, .ebs-hidden-toggle, .ebs-link, .ebs-bar-button { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
     .ebs-row:hover { background: #fafbfd; }
     .ebs-row.checked { background: #e8eefb; }
     .ebs-row.is-hidden { opacity: .55; background: #fafafa; }
@@ -1323,7 +1324,7 @@
     .ebs-bar.better.show { opacity: 1; transform: translate(-50%, 0); transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1), visibility 0s; }
     .ebs-bar.better .ebs-group-menu { transform-origin: bottom left; animation: ebs-menu 150ms cubic-bezier(0.23, 1, 0.32, 1); }
     .ebs-bar.better .ebs-group-menu.closing { opacity: 0; transform: scale(0.96); transition: opacity 100ms ease-in, transform 100ms ease-in; pointer-events: none; }
-    .ebs-bar.better .ebs-bar-button { transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .ebs-bar.better .ebs-bar-button { transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
     .ebs-bar.better .ebs-bar-button:active { transform: scale(0.97); }
     .ebs-row.leaving { opacity: 0; transform: translateX(8px); transition: opacity 140ms cubic-bezier(0.23, 1, 0.32, 1), transform 140ms cubic-bezier(0.23, 1, 0.32, 1); }
     @keyframes ebs-fade { from { opacity: 0; } to { opacity: 1; } }

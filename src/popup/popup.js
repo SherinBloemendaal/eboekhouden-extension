@@ -18,6 +18,8 @@ const SETTINGS = [
 let state = { slots: [], view: {}, avatars: {}, settings: EBS.settingsWithDefaults() };
 let confirm = null;
 let busy = false;
+// The entry whose switch is on its way: its button says "Bezig…".
+let pendingSlot = null;
 let failure = null;
 
 function el(tag, className, text) {
@@ -42,9 +44,12 @@ async function load() {
 async function act(type, extra = {}) {
   if (busy) return;
   busy = true;
+  pendingSlot = extra.slotId ?? null;
   failure = null;
+  render();
   const response = await chrome.runtime.sendMessage({ type, confirmed: Boolean(confirm?.accepted), ...extra }).catch((error) => ({ error: String(error) }));
   busy = false;
+  pendingSlot = null;
   if (response?.needsConfirm) {
     confirm = { type, extra, tabCount: response.tabCount, accepted: false };
     render();
@@ -90,8 +95,11 @@ function row(slot) {
     item.append(el('span', 'state-active', 'Actief'));
   } else {
     const label = { ready: 'Wissel', expired: 'Opnieuw inloggen', login: 'Inloggen' }[status];
-    const button = el('button', `btn ${status === 'expired' ? 'primary' : ''}`, label);
+    const pending = busy && pendingSlot === slot.id;
+    const button = el('button', `btn ${status === 'expired' ? 'primary' : ''}`, pending ? 'Bezig…' : label);
     button.type = 'button';
+    button.disabled = busy;
+    button.setAttribute('aria-busy', String(pending));
     button.addEventListener('click', () => act('switcher:switch', { slotId: slot.id }));
     item.append(button);
   }

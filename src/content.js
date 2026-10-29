@@ -298,6 +298,7 @@
       .box { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 16px; border-radius: 10px; background: #fff; color: #30395f; font: 13px Ubuntu, system-ui, sans-serif; box-shadow: 0 8px 24px rgba(20, 26, 48, .18), 0 0 0 1px rgba(20, 26, 48, .08); }
       a { color: #30395f; font-weight: 700; }
       button { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: #5d6584; font: inherit; cursor: pointer; }
+      button { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
       button:hover { background: #f3f5fa; }
       a:focus-visible, button:focus-visible { outline: 2px solid #30395f; outline-offset: 2px; }
     `;
@@ -593,12 +594,15 @@
     async act(type, extra) {
       if (this.busy) return;
       this.busy = true;
+      this.pendingId = extra?.slotId ?? null;
       this.error = null;
+      this.render();
       let response;
       try {
         response = await send({ type, origin: this.origin(), confirmed: Boolean(this.confirm?.accepted), ...extra });
       } finally {
         this.busy = false;
+        this.pendingId = null;
       }
       if (response?.needsConfirm) {
         this.confirm = { type, extra, tabCount: response.tabCount, accepted: false };
@@ -672,7 +676,6 @@
       });
       foot.append(add);
       card.append(foot);
-      card.append(el('div', 'note', 'Wachtwoorden blijven in 1Password. Sessies staan alleen in het geheugen van Chrome.'));
 
       this.body.replaceChildren(card);
       if (focused) this.root.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus();
@@ -712,8 +715,14 @@
       const label = el('span', `status ${status}`);
       if (variant === 'new' && status === 'active') label.append(icon(CHECK_ICON));
       if (variant === 'new' && status === 'expired') label.append(icon(CLOCK_ICON));
-      label.append(document.createTextNode(STATUS_LABEL[variant][status]));
+      const pending = this.busy && this.pendingId === slot.id;
+      label.append(document.createTextNode(pending ? 'Bezig…' : STATUS_LABEL[variant][status]));
       pick.append(label);
+      // While a switch is on its way the menu waits: no second click.
+      if (this.busy) {
+        pick.disabled = true;
+        pick.setAttribute('aria-busy', String(pending));
+      }
       row.append(pick);
 
       const actions = el('span', 'actions');
@@ -830,8 +839,11 @@
     .pick { flex: 1; min-width: 0; display: flex; align-items: center; border: 0; background: transparent; text-align: left; }
     .text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
     .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .actions { display: none; align-items: center; gap: 2px; }
-    .row:hover .actions, .row:focus-within .actions { display: flex; }
+    /* The row actions are always in place, so nothing shifts; they fade and slide in on hover. */
+    .actions { display: flex; align-items: center; gap: 2px; opacity: 0; transform: translateX(4px); pointer-events: none; transition: opacity 150ms ease, transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .row:hover .actions, .row:focus-within .actions { opacity: 1; transform: none; pointer-events: auto; }
+    .row, .pick, .action, .add, button.new, button.legacy, .confirm button { transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease; }
+    @media (prefers-reduced-motion: reduce) { .actions { transform: none; } }
     .action { width: 32px; height: 32px; border: 0; border-radius: 6px; background: transparent; display: flex; align-items: center; justify-content: center; }
     .confirm { margin: 6px 8px; padding: 10px 12px; background: #fff8e6; color: #6b5310; font-size: 12px; line-height: 17px; }
     .confirm-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
@@ -841,6 +853,8 @@
     .empty { margin: 4px 16px 12px; font-size: 12px; color: #5d6584; }
     .error { margin: 6px 16px; font-size: 12px; line-height: 17px; color: #b42318; }
     .pick:focus-visible, .add:focus-visible, .action:focus-visible, .confirm button:focus-visible { outline: 2px solid #232c4f; outline-offset: -2px; }
+    .pick:disabled { cursor: wait; opacity: .6; }
+    .pick[aria-busy="true"] { opacity: 1; }
 
     /* New design */
     .new.card { width: 340px; border-radius: 10px; box-shadow: 0 16px 40px rgba(20, 26, 48, 0.22), 0 0 0 1px rgba(20, 26, 48, 0.06); color: #232c4f; }
