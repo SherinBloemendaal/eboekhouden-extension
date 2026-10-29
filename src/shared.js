@@ -91,8 +91,33 @@
   }
 
   // A stable key for an imported bank line, used for hiding and grouping.
+  // A row that went through signRows carries its own (see there).
   function rowSignature(row) {
-    return [row.importDate, row.account, row.bookDate, row.amount, row.description].join('|');
+    return row.signature ?? [row.importDate, row.account, row.bookDate, row.amount, row.description].join('|');
+  }
+
+  // Two identical bank lines (same day, amount and text) would share one key,
+  // so hiding one hid both. The second gets "|#2", the third "|#3"; the first
+  // keeps the plain key, so what was stored before stays valid.
+  function signRows(rows) {
+    const seen = new Map();
+    for (const row of rows) {
+      const base = [row.importDate, row.account, row.bookDate, row.amount, row.description].join('|');
+      const count = (seen.get(base) ?? 0) + 1;
+      seen.set(base, count);
+      row.signature = count === 1 ? base : `${base}|#${count}`;
+    }
+    return rows;
+  }
+
+  // Keys of lines no longer in the import (booked or deleted) are dropped,
+  // but only when every line is known: never from a single page.
+  function prunePrefs(prefs, presentSignatures) {
+    const present = new Set(presentSignatures);
+    const hidden = prefs.hidden.filter((signature) => present.has(signature));
+    const groupOf = Object.fromEntries(Object.entries(prefs.groupOf).filter(([signature]) => present.has(signature)));
+    const changed = hidden.length !== prefs.hidden.length || Object.keys(groupOf).length !== Object.keys(prefs.groupOf).length;
+    return { prefs: { ...prefs, hidden, groupOf }, changed };
   }
 
   function filterRows(rows, options = {}) {
@@ -163,10 +188,12 @@
     };
   }
 
-  function groupCounts(groupOf, groups) {
+  // Lines per group; with `present`, only lines still in the import count.
+  function groupCounts(groupOf, groups, present = null) {
     const counts = Object.fromEntries(groups.map((name) => [name, 0]));
-    for (const name of Object.values(groupOf)) {
-      if (name in counts) counts[name] += 1;
+    const keep = present ? new Set(present) : null;
+    for (const [signature, name] of Object.entries(groupOf)) {
+      if (name in counts && (!keep || keep.has(signature))) counts[name] += 1;
     }
     return counts;
   }
@@ -214,6 +241,6 @@
     toAvatar, counterparty,
     SETTINGS_DEFAULTS, settingsWithDefaults, statusOf, initials, reloadWarning,
     parseAmount, formatMoney, parseDate, monthLabel,
-    rangeToggles, rowSignature, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,
+    rangeToggles, rowSignature, signRows, prunePrefs, filterRows, summarize, periodsOf, assignGroup, renameGroup, groupCounts,
   });
 })();

@@ -113,3 +113,22 @@ test('the reload question reads right for one tab and for several', () => {
   assert.equal(EBS.reloadWarning(1), 'Het e-Boekhouden-tabblad wordt herladen. Niet opgeslagen invoer gaat verloren.');
   assert.equal(EBS.reloadWarning(3), 'Alle 3 e-Boekhouden-tabbladen worden herladen. Niet opgeslagen invoer gaat verloren.');
 });
+
+test('identical bank lines get their own keys; the first keeps the old one', () => {
+  const line = { importDate: '29-09-2026', account: 'NL00', bookDate: '28-09-2026', amount: -0.05, description: 'Kosten' };
+  const signed = EBS.signRows([{ ...line }, { ...line }, { ...line, amount: -0.1 }, { ...line }]);
+  const plain = '29-09-2026|NL00|28-09-2026|-0.05|Kosten';
+  assert.deepEqual(signed.map((row) => EBS.rowSignature(row)), [plain, `${plain}|#2`, '29-09-2026|NL00|28-09-2026|-0.1|Kosten', `${plain}|#3`]);
+  const hidden = EBS.filterRows(signed, { hidden: [`${plain}|#2`] });
+  assert.equal(hidden.length, 3, 'hiding the second copy leaves the first');
+});
+
+test('stale keys are pruned and group counts only see lines still there', () => {
+  const prefs = { hidden: ['a', 'gone'], groups: ['G'], groupOf: { a: 'G', gone: 'G' } };
+  const { prefs: next, changed } = EBS.prunePrefs(prefs, ['a', 'b']);
+  assert.equal(changed, true);
+  assert.deepEqual(next, { hidden: ['a'], groups: ['G'], groupOf: { a: 'G' } });
+  assert.equal(EBS.prunePrefs(next, ['a']).changed, false);
+  assert.deepEqual(EBS.groupCounts(prefs.groupOf, prefs.groups, ['a']), { G: 1 });
+  assert.deepEqual(EBS.groupCounts(prefs.groupOf, prefs.groups), { G: 2 });
+});
