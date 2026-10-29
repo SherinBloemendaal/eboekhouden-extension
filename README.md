@@ -136,11 +136,12 @@ A real logout (the power button) does not trigger the dialog. **Gewoon inloggen*
 No build step. Edit the files and reload the extension in `chrome://extensions`.
 
 ```bash
-npm test          # service worker tests, with an in-memory fake of the chrome.* APIs
-npm run check     # syntax check of both scripts
+npm install       # once: jsdom, the only (dev) dependency, for the page tests
+npm test          # service worker, page script and manifest tests
+npm run check     # syntax check of every script
 ```
 
-The tests cover the cookie swap (host-only and domain cookies, expired cookies), the confirm step with several tabs, matching a login to its entry (username, administration number, name), expired and logged-out sessions, profile picture validation, the re-login return, the shift-select range, search and filters, groups and hidden lines, and that no cookie value reaches a page.
+The service worker tests use an in-memory fake of the chrome.* APIs; the page script tests run the content scripts in jsdom with e-Boekhouden's markup. They cover the cookie swap (host-only and domain cookies, expired cookies, only the app's cookies and tabs), the confirm step, two switches at once, matching a login to its entry (username, administration number, name, entries with the same name), expired and logged-out sessions, profile picture validation, the re-login return and which pages are safe to reopen, the login loop guard over the real sequence of events, the shift-select range, search and filters, groups and hidden lines, focus across redraws on the import screen, the login page with the re-login dialog, which login fields are labelled, that every file in the manifest exists, and that no cookie value reaches a page.
 
 <details>
 <summary><b>Project layout</b></summary>

@@ -21,6 +21,9 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install test dependencies
+        run: npm ci
+
       - name: Check syntax
         run: npm run check
 
