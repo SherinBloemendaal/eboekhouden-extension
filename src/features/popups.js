@@ -72,7 +72,17 @@
     preview: 'Afdrukvoorbeeld',
     closedByPage: 'Venster gesloten door e-Boekhouden.',
     external: 'Betalen en koppelen met een bank of webshop openen als echt venster: daar log je in bij een andere partij.',
+    stuckTitle: 'Kon de open posten niet laden',
+    stuck: 'e-Boekhouden gaf de lijst niet op tijd. Probeer het opnieuw; er is niets verloren.',
+    retry: 'Opnieuw',
   };
+  // e-Boekhouden's "Selecteer een open post" (/boekhouden/openposten/select):
+  // its page in the frame says 'stuck' when its own loader runs this long
+  // (or the page never draws), and 'drawn' once it shows the list or form.
+  const SELECT_PAGE = /^\/boekhouden\/openposten\/select\/?$/i;
+  const SELECT_TIMEOUT_MS = 15_000;
+  const SELECT_WATCH_MS = 500;
+  const SELECT_LOADER = 'app-grid-header :is(.loader, .grid-loader, app-loader, .spinner, .eb-icon-spinner), app-grid :is(app-loader, .eb-icon-spinner)';
 
   const isTop = window === window.top;
   const inPopupFrame = !isTop && POPUP_FRAME.test(window.name);
@@ -249,7 +259,14 @@
     const problemText = el('span', 'ebs-popup-problem-text');
     const reopen = el('button', 'ebs-popup-primary', TEXT.newWindowTitle);
     reopen.type = 'button';
-    problem.append(problemTitle, problemText, reopen);
+    // Loads the same page again in this frame: a stuck load never needs a
+    // reload of the page behind.
+    const retry = el('button', 'ebs-popup-retry', TEXT.retry);
+    retry.type = 'button';
+    retry.hidden = true;
+    const problemButtons = el('span', 'ebs-popup-problem-buttons');
+    problemButtons.append(retry, reopen);
+    problem.append(problemTitle, problemText, problemButtons);
     stage.append(iframe, loading, problem);
 
     const print = kind === 'write' || Boolean(url && PRINT_PAGE.test(url.pathname));
@@ -271,6 +288,7 @@
       url: kind === 'write' ? null : url,
       open: true,
       heard: false,
+      stuck: false,
       timers: new Set(),
       handle: null,
       later(ms, fn) {
@@ -297,15 +315,33 @@
       },
       showProblem(kindOfProblem) {
         const form = kindOfProblem === 'refused' && session.kind !== 'page';
-        problemTitle.textContent = kindOfProblem === 'session' ? TEXT.sessionTitle : TEXT.refusedTitle;
-        problemText.textContent = kindOfProblem === 'session' ? TEXT.session : form ? TEXT.refusedForm : TEXT.refused;
+        const stuck = kindOfProblem === 'stuck';
+        problemTitle.textContent = kindOfProblem === 'session' ? TEXT.sessionTitle : stuck ? TEXT.stuckTitle : TEXT.refusedTitle;
+        problemText.textContent = kindOfProblem === 'session' ? TEXT.session : stuck ? TEXT.stuck : form ? TEXT.refusedForm : TEXT.refused;
         reopen.hidden = kindOfProblem === 'session' || form;
+        retry.hidden = !stuck || session.kind !== 'page' || !session.url;
+        reopen.className = retry.hidden ? 'ebs-popup-primary' : 'ebs-popup-secondary';
         stage.classList.remove('loading', 'ready');
         stage.classList.add('problem');
         mark?.stop();
       },
+      // The page is shown but hangs in its own loader (see SELECT_PAGE):
+      // only then, so a retry already on its way decides anew.
+      showStuck(seconds) {
+        if (!stage.classList.contains('ready')) return;
+        console.warn('EB Sessions: pop-up page stuck in its own loader', { page: session.url?.pathname ?? null, seconds });
+        session.stuck = true;
+        session.showProblem('stuck');
+      },
+      // It drew after all.
+      clearStuck() {
+        if (!session.stuck) return;
+        session.stuck = false;
+        session.showReady();
+      },
       // A new page is on its way into the frame (a navigation, a form).
       expectPage() {
+        session.stuck = false;
         session.heard = false;
         session.clearTimers();
         session.showLoading();
@@ -359,6 +395,9 @@
     };
     newWindow.addEventListener('click', openForReal);
     reopen.addEventListener('click', openForReal);
+    retry.addEventListener('click', () => {
+      if (session.open && session.url) session.navigate(session.url);
+    });
 
     // The empty document a frame starts with (same origin, so readable).
     const stillBlank = () => {
@@ -476,6 +515,12 @@
             if (session.iframe.ownerDocument.activeElement === session.handle.panel.querySelector('.ebs-dialog-close')) session.iframe.focus();
           } catch { /* fine where it is */ }
         }
+        break;
+      case 'stuck':
+        session.showStuck(Number.isFinite(data.seconds) ? data.seconds : null);
+        break;
+      case 'drawn':
+        session.clearStuck();
         break;
       case 'title':
         if (typeof data.title === 'string' && data.title.trim()) session.setPage({ title: data.title.slice(0, 200).trim(), href: null });
@@ -607,11 +652,41 @@
     window.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && !event.isComposing && !event.defaultPrevented) tellOpener('escape');
     });
+    if (SELECT_PAGE.test(location.pathname)) watchSelectPage();
     window.addEventListener('message', (event) => {
       if (event.source !== window.parent || event.data?.ebs !== 'popup' || !APP_ORIGIN.test(event.origin)) return;
       event.stopImmediatePropagation();
       if (event.data.kind === 'print') window.print();
     }, true);
+  }
+
+  // "Selecteer een open post": e-Boekhouden's page is busy until its
+  // component (app-open-post-select) is drawn and its grid's own loader is
+  // gone. Busy for SELECT_TIMEOUT_MS on end: 'stuck' (the dialog says "Kon
+  // de open posten niet laden" with Opnieuw); drawn again: 'drawn'. It reads
+  // the page only, and keeps watching (a Zoeken can hang as well).
+  function watchSelectPage() {
+    let busySince = Date.now();
+    let told = false;
+    const busy = () => {
+      const root = document.querySelector('app-open-post-select');
+      return !root || !root.querySelector('app-form, form') || Boolean(root.querySelector(SELECT_LOADER));
+    };
+    const timer = setInterval(() => {
+      const now = Date.now();
+      if (!busy()) {
+        if (told) tellOpener('drawn');
+        busySince = null;
+        told = false;
+        return;
+      }
+      busySince ??= now;
+      if (!told && now - busySince >= SELECT_TIMEOUT_MS) {
+        told = true;
+        tellOpener('stuck', { seconds: Math.round((now - busySince) / 1000) });
+      }
+    }, SELECT_WATCH_MS);
+    window.addEventListener('pagehide', () => clearInterval(timer), { once: true });
   }
 
   // -------------------------------------------------------------------------
@@ -673,7 +748,7 @@
     .ebs-dialog.ebs-popup .ebs-dialog-close { width: 34px; height: 34px; transition: background-color 150ms ease, color 150ms ease; }
     .ebs-dialog.ebs-popup .ebs-dialog-close:hover { background: #e6e9f1; }
     .ebs-dialog.ebs-popup .ebs-dialog-body.ebs-popup-body { display: flex; padding: 0; overflow: hidden; background: #fff; }
-    .ebs-popup-print, .ebs-popup-secondary, .ebs-popup-primary { flex: none; display: flex; align-items: center; gap: 6px; font-family: Ubuntu, system-ui, sans-serif; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+    .ebs-popup-print, .ebs-popup-secondary, .ebs-popup-primary, .ebs-popup-retry { flex: none; display: flex; align-items: center; gap: 6px; font-family: Ubuntu, system-ui, sans-serif; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     .ebs-popup-print { height: 34px; padding: 0 12px; border: 0; border-radius: 8px; background: #232c4f; color: #fff; font-size: 13px; font-weight: 700; }
     .ebs-popup-print:hover { background: #30395f; }
     .ebs-popup-secondary { height: 34px; padding: 0 10px; border: 1px solid #cfd4e2; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; }
@@ -692,10 +767,12 @@
     .ebs-popup-stage.problem .ebs-popup-problem { opacity: 1; visibility: visible; transform: none; transition: opacity 150ms ease-out, transform 150ms ease-out, visibility 0s; }
     .ebs-popup-problem-title { font-size: 15px; font-weight: 700; color: #232c4f; }
     .ebs-popup-problem-text { font-size: 13px; color: #5d6584; }
-    .ebs-popup-primary { height: 38px; padding: 0 16px; border: 0; border-radius: 9px; background: #232c4f; color: #fff; font-size: 14px; font-weight: 700; }
-    .ebs-popup-primary:hover { background: #30395f; }
-    .ebs-popup-primary[hidden] { display: none; }
-    .ebs-popup-print:focus-visible, .ebs-popup-secondary:focus-visible, .ebs-popup-primary:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    .ebs-popup-primary, .ebs-popup-retry { height: 38px; padding: 0 16px; border: 0; border-radius: 9px; background: #232c4f; color: #fff; font-size: 14px; font-weight: 700; }
+    .ebs-popup-primary:hover, .ebs-popup-retry:hover { background: #30395f; }
+    .ebs-popup-primary[hidden], .ebs-popup-secondary[hidden], .ebs-popup-retry[hidden] { display: none; }
+    .ebs-popup-problem-buttons { display: flex; gap: 10px; justify-content: center; }
+    .ebs-popup-problem-buttons .ebs-popup-secondary { height: 38px; padding: 0 16px; font-size: 14px; }
+    .ebs-popup-print:focus-visible, .ebs-popup-secondary:focus-visible, .ebs-popup-primary:focus-visible, .ebs-popup-retry:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     .ebs-popup-toast { position: fixed; bottom: 28px; z-index: 2147483200; display: flex; align-items: center; gap: 10px; box-sizing: border-box; padding: 12px 16px; border-radius: 12px; background: #232c4f; color: #fff; font: 13px/1.4 Ubuntu, system-ui, sans-serif; box-shadow: 0 12px 32px rgba(20, 26, 48, .3); opacity: 0; transform: translateY(8px); transition: opacity 150ms ease-out, transform 150ms ease-out; pointer-events: none; }
     .ebs-popup-toast.ebs-motion { transform: translateY(12px); transition-duration: 200ms; transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); }

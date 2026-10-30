@@ -516,3 +516,67 @@ test('a frame named ebs-popup-* in a page of another site gets no opener and tel
   assert.deepEqual(heard, []);
   p.close();
 });
+
+// "Selecteer een open post" on the mutation page: e-Boekhouden's own
+// /boekhouden/openposten/select in the dialog.
+const SELECT = `${APP}/boekhouden/openposten/select?soort=Debiteur`;
+const SELECT_BUSY = '<!doctype html><html><head><title>e-Boekhouden</title></head><body><app-root><i class="eb-icon-spinner animate-spin"></i></app-root></body></html>';
+const SELECT_DRAWN = '<!doctype html><html><head><title>e-Boekhouden</title></head><body><app-root><app-open-post-select><app-form><form></form></app-form>'
+  + '<app-grid><app-grid-header></app-grid-header><app-grid-body><table class="grid"><tbody></tbody></table></app-grid-body></app-grid></app-open-post-select></app-root></body></html>';
+
+async function selectDialog(html) {
+  const p = await popupPage({ serve: { [SELECT]: html } });
+  p.gesture.active = true;
+  p.window.open(SELECT, '_blank', 'width=860,height=850,scrollbars=yes');
+  const iframe = p.frame();
+  await loaded(iframe);
+  // jsdom keeps a frame's timers after its page is closed: the test stops them.
+  const timers = [];
+  const every = iframe.contentWindow.setInterval.bind(iframe.contentWindow);
+  iframe.contentWindow.setInterval = (fn, ms) => {
+    const id = every(fn, ms);
+    timers.push(id);
+    return id;
+  };
+  const win = loadInFrame(p, iframe, p.gesture);
+  await p.settle();
+  const close = p.close;
+  p.close = () => {
+    for (const id of timers) win.clearInterval(id);
+    close();
+  };
+  // The frame's clock, moved on by the test.
+  const realNow = win.Date.now.bind(win.Date);
+  const clock = { shift: 0 };
+  win.Date.now = () => realNow() + clock.shift;
+  return { ...p, iframe, win, clock, stage: () => p.dialog().querySelector('.ebs-popup-stage') };
+}
+
+test('the open post selection that hangs in e-Boekhouden\'s own loader says so, with an Opnieuw that loads it again', { timeout: T }, async () => {
+  const p = await selectDialog(SELECT_BUSY);
+  assert.ok(p.stage().classList.contains('ready'), 'the page is shown');
+  p.clock.shift = 14_000;
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.ok(p.stage().classList.contains('ready'), 'still within the time');
+  p.clock.shift = 16_000;
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.ok(p.stage().classList.contains('problem'), 'no endless loader');
+  const problem = p.dialog().querySelector('.ebs-popup-problem');
+  assert.equal(text(problem.querySelector('.ebs-popup-problem-title')), 'Kon de open posten niet laden');
+  const retry = problem.querySelector('.ebs-popup-retry');
+  assert.equal(retry.hidden, false);
+  assert.equal(text(retry), 'Opnieuw');
+  assert.equal(problem.querySelector('.ebs-popup-secondary').textContent, 'Openen in een nieuw venster', 'the real window stays on offer');
+  retry.click();
+  assert.ok(p.stage().classList.contains('loading'), 'loading again');
+  assert.equal(p.iframe.src, SELECT, 'the same page, loaded anew');
+  p.close();
+});
+
+test('the open post selection that drew in time stays as it is', { timeout: T }, async () => {
+  const p = await selectDialog(SELECT_DRAWN);
+  p.clock.shift = 60_000;
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.ok(p.stage().classList.contains('ready'));
+  p.close();
+});
