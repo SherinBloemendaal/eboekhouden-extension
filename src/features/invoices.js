@@ -223,16 +223,36 @@
   // ---------------------------------------------------------------------------
   // One observer and one route watch for every billing screen
   // ---------------------------------------------------------------------------
+  //
+  // This script runs in every frame of secure*: the /bh/ frameset, its
+  // hidden ASP frames, the classic pages and the Angular shell. A billing
+  // screen only ever applies on its own route of the shell, so the observer
+  // is only connected while one does (or one is still mounted and has to be
+  // taken down). Everywhere else, the /bh/ frameset included, nothing is
+  // observed and nothing is drawn: the route watch alone looks at the path.
+  //
+  // While it is connected, it wakes for e-Boekhouden's own markup only:
+  // never for our own roots (data-ebs-own), and never for what lies outside
+  // <body> (the styles and title in <head>, classes on <html>, and the hosts
+  // that our other scripts or other extensions append to <html>): no billing
+  // screen reads any of that.
 
   const screens = [];
   let scheduled = false;
   let lastPath = location.pathname;
+  let observer = null;
   // A redraw that keeps waking itself (a native node that is put back where
   // we took it from, again and again) is stopped for a moment.
   const storm = { count: 0, since: 0, pausedUntil: 0 };
 
+  // A screen takes this route, or is still mounted from the route before.
+  function applies() {
+    const path = location.pathname;
+    return screens.some((screen) => screen.mounted || screen.match(path));
+  }
+
   function schedule() {
-    if (scheduled) return;
+    if (scheduled || !applies()) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
@@ -272,6 +292,8 @@
       }
     }
     updateRootClass();
+    // The last screen went with its route: stop observing.
+    observe();
   }
 
   function updateRootClass() {
@@ -282,6 +304,7 @@
 
   function register(screen) {
     screens.push(screen);
+    observe();
     schedule();
   }
 
@@ -292,11 +315,32 @@
     return Boolean(mark?.hasAttribute(OWN));
   }
 
+  // A change a billing screen may have to follow: inside <body> (body's own
+  // children included) and outside our own roots.
+  function wakes(record) {
+    const body = document.body;
+    if (!body || !body.contains(record.target)) return false;
+    return !isOwnMutation(record);
+  }
+
+  const OBSERVE = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'class', 'style', 'custom-hidden'] };
+
+  // Connects the observer while a screen applies, and only then.
+  function observe() {
+    const wanted = applies();
+    if (wanted && !observer) {
+      observer = new MutationObserver((records) => {
+        if (records.some(wakes)) schedule();
+      });
+      observer.observe(document.documentElement, OBSERVE);
+    } else if (!wanted && observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  }
+
   function startWatching() {
     stateListeners.add(schedule);
-    new MutationObserver((records) => {
-      if (records.some((record) => !isOwnMutation(record))) schedule();
-    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled', 'class', 'style', 'custom-hidden'] });
     // Typing in a field changes no markup; a due date or a total may follow it.
     document.addEventListener('input', schedule, true);
     document.addEventListener('change', schedule, true);
@@ -305,15 +349,20 @@
       try {
         if (!chrome.runtime?.id) {
           clearInterval(watch);
+          observer?.disconnect();
+          observer = null;
           return;
         }
       } catch {
         clearInterval(watch);
+        observer?.disconnect();
+        observer = null;
         return;
       }
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
       for (const screen of screens) screen.broken = false;
+      observe();
       schedule();
     }, 300);
   }
