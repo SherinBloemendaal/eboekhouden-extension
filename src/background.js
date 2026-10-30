@@ -33,8 +33,9 @@ chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 // session: cookies:<id>   [chrome.cookies.Cookie]           (the session itself)
 //          activeSlotId, loggedIn, pendingCheck
 //          pendingUsername, pendingLoginFor  (the login in progress)
-//          tab:<tabId>    { mainFrameId, returnUrl, relogin, reloginFor, innerUrl, innerFor, restoreInner }
+//          tab:<tabId>    { mainFrameId, returnUrl, relogin, reloginFor, innerUrl, innerFor, restoreInner, loginSeen }
 //                         reloginFor: the entry whose session expired in that tab
+//                         loginSeen: a login form showed there since the last switch (onHeaderIdentity)
 //          requestBudget  { started: [ms], blockedUntil } of the request budget (bg/requests.js)
 // ---------------------------------------------------------------------------
 
@@ -229,7 +230,7 @@ const USERNAME_TTL_MS = 10 * 60 * 1000;
 async function onTopTitle(title) {
   const name = (title || '').trim();
   if (!name) return;
-  const { activeSlotId, loggedIn, pendingCheck } = await getSessionState();
+  const { pendingCheck } = await getSessionState();
 
   if (LOGIN_TITLE.test(name)) {
     // Plain /bh/ shows this title even while the session is valid, so on its
@@ -242,14 +243,22 @@ async function onTopTitle(title) {
     return;
   }
 
-  // Matching, part one: the title only gives the name, plus the username typed
-  // at login. The administration number follows from the header (part two,
-  // onHeaderIdentity), which merges the entry with the same number if needed.
   if (isGenericTitle(name)) return;
+  await registerLogin(name);
+}
+
+// Matching, part one: the name (the top title, or the app header after a
+// login), plus the username typed at login. The administration number
+// follows from the header (part two, onHeaderIdentity), which merges the
+// entry with the same number if needed. The header gives the number right
+// away: an entry known under another number is another administration with
+// the same name, and never takes this session.
+async function registerLogin(name, number = null) {
+  const { activeSlotId, loggedIn, pendingCheck } = await getSessionState();
   const stored = await chrome.storage.session.get(['pendingUsername', 'pendingUsernameAt', 'pendingLoginFor']);
   const pendingUsername = Date.now() - (stored.pendingUsernameAt ?? 0) < USERNAME_TTL_MS ? stored.pendingUsername : null;
   const slots = await getSlots();
-  const sameName = slots.filter((candidate) => candidate.name === name);
+  const sameName = slots.filter((candidate) => candidate.name === name && (!number || !candidate.number || candidate.number === number));
   // Entries can share a name (one administration, two users). The entry
   // just switched to, the one picked on the login page, or the one already
   // active wins over a guess.
@@ -309,9 +318,45 @@ async function mergeInto(targetId, sourceId) {
 
 // The header shows the administration number. Keep it for the dropdown, and
 // use it for matching part two: username plus number, then number alone.
-async function onHeaderIdentity({ name, number }) {
+//
+// The header is also the app's own proof that a login went through. The top
+// title only comes once the top page loads again, and a login does not always
+// do that: in the 1Password layout the app first opens inside the login
+// iframe, with its header and the Wissel item, for the settle time before
+// the tab moves to the real app; a re-login in place (the dialog) leaves the
+// top page and its title as they were. Until then the extension still took
+// the entry for logged out, Wissel said so, and choosing the entry there
+// swapped the new session's cookies out of the browser. So a header in a tab
+// that showed a login form since the last switch registers the login now.
+// A header from a page of before a switch never does: the switch clears the
+// tab state, and its own login form report comes first. Only the frames that
+// carry the app header count: the top frame (the secure20 shell opened on its
+// own) and the tab's mainframe (the login iframe included).
+//
+// While another entry is active and logged in, a login form left open in a
+// second tab can still be used for another administration. The cookies in
+// the browser are then that administration's, and the next app page would
+// store them on the active entry. So a header that is not the active entry
+// registers its own entry too; one that is changes nothing.
+async function onHeaderIdentity({ name, number }, sender = {}) {
+  if (!/^\d{1,12}$/.test(String(number ?? ''))) return;
+  const digits = String(number);
+  const shown = typeof name === 'string' ? name.trim() : '';
+  const tabId = sender.tab?.id;
+  if (tabId !== undefined && shown && !isGenericTitle(shown)) {
+    const tab = await getTab(tabId);
+    if (tab.loginSeen && (sender.frameId === 0 || sender.frameId === tab.mainFrameId)) {
+      const { activeSlotId, loggedIn } = await getSessionState();
+      const active = loggedIn ? (await getSlots()).find((candidate) => candidate.id === activeSlotId) : null;
+      const isActive = active && active.name === shown && (!active.number || active.number === digits);
+      if (!isActive) await registerLogin(shown, digits);
+      delete tab.loginSeen;
+      await setTab(tabId, tab);
+    }
+  }
+
   const { activeSlotId, loggedIn } = await getSessionState();
-  if (!activeSlotId || !loggedIn || !/^\d{1,12}$/.test(String(number ?? ''))) return;
+  if (!activeSlotId || !loggedIn) return;
   const slots = await getSlots();
   const slot = slots.find((candidate) => candidate.id === activeSlotId);
   if (!slot || (name && slot.name !== name.trim())) return;
@@ -407,6 +452,22 @@ async function needsConfirm(confirmed, senderTab) {
 async function switchTo(slotId, originHint, confirmed, senderTab) {
   const ask = await needsConfirm(confirmed, senderTab);
   if (ask) return ask;
+
+  const { activeSlotId, loggedIn } = await getSessionState();
+  if (slotId === activeSlotId) {
+    // The cookies in the browser are this entry's own and newer than any
+    // stored copy: the session in use, a login the extension has not
+    // registered yet (a menu drawn a moment earlier still offers the entry
+    // then), or a session the server ended. Swapping them for the stored
+    // copy, or for none, ended a login that had just gone through. So the
+    // app opens with them: a valid session shows the app (the title and
+    // header register it), a dead one the login form, locked to this entry.
+    if (!loggedIn) await chrome.storage.session.set({ pendingLoginFor: slotId });
+    await clearAllTabStates();
+    await publishView();
+    await reloadEbTabs(originHint, true);
+    return {};
+  }
 
   await snapshotActiveSlot();
   const { [`cookies:${slotId}`]: cookies } = await chrome.storage.session.get(`cookies:${slotId}`);
@@ -518,8 +579,11 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
 
   if (kind === 'login' || kind === 'expired') {
     if (tab.returnUrl) await startRelogin(tab);
-    await setTab(tabId, tab);
     const shell = new URL(url).hostname === 'secure20.e-boekhouden.nl' && kind === 'login';
+    // A login form in mainframe (the 1Password login iframe, or a classic
+    // page): the next app header in this tab can register the login.
+    if (kind === 'login' && !shell) tab.loginSeen = true;
+    await setTab(tabId, tab);
     if (!shell) await onLoginPage();
     return { relogin: Boolean(tab.relogin) };
   }
@@ -566,6 +630,7 @@ async function onInnerPage(tabId, { url, kind }) {
   if (kind === 'login' || kind === 'expired') {
     // The login form of secure20/v1login lives in this inner frame.
     if (tab.returnUrl) await startRelogin(tab);
+    if (kind === 'login') tab.loginSeen = true;
     await setTab(tabId, tab);
     await onLoginPage();
     // The plain login form inside the /v1login shell (after a logout, an
@@ -595,7 +660,8 @@ async function onInnerPage(tabId, { url, kind }) {
 
 async function cancelRelogin(tabId) {
   const tab = await getTab(tabId);
-  await setTab(tabId, { mainFrameId: tab.mainFrameId });
+  // The form stays: a login from it still counts (loginSeen).
+  await setTab(tabId, { mainFrameId: tab.mainFrameId, ...(tab.loginSeen ? { loginSeen: true } : {}) });
 }
 
 // Whether a page can be loaded again without doing anything: the secure20
@@ -736,7 +802,7 @@ router.on('login:context', async (message, sender) => {
   const tab = sender.tab ? await getTab(sender.tab.id) : {};
   return { pendingLoginFor, relogin: Boolean(tab.relogin), reloginFor: tab.relogin ? tab.reloginFor ?? null : null };
 });
-router.on('header:identity', (message) => onHeaderIdentity(message));
+router.on('header:identity', (message, sender) => onHeaderIdentity(message, sender));
 router.on('main:page', (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url));
 router.on('login:host', (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}));
 router.on('login:done', (message, sender) => onLoginDone(sender.tab.id, sender.tab.url));

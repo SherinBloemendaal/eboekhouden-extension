@@ -105,6 +105,7 @@ test('host-only cookies stay host-only and domain cookies stay on the domain', a
 test('cookies that already expired are not restored', async () => {
   const past = Date.now() / 1000 - 60;
   const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'demo-a'), cookie('OLD', 'x', 'secure.e-boekhouden.nl', { session: false, expirationDate: past })]);
+  await fake.dispatch({ type: 'switcher:add', origin: ORIGIN }, main);
   await fake.dispatch({ type: 'switcher:switch', slotId: slot.id, origin: ORIGIN }, main);
   assert.deepEqual(Object.keys(jarValues()), ['ASPSESSIONIDAAA']);
 });
@@ -452,4 +453,133 @@ test('removing the active entry leaves no entry logged in', async () => {
   const slot = await loginAs('Voorbeeld B.V.', [cookie('S', 'a')]);
   await fake.dispatch({ type: 'switcher:remove', slotId: slot.id }, main);
   assert.deepEqual(await view(), { activeSlotId: null, loggedIn: false, ready: [] });
+});
+
+// The owner's report: log in, open Wissel, the administration just logged in
+// with is not shown as logged in, and choosing it logs the user out.
+test('a login is registered as soon as the app header shows, and choosing it in Wissel keeps the session', async () => {
+  const LOGIN = { tab: TAB, frameId: 5 };
+  // Logged in before; the session has since ended on the server.
+  const old = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'old-session')]);
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, main);
+  // /bh/ again: the 1Password login iframe shows the plain form.
+  await fake.dispatch({ type: 'top:title', title: 'Inloggen | e-Boekhouden.nl' }, top);
+  await fake.dispatch({ type: 'login:host', active: true }, top);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, LOGIN);
+  assert.equal(EBS.statusOf((await slots())[0], await view()), 'expired');
+
+  // The login: e-Boekhouden sets the new session and the app opens inside
+  // the login iframe, with its own header and the Wissel item in it. The top
+  // page has not reloaded yet, so no administration title has come.
+  await fake.dispatch({ type: 'login:username', username: 'user-a' }, LOGIN);
+  fake.jar = [cookie('ASPSESSIONIDAAA', 'new-session')];
+  const landing = await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/', kind: 'app' }, LOGIN);
+  assert.deepEqual(landing, { settleLogin: true });
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, LOGIN);
+
+  // Wissel shows the entry as the active one.
+  const [entry] = await slots();
+  assert.equal(entry.id, old.id);
+  assert.equal(EBS.statusOf(entry, await view()), 'active', 'Wissel shows the new login as Actief');
+  assert.equal(fake.storage.session.dump()[`cookies:${old.id}`][0].value, 'new-session', 'the new session is kept for later switches');
+
+  // A click on it (a menu drawn a moment earlier still says otherwise) must
+  // not take the new session's cookies out of the browser.
+  fake.updates = [];
+  assert.deepEqual(await fake.dispatch({ type: 'switcher:switch', slotId: old.id, origin: ORIGIN }, LOGIN), {});
+  assert.deepEqual(jarValues(), { ASPSESSIONIDAAA: 'new-session' }, 'still logged in');
+  assert.equal(fake.updates.at(-1).url, APP, 'the tab opens the app, not the login page');
+  assert.equal(EBS.statusOf((await slots())[0], await view()), 'active');
+});
+
+test('choosing the active entry before its login was registered keeps the session in the browser', async () => {
+  // A login the extension has not seen yet (no header, no title): the entry
+  // is still the active one from before, and its stored copy is older.
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'old-session')]);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  assert.equal((await view()).loggedIn, false);
+  fake.jar = [cookie('ASPSESSIONIDAAA', 'new-session')];
+  await chrome.storage.session.set({ [`cookies:${slot.id}`]: [cookie('ASPSESSIONIDAAA', 'old-session')] });
+
+  await fake.dispatch({ type: 'switcher:switch', slotId: slot.id, origin: ORIGIN }, main);
+  assert.deepEqual(jarValues(), { ASPSESSIONIDAAA: 'new-session' }, 'neither wiped nor swapped for the older copy');
+  assert.equal(fake.updates.at(-1).url, APP);
+  assert.equal(fake.storage.session.dump().pendingLoginFor, slot.id, 'a dead session shows the login form for this entry');
+  await fake.dispatch({ type: 'top:title', title: 'Voorbeeld B.V.' }, top);
+  assert.equal(EBS.statusOf((await slots())[0], await view()), 'active');
+});
+
+test('the app header registers a re-login in place, where the top title stays the same', async () => {
+  const page = 'https://secure20.e-boekhouden.nl/boekhouden/overzicht';
+  const slot = await loginAs('Voorbeeld B.V.', [cookie('ASPSESSIONIDAAA', 'old-session')]);
+  await fake.dispatch({ type: 'main:page', url: page, kind: 'app' }, main);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/v1login', kind: 'login' }, main);
+  assert.equal((await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner)).relogin, true);
+  assert.equal(EBS.statusOf((await slots())[0], await view()), 'expired');
+
+  // The dialog's login: the shell moves on to the app, the top frame stays.
+  fake.jar = [cookie('ASPSESSIONIDAAA', 'new-session')];
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/', kind: 'app' }, main);
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000001' }, main);
+  assert.equal(EBS.statusOf((await slots())[0], await view()), 'active');
+  assert.equal(fake.storage.session.dump()[`cookies:${slot.id}`][0].value, 'new-session');
+});
+
+test('a header from a page of before a switch does not register a login', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'A', name: 'Alpha', number: '1' }, { id: 'B', name: 'Beta', number: '2' }] });
+  await chrome.storage.session.set({ activeSlotId: 'A', loggedIn: true, 'cookies:B': [cookie('S', 'b')] });
+  fake.jar = [cookie('S', 'a')];
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  await fake.dispatch({ type: 'switcher:switch', slotId: 'B', origin: ORIGIN }, main);
+  // Alpha's old page, still on its way out.
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, main);
+  assert.equal((await view()).activeSlotId, 'B');
+  assert.equal((await view()).loggedIn, false, 'Beta waits for its own title or header');
+  assert.equal(fake.storage.session.dump()['cookies:A'], undefined, 'Beta\'s cookies are not stored on Alpha');
+});
+
+test('a header login of an administration that shares its name with another entry goes to the entry with its number', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'A', name: 'Voorbeeld B.V.', number: '1000001', username: null }, { id: 'B', name: 'Voorbeeld B.V.', number: '1000002', username: null }] });
+  await chrome.storage.session.set({ activeSlotId: 'A', loggedIn: false, pendingLoginFor: 'A', 'cookies:A': [cookie('S', 'a-old')] });
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  fake.jar = [cookie('S', 'b-new')];
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000002' }, main);
+  const after = await slots();
+  assert.deepEqual(after.map((slot) => [slot.id, slot.number]), [['A', '1000001'], ['B', '1000002']], 'both entries keep their own number');
+  assert.equal((await view()).activeSlotId, 'B');
+  assert.equal(fake.storage.session.dump()['cookies:B'][0].value, 'b-new');
+  assert.equal(fake.storage.session.dump()['cookies:A'][0].value, 'a-old', 'the other administration keeps its own session');
+});
+
+test('a login in a second tab for another administration is not stored on the active entry', async () => {
+  const OTHER = { id: 8, url: `${ORIGIN}/bh/` };
+  const otherMain = { tab: OTHER, frameId: 3 };
+  fake.tabs = [TAB, OTHER];
+  // Both tabs showed the login form; the first one logged in as Alpha.
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, otherMain);
+  fake.jar = [cookie('S', 'alpha')];
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, main);
+  const alpha = (await slots()).find((slot) => slot.name === 'Alpha');
+  assert.deepEqual(await view(), { activeSlotId: alpha.id, loggedIn: true, ready: [alpha.id] });
+
+  // The form left open in the second tab: a login there as Beta.
+  fake.jar = [cookie('S', 'beta')];
+  await fake.dispatch({ type: 'header:identity', name: 'Beta', number: '2' }, otherMain);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/', kind: 'app' }, otherMain);
+  const beta = (await slots()).find((slot) => slot.name === 'Beta');
+  assert.ok(beta, 'Beta has an entry of its own');
+  assert.equal((await view()).activeSlotId, beta.id);
+  assert.equal(fake.storage.session.dump()[`cookies:${alpha.id}`][0].value, 'alpha', 'Alpha keeps its own session');
+  assert.equal(fake.storage.session.dump()[`cookies:${beta.id}`][0].value, 'beta');
+});
+
+test('a header from a frame other than the top frame or mainframe does not register a login', async () => {
+  const stray = { tab: TAB, frameId: 9 };
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  fake.jar = [cookie('S', 'x')];
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, stray);
+  assert.deepEqual(await slots(), []);
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, main);
+  assert.equal((await view()).loggedIn, true, 'the mainframe header still counts');
 });
