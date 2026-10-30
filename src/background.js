@@ -250,13 +250,15 @@ async function onTopTitle(title) {
 // Matching, part one: the name (the top title, or the app header after a
 // login), plus the username typed at login. The administration number
 // follows from the header (part two, onHeaderIdentity), which merges the
-// entry with the same number if needed.
-async function registerLogin(name) {
+// entry with the same number if needed. The header gives the number right
+// away: an entry known under another number is another administration with
+// the same name, and never takes this session.
+async function registerLogin(name, number = null) {
   const { activeSlotId, loggedIn, pendingCheck } = await getSessionState();
   const stored = await chrome.storage.session.get(['pendingUsername', 'pendingUsernameAt', 'pendingLoginFor']);
   const pendingUsername = Date.now() - (stored.pendingUsernameAt ?? 0) < USERNAME_TTL_MS ? stored.pendingUsername : null;
   const slots = await getSlots();
-  const sameName = slots.filter((candidate) => candidate.name === name);
+  const sameName = slots.filter((candidate) => candidate.name === name && (!number || !candidate.number || candidate.number === number));
   // Entries can share a name (one administration, two users). The entry
   // just switched to, the one picked on the login page, or the one already
   // active wins over a guess.
@@ -327,15 +329,27 @@ async function mergeInto(targetId, sourceId) {
 // swapped the new session's cookies out of the browser. So a header in a tab
 // that showed a login form since the last switch registers the login now.
 // A header from a page of before a switch never does: the switch clears the
-// tab state, and its own login form report comes first.
-async function onHeaderIdentity({ name, number }, tabId) {
+// tab state, and its own login form report comes first. Only the frames that
+// carry the app header count: the top frame (the secure20 shell opened on its
+// own) and the tab's mainframe (the login iframe included).
+//
+// While another entry is active and logged in, a login form left open in a
+// second tab can still be used for another administration. The cookies in
+// the browser are then that administration's, and the next app page would
+// store them on the active entry. So a header that is not the active entry
+// registers its own entry too; one that is changes nothing.
+async function onHeaderIdentity({ name, number }, sender = {}) {
   if (!/^\d{1,12}$/.test(String(number ?? ''))) return;
+  const digits = String(number);
   const shown = typeof name === 'string' ? name.trim() : '';
+  const tabId = sender.tab?.id;
   if (tabId !== undefined && shown && !isGenericTitle(shown)) {
     const tab = await getTab(tabId);
-    if (tab.loginSeen) {
-      const { loggedIn } = await getSessionState();
-      if (!loggedIn) await registerLogin(shown);
+    if (tab.loginSeen && (sender.frameId === 0 || sender.frameId === tab.mainFrameId)) {
+      const { activeSlotId, loggedIn } = await getSessionState();
+      const active = loggedIn ? (await getSlots()).find((candidate) => candidate.id === activeSlotId) : null;
+      const isActive = active && active.name === shown && (!active.number || active.number === digits);
+      if (!isActive) await registerLogin(shown, digits);
       delete tab.loginSeen;
       await setTab(tabId, tab);
     }
@@ -784,7 +798,7 @@ router.on('login:context', async (message, sender) => {
   const tab = sender.tab ? await getTab(sender.tab.id) : {};
   return { pendingLoginFor, relogin: Boolean(tab.relogin), reloginFor: tab.relogin ? tab.reloginFor ?? null : null };
 });
-router.on('header:identity', (message, sender) => onHeaderIdentity(message, sender.tab?.id));
+router.on('header:identity', (message, sender) => onHeaderIdentity(message, sender));
 router.on('main:page', (message, sender) => onMainPage(sender.tab.id, sender.frameId, message, sender.tab.url));
 router.on('login:host', (message, sender) => (sender.frameId === 0 ? setLoginHost(sender.tab.id, message.active) : {}));
 router.on('login:done', (message, sender) => onLoginDone(sender.tab.id, sender.tab.url));

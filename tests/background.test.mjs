@@ -537,3 +537,49 @@ test('a header from a page of before a switch does not register a login', async 
   assert.equal((await view()).loggedIn, false, 'Beta waits for its own title or header');
   assert.equal(fake.storage.session.dump()['cookies:A'], undefined, 'Beta\'s cookies are not stored on Alpha');
 });
+
+test('a header login of an administration that shares its name with another entry goes to the entry with its number', async () => {
+  await chrome.storage.local.set({ slots: [{ id: 'A', name: 'Voorbeeld B.V.', number: '1000001', username: null }, { id: 'B', name: 'Voorbeeld B.V.', number: '1000002', username: null }] });
+  await chrome.storage.session.set({ activeSlotId: 'A', loggedIn: false, pendingLoginFor: 'A', 'cookies:A': [cookie('S', 'a-old')] });
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  fake.jar = [cookie('S', 'b-new')];
+  await fake.dispatch({ type: 'header:identity', name: 'Voorbeeld B.V.', number: '1000002' }, main);
+  const after = await slots();
+  assert.deepEqual(after.map((slot) => [slot.id, slot.number]), [['A', '1000001'], ['B', '1000002']], 'both entries keep their own number');
+  assert.equal((await view()).activeSlotId, 'B');
+  assert.equal(fake.storage.session.dump()['cookies:B'][0].value, 'b-new');
+  assert.equal(fake.storage.session.dump()['cookies:A'][0].value, 'a-old', 'the other administration keeps its own session');
+});
+
+test('a login in a second tab for another administration is not stored on the active entry', async () => {
+  const OTHER = { id: 8, url: `${ORIGIN}/bh/` };
+  const otherMain = { tab: OTHER, frameId: 3 };
+  fake.tabs = [TAB, OTHER];
+  // Both tabs showed the login form; the first one logged in as Alpha.
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, otherMain);
+  fake.jar = [cookie('S', 'alpha')];
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, main);
+  const alpha = (await slots()).find((slot) => slot.name === 'Alpha');
+  assert.deepEqual(await view(), { activeSlotId: alpha.id, loggedIn: true, ready: [alpha.id] });
+
+  // The form left open in the second tab: a login there as Beta.
+  fake.jar = [cookie('S', 'beta')];
+  await fake.dispatch({ type: 'header:identity', name: 'Beta', number: '2' }, otherMain);
+  await fake.dispatch({ type: 'main:page', url: 'https://secure20.e-boekhouden.nl/', kind: 'app' }, otherMain);
+  const beta = (await slots()).find((slot) => slot.name === 'Beta');
+  assert.ok(beta, 'Beta has an entry of its own');
+  assert.equal((await view()).activeSlotId, beta.id);
+  assert.equal(fake.storage.session.dump()[`cookies:${alpha.id}`][0].value, 'alpha', 'Alpha keeps its own session');
+  assert.equal(fake.storage.session.dump()[`cookies:${beta.id}`][0].value, 'beta');
+});
+
+test('a header from a frame other than the top frame or mainframe does not register a login', async () => {
+  const stray = { tab: TAB, frameId: 9 };
+  await fake.dispatch({ type: 'main:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, main);
+  fake.jar = [cookie('S', 'x')];
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, stray);
+  assert.deepEqual(await slots(), []);
+  await fake.dispatch({ type: 'header:identity', name: 'Alpha', number: '1' }, main);
+  assert.equal((await view()).loggedIn, true, 'the mainframe header still counts');
+});
