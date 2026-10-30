@@ -1287,6 +1287,69 @@
   // The shared dialog (dialog.js) does the frame, the motion, Escape, the
   // focus trap and the inert page; this part fills it for one row and listens
   // to the import page inside it.
+  //
+  // It also watches the frame itself (same origin, so readable). The frame's
+  // script says what goes on, but its deadlines live in the framed document:
+  // when e-Boekhouden replaces that document (a full load instead of a route
+  // change, a session page) or our script never runs in it, no word ever
+  // comes and the cover would wait forever, with nothing in the console. So:
+  //   left the list        the mutation page is there: the cover lifts, also
+  //                        without 'edit-opened'
+  //   a session page       says so, with "Pagina verversen"
+  //   the list without our script, or no progress for OPEN_TIMEOUT_MS
+  //                        "Het mutatiescherm van e-Boekhouden opende niet
+  //                        op tijd." with "Opnieuw",
+  //                        which loads the line in a new frame
+  //   the list page drawn without its grid, when the dialog gives up
+  //                        (e-Boekhouden in a frame does not log in again on
+  //                        its own; only a load of the whole page renews its
+  //                        session): says so, with "Pagina verversen" next to
+  //                        "Opnieuw" (only on the user's own click)
+  //   back on the list in a document without our script (after a save in a
+  //                        page that came by a full load): as 'edit-done'
+  // Progress is the phase runEditFrame writes on the frame's <html>
+  // (data-ebs-edit): find, paging, opening, editing, stopped.
+  const OPEN_TIMEOUT_MS = 20_000;
+  const WATCH_MS = 500;
+  const SESSION_PAGE = /^\/(v1login|login|login\/verlopen|sessie-verlopen)\/?$/i;
+  const TEXT_STUCK = 'Het mutatiescherm van e-Boekhouden opende niet op tijd.';
+  const TEXT_SESSION = 'Je sessie bij e-Boekhouden is verlopen. Ververs de pagina om opnieuw in te loggen.';
+  const TEXT_UNDRAWN = 'e-Boekhouden toont de lijst in dit venster niet. Mogelijk moet de sessie van e-Boekhouden in dit venster worden ververst; Pagina verversen laadt de hele pagina opnieuw.';
+
+  // The whole page again (e-Boekhouden's own way back into its session), on
+  // the user's own click only. A top of another origin (the classic /bh/
+  // frameset) cannot be reloaded from here: then this page.
+  const refreshPage = {
+    label: 'Pagina verversen',
+    run: (event) => {
+      if (!event?.isTrusted) return;
+      try {
+        window.top.location.reload();
+      } catch {
+        location.reload();
+      }
+    },
+  };
+
+  // What the frame shows: null (not there), { blank }, { foreign } or
+  // { path, complete, phase }.
+  function frameView(frame) {
+    try {
+      const win = frame?.contentWindow;
+      if (!win) return null;
+      if (win.location.href === 'about:blank') return { blank: true };
+      const doc = win.document;
+      return {
+        path: win.location.pathname,
+        complete: doc.readyState === 'complete',
+        phase: doc.documentElement?.getAttribute('data-ebs-edit') ?? null,
+        grid: Boolean(doc.querySelector('app-grid')),
+      };
+    } catch {
+      return { foreign: true };
+    }
+  }
+
   const dialog = {
     handle: null,
     open(row, signature = EBS.rowSignature(row)) {
@@ -1306,17 +1369,70 @@
       done.addEventListener('click', () => this.close());
 
       let handle = null;
+      // opening (the cover is up), ready (the mutation page shows), error.
+      let status = 'opening';
+      let phase = null;
+      let since = Date.now();
+      let watch = null;
+      const retry = () => {
+        status = 'opening';
+        phase = null;
+        since = Date.now();
+        handle.reload(url);
+      };
+      const ready = () => {
+        status = 'ready';
+        handle.setReady();
+      };
+      // The list page there, loaded, without its grid: e-Boekhouden drew
+      // nothing (its session in this frame, most likely).
+      const undrawn = () => {
+        const view = frameView(handle.frame);
+        return Boolean(view?.path && PAGE.test(view.path) && view.complete && !view.grid);
+      };
+      const fail = (text, why, again = retry) => {
+        status = 'error';
+        if (again === retry && undrawn()) {
+          handle.setError(TEXT_UNDRAWN, { retry: [retry, refreshPage] });
+          console.warn('EB Sessions: mutation dialog shows the list without its grid', { why: why ?? text, phase });
+          return;
+        }
+        handle.setError(text, { retry: again });
+        if (why) console.warn(`EB Sessions: mutation dialog ${why}`, { phase, seconds: Math.round((Date.now() - since) / 1000), at: frameView(handle.frame)?.path ?? null });
+      };
+      const finish = () => {
+        this.close();
+        location.reload();
+      };
+      const check = () => {
+        if (!handle?.isOpen) return;
+        const view = frameView(handle.frame);
+        // Another site: dialog.js shows its own error on that load.
+        if (view?.foreign) return;
+        const known = view && !view.blank;
+        if (known && view.phase !== phase) {
+          phase = view.phase;
+          since = Date.now();
+        }
+        const onList = known && PAGE.test(view.path);
+        if (status === 'opening') {
+          if (known && SESSION_PAGE.test(view.path)) fail(TEXT_SESSION, 'reached a session page', refreshPage);
+          else if (known && !onList && (view.complete || phase)) ready();
+          else if (onList && view.complete && !phase) fail(TEXT_STUCK, 'shows the list without its script');
+          else if (Date.now() - since > OPEN_TIMEOUT_MS) fail(TEXT_STUCK, 'timed out');
+        } else if (status === 'ready' && onList && view.complete && !phase) {
+          finish();
+        }
+      };
       const onMessage = (event) => {
         if (!handle || event.origin !== location.origin || event.source !== handle.frame.contentWindow) return;
         const kind = event.data?.ebs;
-        if (kind === 'edit-done') {
-          this.close();
-          location.reload();
-        }
+        if (kind === 'edit-done') finish();
         if (kind === 'edit-escape') this.close();
-        if (kind === 'edit-opened') handle.setReady();
-        if (kind === 'edit-missing') handle.setError('Deze regel staat niet meer in de lijst. Sluit het venster en probeer het opnieuw.');
-        if (kind === 'edit-failed') handle.setError('Het mutatiescherm van e-Boekhouden opende niet. Sluit het venster en probeer het opnieuw.');
+        // Late, after a timeout: the page is there after all.
+        if (kind === 'edit-opened' && status !== 'ready') ready();
+        if (kind === 'edit-missing') fail('Deze regel staat niet meer in de lijst.', null);
+        if (kind === 'edit-failed') fail('Het mutatiescherm van e-Boekhouden opende niet.', null);
       };
       handle = EBS.dialog.open({
         title: 'Mutatie aanmaken',
@@ -1334,12 +1450,15 @@
         // Back to the button or line the dialog came from, also after a redraw.
         returnFocus: () => (opener?.isConnected && opener !== document.body ? opener
           : [...(better.body?.children ?? [])].find((node) => node.dataset.signature === signature)?.querySelector('[data-control="book"]')),
+        onFrameLoad: check,
         onClose: () => {
+          clearInterval(watch);
           window.removeEventListener('message', onMessage);
           if (this.handle === handle) this.handle = null;
         },
       });
       window.addEventListener('message', onMessage);
+      watch = setInterval(check, WATCH_MS);
       this.handle = handle;
     },
     close(immediate = false) {
@@ -1379,6 +1498,11 @@
     // paging   wait until the next page has replaced the lines
     // opening  wait until e-Boekhouden has left the list for the mutation page
     // editing  back on the list: saved or cancelled
+    // The phase on <html>, for the dialog's own watch over this frame: as
+    // long as it is there and changes, this script is alive and working.
+    const mark = (value) => {
+      if (framed) document.documentElement.setAttribute('data-ebs-edit', value);
+    };
     let phase = 'find';
     let since = Date.now();
     let seen = null;
@@ -1386,11 +1510,14 @@
     const to = (next) => {
       phase = next;
       since = Date.now();
+      mark(next);
     };
     const stop = (message) => {
       clearInterval(tick);
+      mark('stopped');
       if (message) tell(message);
     };
+    mark(phase);
     const firstLine = (rows) => (rows.length ? EBS.rowSignature(rows[0]) : '');
     const tick = setInterval(() => {
       const waited = Date.now() - since;

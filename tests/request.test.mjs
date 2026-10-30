@@ -38,6 +38,7 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', 
   const timers = [];
   const listeners = {};
   const calls = [];
+  const late = [];
   let running = 0;
   let maxRunning = 0;
   const FakeDate = class extends Date {
@@ -60,7 +61,14 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', 
       if (at >= 0) timers.splice(at, 1);
     },
     addEventListener: (type, fn) => (listeners[type] ??= []).push(fn),
-    chrome: worker ? {
+    chrome: worker === 'silent' ? { runtime: { sendMessage: () => new Promise(() => {}) } } : worker === 'late' ? {
+      runtime: {
+        // A place, but only after 12 s; what comes back is kept.
+        sendMessage: (message) => (message.type === 'requests:slot'
+          ? new Promise((resolve) => context.setTimeout(() => resolve({ ok: true, lease: 'late.1' }), 12_000))
+          : Promise.resolve(late.push(message.lease))),
+      },
+    } : worker ? {
       runtime: {
         async sendMessage(message) {
           clock.time = Math.max(clock.time, time);
@@ -117,6 +125,7 @@ function sandbox({ url = 'https://secure20.e-boekhouden.nl/boekhouden/archief', 
     maxRunning: () => maxRunning,
     // A real click of the user (event.isTrusted), and one a page script made.
     slots,
+    late,
     click: (isTrusted = true) => (listeners.click ?? []).forEach((fn) => fn({ type: 'click', isTrusted })),
     key: (key, repeat = false) => (listeners.keydown ?? []).forEach((fn) => fn({ type: 'keydown', key, repeat, isTrusted: true })),
     // Another screen of the app (e-Boekhouden changes the URL for each).
@@ -571,5 +580,70 @@ test('a 429 in one frame pauses the other frames too', async () => {
 test('without the service worker (an orphaned script) nothing is sent', async () => {
   const s = sandbox({ worker: false });
   assert.equal((await outcome(s.request.bulk('a', '/api/a'))).error.code, 'unavailable');
+  assert.equal(s.calls.length, 0);
+});
+
+test('a request without an answer ends after 30 s and frees its place for every caller that shared it', async () => {
+  const s = sandbox();
+  // Two that never get an answer take both places; a third waits behind them.
+  const stuck = [s.request.bulk('a', '/api/a'), s.request.bulk('a', '/api/a'), s.request.bulk('b', '/api/b')].map(outcome);
+  const after = outcome(s.request.bulk('c', '/api/c'));
+  await flush();
+  assert.equal(s.calls.length, 2, 'a and b run; c waits');
+  await s.advance(29_000);
+  assert.equal(s.calls.length, 2, 'still waiting within the time');
+  await s.advance(1_500);
+  const [one, two, three] = await Promise.all(stuck);
+  assert.equal(one.error?.code, 'timeout');
+  assert.equal(two.error?.code, 'timeout', 'the caller that shared it ends too');
+  assert.equal(three.error?.code, 'timeout');
+  assert.equal(s.layer.stats().active, 0, 'both places are free');
+  // c gets its turn after the pause of the two failures (2 s, then 4 s).
+  await s.advance(3_000);
+  assert.equal(s.calls.length, 2, 'still in the pause');
+  await s.advance(1_500);
+  assert.equal(s.calls.length, 3);
+  s.calls[2].respond({ ok: 1 });
+  assert.deepEqual((await after).value, { ok: 1 });
+});
+
+test('a service worker that never hands out a place ends the wait after 10 s', async () => {
+  const s = sandbox({ worker: 'silent' });
+  const waiting = outcome(s.request.bulk('a', '/api/a'));
+  await s.advance(9_000);
+  assert.equal(s.layer.stats().active, 1, 'still asking within the time');
+  await s.advance(1_500);
+  assert.equal((await waiting).error?.code, 'unavailable');
+  assert.equal(s.layer.stats().active, 0, 'its place is free again');
+  assert.equal(s.calls.length, 0, 'nothing was sent without a place');
+});
+
+test('a file (an export, a preview) that takes minutes is not cut off at 30 s, and still ends after 5 minutes', async () => {
+  const s = sandbox();
+  s.click();
+  const slow = s.layer.item('export:1', '/v1/api/export/1', { userAction: true, as: 'blob' });
+  await flush();
+  assert.equal(s.calls.length, 1);
+  await s.advance(2 * 60_000);
+  s.calls[0].respond('PK', { headers: { 'content-type': 'application/vnd.ms-excel' } });
+  assert.equal(await (await slow).text(), 'PK', 'a large export after 2 minutes still arrives');
+  s.click();
+  const never = outcome(s.layer.item('export:2', '/v1/api/export/2', { userAction: true, as: 'blob' }));
+  await flush();
+  await s.advance(4 * 60_000);
+  assert.equal(s.layer.stats().active, 1, 'still waiting within the time');
+  await s.advance(61_500);
+  assert.equal((await never).error?.code, 'timeout');
+  assert.equal(s.layer.stats().active, 0);
+});
+
+test('a place the service worker hands out after the wait ended goes back at once', async () => {
+  const s = sandbox({ worker: 'late' });
+  const waiting = outcome(s.request.bulk('a', '/api/a'));
+  await flush();
+  await s.advance(10_500);
+  assert.equal((await waiting).error?.code, 'unavailable');
+  await s.advance(2_000);
+  assert.deepEqual(s.late, ['late.1'], 'the late lease is released, not held for its 60 s');
   assert.equal(s.calls.length, 0);
 });

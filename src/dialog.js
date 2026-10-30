@@ -5,7 +5,8 @@
 //     src: 'https://secure20.e-boekhouden.nl/...',   // or content: someNode
 //     width: 1040, height: 760,
 //   });
-//   dialog.setError('Dat lukte niet.', { fallbackUrl: url });
+//   dialog.setError('Dat lukte niet.', { fallbackUrl: url, retry: () => dialog.reload() });
+//   dialog.reload();      // a src dialog: a fresh frame with the page, the cover back
 //   dialog.close();
 //
 // open(options):
@@ -20,6 +21,7 @@
 //                        iframe has loaded, 'manual' leaves that to setReady();
 //                        without src the body shows at once unless loading is
 //                        given. The cover fades out (150 ms) when it lifts
+//   onFrameLoad(frame)   after every load of the frame (also after reload())
 //   fallbackUrl          offered as "Openen in een nieuw venster" with an error.
 //                        A frame that cannot show its page (it went to another
 //                        site, or the browser refused it) gets an error by
@@ -33,6 +35,13 @@
 //   closeOnBackdrop      default true
 //   motion               default: on with Better design, off without it
 //   className, onClose(reason)
+//
+// setError(text, { fallbackUrl, retry }): retry is a function (or { label,
+// run }, or a list of those) behind an "Opnieuw" button on the error, so a
+// stuck load never needs a reload of the page; run gets the click event.
+// reload(url) puts a new iframe in place of the
+// old one (a new window: nothing of the old page stays) and shows the
+// loading cover again; handle.frame is then the new one.
 //
 // While it is open the page behind is inert, Tab stays inside the dialog and
 // Escape closes it, also from inside a same-origin iframe (unless something in
@@ -214,7 +223,10 @@
     let frameWindow = null;
 
     const handle = {
-      host, panel, body, frame, footer: foot,
+      host, panel, body, footer: foot,
+      get frame() {
+        return frame;
+      },
       get isOpen() {
         return state === 'open';
       },
@@ -229,6 +241,7 @@
         cover.classList.remove('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
+        cover.querySelector('.ebs-dialog-retries')?.remove();
         // A cover that comes back gets a new mark: its entry plays again.
         mark?.start();
         cover.hidden = false;
@@ -238,11 +251,25 @@
         // The mark goes once the cover has faded out.
         mark?.stop();
       },
-      setError(text, { fallbackUrl } = {}) {
+      setError(text, { fallbackUrl, retry } = {}) {
         mark?.stop({ immediate: true });
         cover.classList.add('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
+        cover.querySelector('.ebs-dialog-retries')?.remove();
+        const choices = [].concat(retry ?? []).map((one) => (typeof one === 'function' ? { run: one } : one)).filter((one) => typeof one?.run === 'function');
+        if (choices.length) {
+          const row = el('span', 'ebs-dialog-retries');
+          for (const again of choices) {
+            const button = el('button', 'ebs-dialog-button ebs-dialog-retry', again.label ?? 'Opnieuw');
+            button.type = 'button';
+            button.addEventListener('click', (event) => {
+              if (state === 'open') again.run(event);
+            });
+            row.append(button);
+          }
+          cover.append(row);
+        }
         const url = fallbackUrl === undefined ? fallbackDefault : appUrl(fallbackUrl);
         if (url) {
           const link = el('a', 'ebs-dialog-fallback', 'Openen in een nieuw venster');
@@ -253,6 +280,26 @@
           cover.append(link);
         }
         cover.hidden = false;
+      },
+      // A src dialog only: a new frame with `next` (default: the first src).
+      reload(next) {
+        if (!frame || state !== 'open') return false;
+        const url = next === undefined ? src : appUrl(next);
+        if (!url) return false;
+        frame.removeEventListener('load', onFrameLoad);
+        detachFrameKeys();
+        const fresh = el('iframe', 'ebs-dialog-frame');
+        fresh.title = frame.title;
+        fresh.src = url;
+        fresh.addEventListener('load', onFrameLoad);
+        // On the old frame, or on the Opnieuw that goes with the cover's error.
+        const hadFocus = document.activeElement === frame || cover.contains(document.activeElement);
+        frame.replaceWith(fresh);
+        frame = fresh;
+        attachFrameKeys();
+        handle.setLoading(options.loading);
+        if (hadFocus) close.focus({ preventScroll: true });
+        return true;
       },
       close({ immediate = false, reason = 'close' } = {}) {
         if (state !== 'open') return;
@@ -341,6 +388,11 @@
         return;
       }
       if ((options.ready ?? 'load') === 'load' && !cover.classList.contains('error')) handle.setReady();
+      try {
+        options.onFrameLoad?.(frame);
+      } catch (error) {
+        console.error('EB Sessions: dialog onFrameLoad failed', error);
+      }
     }
 
     host.addEventListener('keydown', onKey);
@@ -402,10 +454,13 @@
     .ebs-dialog-cover.error > * { animation: ebsDialogCoverIn 150ms ease-out both; }
     @keyframes ebsDialogCoverIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     .ebs-dialog-fallback { font-size: 13px; color: #232c4f; }
+    .ebs-dialog-retries { display: flex; gap: 10px; justify-content: center; }
+    .ebs-dialog-retry { transition: background-color 150ms ease, border-color 150ms ease; }
+    .ebs-dialog-retry:hover { background: #f3f5fa; border-color: #b9c0d3; }
     .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }
     .ebs-dialog-button { height: 36px; padding: 0 14px; border: 1px solid #d6dbe8; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; cursor: pointer; }
     .ebs-dialog-sentinel { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    .ebs-dialog-close:focus-visible, .ebs-dialog-button:focus-visible, .ebs-dialog-link:focus-visible, .ebs-dialog-fallback:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    .ebs-dialog-close:focus-visible, .ebs-dialog-button:focus-visible, .ebs-dialog-link:focus-visible, .ebs-dialog-fallback:focus-visible, .ebs-dialog-retry:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     /* Better design motion: transitions only, so a close turns an opening around. */
     .ebs-dialog-backdrop.ebs-motion { opacity: 0; transition: opacity 160ms cubic-bezier(0.23, 1, 0.32, 1); }
