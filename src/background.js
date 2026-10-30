@@ -676,6 +676,10 @@ async function openAppAfterLogin(tabId, tab, topUrl) {
 
   const wanted = tab.relogin && tab.returnUrl && isReadOnlyPage(tab.returnUrl) ? tab.returnUrl : APP_START;
   const v2 = wanted.startsWith(`${SECURE20_ORIGIN}/`) ? wanted : APP_START;
+  // The loader in the top frame keeps covering this document until the app
+  // entry replaces it, instead of fading out for what the login iframe shows
+  // meanwhile (src/features/loader.js).
+  chrome.tabs.sendMessage(tabId, { type: 'loader:entering' }, { frameId: 0 }).catch(() => {});
   await chrome.tabs.update(tabId, { url: `${topOriginOf(topUrl)}/bh?v2Url=${encodeURIComponent(v2)}` });
   return { navigating: true };
 }

@@ -301,6 +301,105 @@ test('with the 1Password swap on, a form inside e-Boekhouden\'s frameset waits f
   p.close();
 });
 
+// login-breakout.js swaps the frameset for its body with the login iframe.
+function swapFrameset(p) {
+  const body = p.document.createElement('body');
+  body.id = 'ebs-login-host';
+  const iframe = p.document.createElement('iframe');
+  iframe.id = 'mainframe';
+  iframe.name = 'mainframe';
+  body.append(iframe);
+  p.document.querySelector('frameset').replaceWith(body);
+  return iframe;
+}
+
+// A refresh of the app (/bh?v2Url=) whose shell first shows a form: the
+// service worker asks for the swap, the swapped login iframe says "U bent
+// reeds ingelogd" and the tab moves on to /bh?v2Url= again. One loader
+// over both documents, one fade at the end.
+test('a refresh through the swap and "reeds ingelogd" keeps one loader into the next document', async () => {
+  const store = { ...BETTER, settings: { betterDesign: true, onePassword: true } };
+  const first = bh({ url: APP_ENTRY, store });
+  first.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(first);
+  first.load(...SCRIPTS);
+  await first.settle();
+  message(first, 'login', { origin: 'https://secure.e-boekhouden.nl' });
+  await first.settle();
+  const iframe = swapFrameset(first);
+  message(first, 'already', { origin: 'https://secure.e-boekhouden.nl', source: iframe.contentWindow });
+  // The swap wait (1.5 s) is over by the time the next document commits.
+  await sleep(1600);
+  assert.ok(first.host() && !first.box().classList.contains('leaving'), 'still covering: the swapped iframe said the app is coming');
+  first.window.dispatchEvent(new first.window.Event('pagehide'));
+  const stored = first.window.sessionStorage.getItem('ebs-loader');
+  assert.deepEqual(events, ['show'], 'never taken away in the first document');
+  assert.ok(stored, 'the next document continues it');
+  first.close();
+
+  const next = bh({ url: APP_ENTRY, store });
+  next.window.localStorage.setItem('ebs-loader-mode', 'better');
+  next.window.sessionStorage.setItem('ebs-loader', stored);
+  const nextEvents = watchCover(next);
+  next.load(...SCRIPTS);
+  await next.settle();
+  assert.ok(next.box().classList.contains('is-settled'), 'continued, not a second entry');
+  message(next, 'already');
+  message(next, 'app');
+  await sleep(320);
+  await next.settle();
+  assert.deepEqual(nextEvents, ['show', 'hide'], 'one fade, at the end');
+  next.close();
+});
+
+// The service worker opens the app through /bh?v2Url= (a new document) and
+// says so first: what the frames of this document show next is not the end.
+test('while the service worker moves the tab into the app, nothing in this document ends the loader', async () => {
+  const store = { ...BETTER, settings: { betterDesign: true, onePassword: true } };
+  const p = bh({ store });
+  p.window.localStorage.setItem('ebs-loader-mode', 'better');
+  const events = watchCover(p);
+  p.load(...SCRIPTS);
+  await p.settle();
+  const iframe = swapFrameset(p);
+  const host = { origin: 'https://secure.e-boekhouden.nl', source: iframe.contentWindow };
+  message(p, 'already', host);
+  p.deliver({ type: 'loader:entering' });
+  // e-Boekhouden's own next step shows the app in the login iframe before the new document commits.
+  message(p, 'app', { origin: SECURE20, source: iframe.contentWindow });
+  message(p, 'other', { origin: SECURE20, source: iframe.contentWindow });
+  message(p, 'login', host);
+  await sleep(320);
+  await p.settle();
+  assert.ok(p.host() && !p.box().classList.contains('leaving'), 'still covering');
+  p.window.dispatchEvent(new p.window.Event('pagehide'));
+  assert.ok(p.window.sessionStorage.getItem('ebs-loader'), 'handed over to the next document');
+  assert.deepEqual(events, ['show']);
+  p.close();
+});
+
+test('a message that only claims to come from the service worker does not hold the loader', async () => {
+  const p = bh();
+  p.load(...SCRIPTS);
+  await p.settle();
+  p.deliver({ type: 'loader:entering' }, { id: 'other-extension' });
+  p.deliver({ type: 'loader:entering' }, { id: 'ebs-test', tab: { id: 7 } });
+  message(p, 'app');
+  assert.ok(p.box().classList.contains('ebs-out-app'));
+  p.close();
+});
+
+test('while moving into the app the 8 second cap and "Pagina nu tonen" still show the page', async () => {
+  const p = bh();
+  p.load(...SCRIPTS);
+  await p.settle();
+  p.deliver({ type: 'loader:entering' });
+  await sleep(3100);
+  p.shadow().querySelector('.ebs-link').click();
+  assert.ok(p.box().classList.contains('ebs-out-app'), 'the user can always show the page');
+  p.close();
+});
+
 test('with the swap on but no swap coming, the form is shown after 1.5 s at most', async () => {
   const p = bh({ store: { ...BETTER, settings: { betterDesign: true, onePassword: true } } });
   p.load(...SCRIPTS);

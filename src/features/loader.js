@@ -21,6 +21,9 @@
 //                 into the app from there; the loader stays)
 //   secure20      'app' once the app's header is rendered in mainframe,
 //                 'other' for e-Boekhouden's own session-expired screens
+// When the service worker moves the tab on to /bh?v2Url= it tells the top
+// frame first ('loader:entering'); from then on this document's frames no
+// longer decide, the next document continues the loader (below).
 // A message only hides the loader (or keeps it), so one forged by a page
 // script can do no more than that. The top URL alone cannot decide: /bh/
 // without `v2Url` may still hold a valid session ("reeds ingelogd"), and
@@ -863,8 +866,37 @@
     }
     window.addEventListener('message', onFrameMessage);
 
+    // Before the service worker sends the tab to /bh?v2Url= (the app entry
+    // after "U bent reeds ingelogd" or a login in the 1Password iframe), it
+    // says so here (background.js, openAppAfterLogin). From then on nothing
+    // this document's frames show ends the loader: e-Boekhouden's own next
+    // step can show the app in the login iframe before the new document
+    // commits, and fading out for it only to cover again there is the
+    // show, hide, show again of a refresh. The 8 s cap and "Pagina nu
+    // tonen" still show the page. Only the extension itself can send this.
+    let entering = false;
+    function onRuntimeMessage(message, sender) {
+      if (message?.type !== 'loader:entering' || sender?.tab || sender?.id !== chrome.runtime.id) return;
+      entering = true;
+      window.clearTimeout(swapWait);
+      swapWait = null;
+    }
+    try {
+      chrome.runtime.onMessage.addListener(onRuntimeMessage);
+    } catch { /* no extension context: the read below fails as well */ }
+
     function handle({ kind, source, origin, fromHost }) {
-      if (kind === 'already') return; // the app is coming: keep waiting
+      // The service worker is replacing this document with the app entry:
+      // the next document decides, its loader continues this one.
+      if (entering) return;
+      if (kind === 'already') {
+        // The app is coming: keep waiting. A form reported earlier (the
+        // shell's, before the 1Password swap) is no longer what shows, so
+        // its swap wait must not end the loader either.
+        window.clearTimeout(swapWait);
+        swapWait = null;
+        return;
+      }
       if (kind === 'login') {
         // A form in e-Boekhouden's own frameset that the 1Password swap is
         // about to replace: wait for the swapped one (or SWAP_WAIT_MS).
@@ -880,7 +912,8 @@
 
     function settle(kind, from) {
       window.clearTimeout(swapWait);
-      if (state.gone || state.leaving) return;
+      swapWait = null;
+      if (entering || state.gone || state.leaving) return;
       if (!state.mode) {
         // Known before the loader was even decided: it never shows.
         state.outcome = kind;
@@ -1074,6 +1107,9 @@
       state.gone = true;
       state.host?.remove();
       window.removeEventListener('message', onFrameMessage);
+      try {
+        chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+      } catch { /* the extension went away */ }
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
     }
