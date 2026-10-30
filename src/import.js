@@ -1297,7 +1297,8 @@
   //                        without 'edit-opened'
   //   a session page       says so, with "Pagina verversen"
   //   the list without our script, or no progress for OPEN_TIMEOUT_MS
-  //                        "Kon de open posten niet laden" with "Opnieuw",
+  //                        "Het mutatiescherm van e-Boekhouden opende niet
+  //                        op tijd." with "Opnieuw",
   //                        which loads the line in a new frame
   //   back on the list in a document without our script (after a save in a
   //                        page that came by a full load): as 'edit-done'
@@ -1306,7 +1307,7 @@
   const OPEN_TIMEOUT_MS = 20_000;
   const WATCH_MS = 500;
   const SESSION_PAGE = /^\/(v1login|login|login\/verlopen|sessie-verlopen)\/?$/i;
-  const TEXT_STUCK = 'Kon de open posten niet laden.';
+  const TEXT_STUCK = 'Het mutatiescherm van e-Boekhouden opende niet op tijd.';
   const TEXT_SESSION = 'Je sessie bij e-Boekhouden is verlopen. Ververs de pagina om opnieuw in te loggen.';
 
   // What the frame shows: null (not there), { blank }, { foreign } or

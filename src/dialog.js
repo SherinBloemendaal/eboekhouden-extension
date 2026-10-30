@@ -287,7 +287,8 @@
         fresh.title = frame.title;
         fresh.src = url;
         fresh.addEventListener('load', onFrameLoad);
-        const hadFocus = panel.contains(document.activeElement) && document.activeElement === frame;
+        // On the old frame, or on the Opnieuw that goes with the cover's error.
+        const hadFocus = document.activeElement === frame || cover.contains(document.activeElement);
         frame.replaceWith(fresh);
         frame = fresh;
         attachFrameKeys();

@@ -47,17 +47,19 @@ const cover = (document) => document.querySelector('.ebs-dialog-cover');
 const coverText = (document) => document.querySelector('.ebs-dialog-cover-text').textContent;
 const retryButton = (document) => document.querySelector('.ebs-dialog-cover .ebs-dialog-retry');
 
-test('a frame whose list has none of our script ends in "Kon de open posten niet laden" with Opnieuw, not an endless loader', async () => {
+test('a frame whose list has none of our script ends in "Het mutatiescherm van e-Boekhouden opende niet op tijd" with Opnieuw, not an endless loader', async () => {
   const p = await openDialog();
   const { document } = p;
   await wait(700);
-  assert.equal(coverText(document), 'Kon de open posten niet laden.', 'the cover says so instead of loading on');
+  assert.equal(coverText(document), 'Het mutatiescherm van e-Boekhouden opende niet op tijd.', 'the cover says so instead of loading on');
   assert.ok(cover(document).classList.contains('error'));
   assert.equal(retryButton(document)?.textContent, 'Opnieuw');
 
   // Opnieuw really tries again: a new frame (a new window), the loader back.
   const old = p.frame;
+  retryButton(document).focus();
   retryButton(document).click();
+  assert.equal(document.activeElement, document.querySelector('.ebs-dialog-close'), 'the focus stays in the dialog, not on a button that went');
   const fresh = document.querySelector('.ebs-dialog-frame');
   assert.notEqual(fresh, old, 'a new frame');
   assert.ok(!old.isConnected, 'the old one is gone');
@@ -113,7 +115,7 @@ test('no progress of the frame for 20 s ends the wait; progress keeps it going',
   assert.ok(!cover(document).classList.contains('error'), '15 s after the last progress');
   shift = 36_000;
   await wait(600);
-  assert.equal(coverText(document), 'Kon de open posten niet laden.');
+  assert.equal(coverText(document), 'Het mutatiescherm van e-Boekhouden opende niet op tijd.');
   assert.equal(retryButton(document)?.textContent, 'Opnieuw');
   // A late word from the frame still shows the page.
   window.dispatchEvent(new window.MessageEvent('message', { data: { ebs: 'edit-opened' }, origin: ORIGIN, source: frame.contentWindow }));
