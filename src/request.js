@@ -28,6 +28,9 @@
 //     429 or 503 pauses every frame. Nothing is retried on its own, and there
 //     is no polling helper.
 //   - abort(key), abortAll() and leaving the page cancel what is running.
+//   - Every wait ends: a request that has no answer after 30 s fails with
+//     code 'timeout' (and frees its place, also for the callers that shared
+//     it), and the service worker gets 10 s to hand out a place.
 //
 // options: as ('json', the default, 'text', or 'blob' for a file such as a
 // preview; 'blob' only in isolated mode), mode ('isolated', the
@@ -37,7 +40,7 @@
 // bulk() and item() always return a promise; every error is a rejection with
 // an EBS.request.RequestError (a TypeError for a wrong option) with a code:
 // 'method', 'origin', 'user-action', 'key', 'rate', 'repeat', 'abort',
-// 'network', 'http', 'redirected', 'parse', 'unavailable'. Nothing here
+// 'timeout', 'network', 'http', 'redirected', 'parse', 'unavailable'. Nothing here
 // reads, stores or logs a token.
 
 (() => {
@@ -53,6 +56,8 @@
   const BACKOFF_BASE_MS = 2_000;
   const BACKOFF_MAX_MS = 5 * 60_000;
   const CLICK_WINDOW_MS = 10_000;
+  const REQUEST_TIMEOUT_MS = 30_000;
+  const SLOT_TIMEOUT_MS = 10_000;
   const APP_HOST = /^secure\d*\.e-boekhouden\.nl$/;
 
   class RequestError extends Error {
@@ -237,10 +242,19 @@
   // The budget of every frame and tab together, kept by the service worker.
   // ---------------------------------------------------------------------------
 
+  // A promise that rejects with `error` after `ms`, unless it settled before.
+  function within(promise, ms, error) {
+    let timer = null;
+    const late = new Promise((_, reject) => {
+      timer = root.setTimeout(() => reject(error), ms);
+    });
+    return Promise.race([promise, late]).finally(() => root.clearTimeout(timer));
+  }
+
   async function globalSlot() {
     let answer;
     try {
-      answer = await root.chrome.runtime.sendMessage({ type: 'requests:slot' });
+      answer = await within(Promise.resolve().then(() => root.chrome.runtime.sendMessage({ type: 'requests:slot' })), SLOT_TIMEOUT_MS, new Error('slot timeout'));
     } catch {
       throw new RequestError('unavailable', 'EBS.request: the extension did not answer; reload the page');
     }
@@ -329,8 +343,18 @@
     let error = null;
     let status = null;
     let retryAfter = null;
+    // No answer in time: stop it, so its place (and every caller that
+    // shares it) is free again instead of waiting for the page's lifetime.
+    let timedOut = false;
+    const deadline = root.setTimeout(() => {
+      timedOut = true;
+      job.controller.abort();
+      if (job.mode === 'main') mainRequest?.abort(job.id);
+    }, REQUEST_TIMEOUT_MS);
     try {
-      const response = job.mode === 'main' ? await fetchMain(job) : await fetchIsolated(job);
+      const fetching = job.mode === 'main' ? fetchMain(job) : fetchIsolated(job);
+      // The page's world may not stop on an abort: the deadline holds anyway.
+      const response = await within(fetching, REQUEST_TIMEOUT_MS + 1_000, new DOMException('Aborted', 'AbortError'));
       status = response.status;
       retryAfter = retryAfterMs(response.retryAfter);
       if (response.redirected) {
@@ -354,13 +378,17 @@
         if (job.ttl > 0) cache.set(job.cacheKey, { key: job.key, value, expires: now() + job.ttl });
       }
     } catch (caught) {
-      if (job.aborted || caught?.name === 'AbortError') {
+      if (timedOut && !job.aborted) {
+        error = new RequestError('timeout', 'EBS.request: no answer in time');
+        backoff(null);
+      } else if (job.aborted || caught?.name === 'AbortError') {
         error = new RequestError('abort', 'EBS.request: aborted');
       } else {
         error = caught instanceof RequestError ? caught : new RequestError('network', 'EBS.request: the request failed');
         if (error.code !== 'unavailable') backoff(null);
       }
     }
+    root.clearTimeout(deadline);
     active -= 1;
     release(grant.lease, status, retryAfter);
     settle(job, error, value);
@@ -501,6 +529,6 @@
       };
     },
     RequestError,
-    limits: Object.freeze({ ttlMs: TTL_MS, concurrent: MAX_CONCURRENT, perMinute: RATE_LIMIT, queue: MAX_QUEUE }),
+    limits: Object.freeze({ ttlMs: TTL_MS, concurrent: MAX_CONCURRENT, perMinute: RATE_LIMIT, queue: MAX_QUEUE, timeoutMs: REQUEST_TIMEOUT_MS }),
   }));
 })();
