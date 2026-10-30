@@ -64,6 +64,21 @@ test('a session that expires on a classic page in the secure20 shell moves the r
   assert.equal(fake.updates.at(-1).url, `${ORIGIN}/bh?v2Url=${encodeURIComponent(classic)}`, 'back to the page the user was on');
 });
 
+test('cancelling the re-login dialog in the breakout iframe still opens the real app after a login', async () => {
+  const classic = `${V2}/v1page?url=%2Fbh%2Foverzicht.asp`;
+  await host(false);
+  await page(classic, 'app');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  await host(true);
+  await page(`${ORIGIN}/bh/inloggen.asp`, 'login');
+  // The user closes the dialog and logs in from the plain form instead.
+  await fake.dispatch({ type: 'relogin:cancel' }, main);
+  const { first, done } = await landing(`${V2}/boekhouden/overzicht`);
+  assert.deepEqual(first, { settleLogin: true }, 'the landing is still the answer to a login in the breakout iframe');
+  assert.deepEqual(done, { navigating: true });
+  assert.equal(fake.updates.at(-1).url, APP, 'the cancelled return no longer applies: the app start');
+});
+
 test('a classic page in the shell that still has its session never asks for a swap', async () => {
   await host(false);
   await page(`${V2}/v1page?url=%2Fbh%2Foverzicht.asp`, 'app');

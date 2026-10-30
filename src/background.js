@@ -597,9 +597,15 @@ async function onInnerPage(tabId, { url, kind }) {
   return {};
 }
 
+// The tab's layout stays: in the breakout iframe (loginHost) a login from
+// the plain form must still open the real app, and the loop guard
+// (loginDone) still counts.
 async function cancelRelogin(tabId) {
   const tab = await getTab(tabId);
-  await setTab(tabId, { mainFrameId: tab.mainFrameId });
+  const kept = { mainFrameId: tab.mainFrameId };
+  if (tab.loginHost) kept.loginHost = true;
+  if (tab.loginDone?.length) kept.loginDone = tab.loginDone;
+  await setTab(tabId, kept);
 }
 
 // Whether a page can be loaded again without doing anything: the secure20
