@@ -24,7 +24,8 @@
 //   top         /bh/ without v2Url: swap as soon as the parser yields the
 //               mainframe frame. With v2Url (e-Boekhouden's own entry into
 //               the app) do nothing unless the service worker asks (the
-//               session turned out to be gone and mainframe shows v1login).
+//               session turned out to be gone: the secure20 shell, v1login
+//               or a classic page's v1page, shows the login form inside).
 //   login host  the swapped iframe: when inloggen.asp says "reeds ingelogd",
 //               or the answer to a login stays put after loading, tell the
 //               service worker, which opens the app via /bh?v2Url=. A login
