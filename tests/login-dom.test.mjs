@@ -383,10 +383,13 @@ for (const betterDesign of [false, true]) {
     assert.ok(box.querySelector('.ebs-userlock-icon svg.lucide-lock'), 'a Lucide lock');
     assert.equal(box.querySelector('.ebs-userlock-other').textContent, 'Ander account');
     assert.equal(box.querySelector('.ebs-userlock-other').type, 'button', 'the link never sends the form');
-    // The message is laid out from the start (its room reserved), but not shown.
+    // The message is in the page from the start, folded away (no room taken), and not shown.
     const message = box.querySelector('.ebs-userlock-msg');
     assert.equal(message.textContent, WRONG);
     assert.ok(!message.classList.contains('on'));
+    const css = p.document.getElementById('ebs-userlock-style').textContent;
+    assert.match(css, /\.ebs-userlock-msg \{[^}]*max-height: 0;[^}]*margin-top: 0;/, 'a hidden message takes no room');
+    assert.match(css, /\.ebs-userlock-msg\.on \{[^}]*max-height: 80px;/, 'the message folds open when shown');
     assert.equal(box.closest('tr').previousElementSibling, user.closest('tr.TRNORM'), 'right under the username');
     assert.equal(p.document.getElementById('txtWachtwoord').outerHTML, p.passwordBefore, 'the password field is untouched');
     if (betterDesign) assert.ok(p.document.querySelector('#ebs-better .ebs-userlock'), 'inside the Better design form');

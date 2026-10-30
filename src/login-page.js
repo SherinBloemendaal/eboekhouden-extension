@@ -293,8 +293,8 @@
     }
 
     // The row under the field: the lock with the entry's name and "Ander
-    // account", and room for the message, which is always laid out (hidden)
-    // so that showing it moves nothing.
+    // account", and the message, which takes no room while hidden and folds
+    // open (150 ms height and fade) when it shows.
     function build() {
       if (box) return;
       ensureStyle();
@@ -353,7 +353,7 @@
       text.textContent = `Vastgezet voor ${slot.name}`;
       other.disabled = false;
       other.removeAttribute('aria-hidden');
-      // The message's own text, hidden: its room is reserved from the start.
+      // The message's own text, hidden until it folds open.
       message.lastChild.textContent = messageText();
       showMessage(false);
       user.value = filled;
@@ -910,8 +910,8 @@
     .ebs-userlock-other:hover { color: #68ab32; }
     .ebs-userlock-other:disabled { opacity: 0; cursor: default; pointer-events: none; }
     .ebs-userlock-other:focus-visible { outline: 2px solid #30395f; outline-offset: 2px; }
-    .ebs-userlock-msg { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; padding: 6px 8px; border-radius: 3px; background: #fbe9e9; color: #b42318; opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity 150ms ease, transform 150ms ease, visibility 0s linear 150ms; }
-    .ebs-userlock-msg.on { opacity: 1; visibility: visible; transform: none; transition: opacity 150ms ease, transform 150ms ease, visibility 0s; }
+    .ebs-userlock-msg { display: flex; align-items: flex-start; gap: 6px; max-height: 0; overflow: hidden; margin-top: 0; padding: 0 8px; border-radius: 3px; background: #fbe9e9; color: #b42318; opacity: 0; visibility: hidden; transition: max-height 150ms ease, margin-top 150ms ease, padding 150ms ease, opacity 150ms ease, visibility 0s linear 150ms; }
+    .ebs-userlock-msg.on { max-height: 80px; margin-top: 6px; padding: 6px 8px; opacity: 1; visibility: visible; transition: max-height 150ms ease, margin-top 150ms ease, padding 150ms ease, opacity 150ms ease, visibility 0s; }
     .ebs-userlock-msg svg { flex: none; margin-top: 1px; }
     .ebs-userlock.better { padding: 0; font: 13px/18px Ubuntu, system-ui, sans-serif; color: #5d6584; }
     .ebs-userlock.better .ebs-userlock-icon { color: #5d9e35; }
@@ -919,14 +919,15 @@
     .ebs-userlock.better .ebs-userlock-other { font-size: 12px; color: #232c4f; }
     .ebs-userlock.better .ebs-userlock-other:hover { color: #1b2240; }
     .ebs-userlock.better .ebs-userlock-other:focus-visible { outline-color: #232c4f; }
-    .ebs-userlock.better .ebs-userlock-msg { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 17px; }
+    .ebs-userlock.better .ebs-userlock-msg { padding: 0 10px; border-radius: 8px; font-size: 12px; line-height: 17px; }
+    .ebs-userlock.better .ebs-userlock-msg.on { margin-top: 8px; padding: 8px 10px; }
     #ebs-better #frm tr.ebs-userlock-tr { margin: -8px 0 16px !important; }
     #ebs-better #frm input.INPUTBOX#txtEmail[readonly] { background: #f7f8fb; cursor: default; }
     @keyframes ebs-userlock-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
     @keyframes ebs-userlock-fade { from { opacity: 0; } to { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) {
       .ebs-userlock.ebs-in { animation-name: ebs-userlock-fade; }
-      .ebs-userlock-msg, .ebs-userlock-msg.on { transform: none; }
+      .ebs-userlock-msg, .ebs-userlock-msg.on { transition: opacity 150ms ease, visibility 0s; }
     }
   `;
 
