@@ -45,10 +45,45 @@ test('an app entry with a valid session ("U bent reeds ingelogd" in the shell) k
   assert.deepEqual(fake.updates, []);
 });
 
-test('a plain login form outside the login shell does not ask for a swap', async () => {
+test('a session that expires on a classic page in the secure20 shell moves the re-login to the breakout iframe', async () => {
+  // e-Boekhouden loads inloggen.asp in the classic page's own iframe, under
+  // the cross-origin secure20 frame: 1Password's menu does not stay open there.
+  const classic = `${V2}/v1page?url=%2Fbh%2Foverzicht.asp`;
+  await host(false); // the top load of /bh?v2Url=
+  await page(classic, 'app');
+  const login = await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  assert.equal(login.relogin, true, 'the dialog is for the page the user was on');
+  assert.deepEqual(fake.sent, [{ tabId: 7, message: { type: 'login:swap' }, options: { frameId: 0 } }]);
+
+  await host(true);
+  const dialog = await page(`${ORIGIN}/bh/inloggen.asp`, 'login');
+  assert.equal(dialog.relogin, true, 'the dialog shows again in the breakout iframe');
+  assert.equal(fake.sent.length, 1, 'the breakout iframe is not asked to swap again');
+
+  await landing(`${ORIGIN}/bh/welkom.asp`);
+  assert.equal(fake.updates.at(-1).url, `${ORIGIN}/bh?v2Url=${encodeURIComponent(classic)}`, 'back to the page the user was on');
+});
+
+test('cancelling the re-login dialog in the breakout iframe still opens the real app after a login', async () => {
+  const classic = `${V2}/v1page?url=%2Fbh%2Foverzicht.asp`;
+  await host(false);
+  await page(classic, 'app');
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  await host(true);
+  await page(`${ORIGIN}/bh/inloggen.asp`, 'login');
+  // The user closes the dialog and logs in from the plain form instead.
+  await fake.dispatch({ type: 'relogin:cancel' }, main);
+  const { first, done } = await landing(`${V2}/boekhouden/overzicht`);
+  assert.deepEqual(first, { settleLogin: true }, 'the landing is still the answer to a login in the breakout iframe');
+  assert.deepEqual(done, { navigating: true });
+  assert.equal(fake.updates.at(-1).url, APP, 'the cancelled return no longer applies: the app start');
+});
+
+test('a classic page in the shell that still has its session never asks for a swap', async () => {
   await host(false);
   await page(`${V2}/v1page?url=%2Fbh%2Foverzicht.asp`, 'app');
-  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'login' }, inner);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/overzicht.asp`, kind: 'app' }, inner);
+  await fake.dispatch({ type: 'inner:page', url: `${ORIGIN}/bh/inloggen.asp`, kind: 'already' }, inner);
   assert.deepEqual(fake.sent, []);
 });
 

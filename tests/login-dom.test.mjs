@@ -608,3 +608,90 @@ test('the expired re-login dialog locks the username to the entry whose session 
     assert.equal(user.value, '', 'the filled-in username goes with it');
   }
 });
+
+// ---------------------------------------------------------------------------
+// The session-expired re-login and 1Password. 1Password itself cannot run
+// here, so these check what its inline menu depends on: the frame layout
+// (one same-origin iframe under a plain body, not the cross-origin secure20
+// frame), the real fields in light DOM with their labels, and nothing hidden.
+// ---------------------------------------------------------------------------
+
+test('a login:swap request turns the app frameset into the breakout layout', async () => {
+  const frameset = `<html><head><title>Voorbeeld B.V.</title></head><frameset rows="0,*">
+<frame name="topframe" id="topframe" src="top.asp">
+<frameset cols="0,*,0">
+<frame name="menuframe" id="menuframe" src="menu.asp">
+<frame name="mainframe" id="mainframe" src="https://secure20.e-boekhouden.nl/v1page?url=%2Fbh%2Foverzicht.asp">
+<frame name="hiddenframe" id="hiddenframe" src="leeg.html">
+</frameset></frameset></html>`;
+  const p = page(frameset, { url: 'https://secure.e-boekhouden.nl/bh?v2Url=%2Fv1page', store: { settings: { onePassword: true } }, serve: {} });
+  const listeners = [];
+  p.window.chrome.runtime.onMessage.addListener = (listener) => listeners.push(listener);
+  p.load('shared.js', 'login-breakout.js');
+  await p.settle();
+  assert.equal(p.document.getElementById('ebs-login-host'), null, 'an app entry keeps its frameset until asked');
+  assert.equal(listeners.length, 1);
+  listeners[0]({ type: 'login:swap' });
+  await p.settle();
+  const body = p.document.getElementById('ebs-login-host');
+  assert.ok(body, 'swapped on request');
+  assert.equal(body.tagName, 'BODY');
+  assert.equal(p.document.querySelector('frameset'), null);
+  assert.equal(p.document.querySelector('iframe#mainframe').getAttribute('src'), 'https://secure.e-boekhouden.nl/bh/inloggen.asp');
+  assert.equal(new URL(p.document.querySelector('iframe#mainframe').src).origin, p.window.location.origin, 'the login frame is same-origin with the top');
+});
+
+test('the re-login dialog in the breakout iframe meets what 1Password needs, and never touches the password', async () => {
+  for (const betterDesign of [false, true]) {
+    const p = await framedPage(`<html><body>${loginForm}</body></html>`, {
+      url: 'https://secure.e-boekhouden.nl/bh/inloggen.asp', parentUrl: 'https://secure.e-boekhouden.nl/bh/',
+      store: { settings: { betterDesign }, slots: known, view: { ready: [] } },
+      answer: (message) => {
+        if (message.type === 'main:page') return { relogin: true };
+        return message.type === 'login:context' ? { pendingLoginFor: null, relogin: true, reloginFor: 'b' } : {};
+      },
+    });
+    const passwordBefore = p.document.getElementById('txtWachtwoord').outerHTML;
+    p.window.name = 'mainframe';
+    p.load('shared.js', 'icons.js', 'password-fields.js', 'content.js', 'login-page.js');
+    await p.settle();
+    await wait(20);
+    const { window, document } = p;
+    assert.ok(document.documentElement.classList.contains('ebs-relogin'), `the dialog shows (betterDesign ${betterDesign})`);
+
+    // The frame: directly under a same-origin top whose body is a plain <body>.
+    assert.equal(window.parent, window.top);
+    assert.equal(window.top.location.origin, window.location.origin);
+    assert.equal(window.frameElement.parentElement, window.top.document.body);
+    assert.equal(window.top.document.body.tagName, 'BODY');
+
+    // The fields: e-Boekhouden's own, in light DOM, in its own form with its submit button.
+    const form = document.getElementById('frm');
+    const user = document.getElementById('txtEmail');
+    const password = document.getElementById('txtWachtwoord');
+    for (const element of [form, user, password]) assert.equal(element.getRootNode(), document, `${element.id} is in light DOM`);
+    assert.equal(user.form, form);
+    assert.equal(password.form, form);
+    assert.ok(form.querySelector('input[type="submit"]'), 'a submit button 1Password recognises');
+    assert.equal(user.name, 'txtEmail', 'the page\'s own name stays');
+    assert.equal(password.name, 'txtWachtwoord');
+    assert.equal(user.getAttribute('autocomplete'), 'username');
+    assert.equal(password.getAttribute('autocomplete'), 'current-password');
+    assert.equal(password.readOnly, false);
+    assert.equal(password.disabled, false);
+    assert.equal(user.disabled, false, 'a locked username is read-only, never disabled');
+
+    // Shown: no hidden ancestor, no display:none, no visibility:hidden.
+    for (const element of [user, password]) {
+      for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
+        const style = window.getComputedStyle(node);
+        assert.notEqual(style.display, 'none', `${element.id}: ${node.tagName}#${node.id} is shown`);
+        assert.notEqual(style.visibility, 'hidden', `${element.id}: ${node.tagName}#${node.id} is visible`);
+        assert.equal(node.hidden, false);
+      }
+    }
+    assert.equal(password.outerHTML.replace(/ (autocomplete|data-ebs-role)="[^"]*"/g, ''), passwordBefore, 'only attributes are added to the password field, never a value');
+    assert.equal(password.value, '');
+    assert.ok(!JSON.stringify(p.sent).includes('txtWachtwoord'), 'nothing about the password leaves the page');
+  }
+});

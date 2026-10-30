@@ -568,9 +568,8 @@ async function onMainPage(tabId, frameId, { url, kind }, topUrl) {
   }
   // The secure20 /v1login shell is what every app entry (/bh?v2Url=) starts
   // with, also with a valid session: the shell URL alone does not say whether
-  // a login form is about to show. Remember that the shell is up; the swap is
-  // asked for once its inner frame reports the plain login form (onInnerPage).
-  tab.shellLogin = kind === 'login' && SECURE20_LOGIN.test(url);
+  // a login form is about to show. The swap is asked for once its inner frame
+  // reports the plain login form (onInnerPage).
 
   if (kind === 'already') {
     await setTab(tabId, tab);
@@ -633,12 +632,17 @@ async function onInnerPage(tabId, { url, kind }) {
     if (kind === 'login') tab.loginSeen = true;
     await setTab(tabId, tab);
     await onLoginPage();
-    // The plain login form inside the /v1login shell (after a logout, an
-    // expired session, or an app entry whose session is gone): ask the top
-    // frame to swap the frameset for the breakout layout. "U bent reeds
-    // ingelogd" (kind already) never gets here: that entry is e-Boekhouden's
-    // own way into the app and must keep its frameset.
-    if (kind === 'login' && tab.shellLogin && !tab.loginHost) {
+    // The plain login form inside the secure20 shell: ask the top frame to
+    // swap the frameset for the breakout layout. That is the /v1login shell
+    // after a logout or an app entry whose session is gone, and just as much
+    // the /v1page shell of a classic page whose session expired while the
+    // user worked: e-Boekhouden then loads inloggen.asp in the page's own
+    // iframe, under the cross-origin secure20 frame, where 1Password's menu
+    // closes again at once. The re-login dialog then shows in the breakout
+    // iframe instead, one same-origin frame below a plain body. "U bent
+    // reeds ingelogd" (kind already) never gets here: that entry is
+    // e-Boekhouden's own way into the app and must keep its frameset.
+    if (kind === 'login' && !tab.loginHost) {
       chrome.tabs.sendMessage(tabId, { type: 'login:swap' }, { frameId: 0 }).catch(() => {});
     }
     return { relogin: Boolean(tab.relogin) };
@@ -658,10 +662,17 @@ async function onInnerPage(tabId, { url, kind }) {
   return {};
 }
 
+// The tab's layout stays: in the breakout iframe (loginHost) a login from
+// the plain form must still open the real app, and the loop guard
+// (loginDone) still counts.
 async function cancelRelogin(tabId) {
   const tab = await getTab(tabId);
+  const kept = { mainFrameId: tab.mainFrameId };
+  if (tab.loginHost) kept.loginHost = true;
+  if (tab.loginDone?.length) kept.loginDone = tab.loginDone;
   // The form stays: a login from it still counts (loginSeen).
-  await setTab(tabId, { mainFrameId: tab.mainFrameId, ...(tab.loginSeen ? { loginSeen: true } : {}) });
+  if (tab.loginSeen) kept.loginSeen = true;
+  await setTab(tabId, kept);
 }
 
 // Whether a page can be loaded again without doing anything: the secure20
@@ -699,7 +710,6 @@ function isReadOnlyPage(href) {
 // the user was on, including classic pages, through onMainPage.
 // ---------------------------------------------------------------------------
 
-const SECURE20_LOGIN = /^https:\/\/secure20\.e-boekhouden\.nl\/v1login(?:[?#]|$)/i;
 // secure20 pages reachable from the login form without a session.
 const PUBLIC_V2 = /^https:\/\/secure20\.e-boekhouden\.nl\/(?:v1login|overig\/vergeten|sessie-verlopen)(?:[?#/]|$)/i;
 const SECURE20_ORIGIN = 'https://secure20.e-boekhouden.nl';
