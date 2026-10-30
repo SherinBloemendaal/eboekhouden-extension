@@ -132,6 +132,22 @@ test('the loop guard holds over the real bounce: every round reloads the top fra
   assert.equal(fake.updates.length, 2, 'two app entries, then the tab is left alone');
 });
 
+test('the top frame hears that the tab moves into the app before it does, and only then', async () => {
+  const entering = () => fake.sent.filter((entry) => entry.message.type === 'loader:entering');
+  await host(true);
+  await fake.dispatch({ type: 'login:done', url: `${ORIGIN}/bh/inloggen.asp` }, main); // "reeds ingelogd"
+  assert.deepEqual(entering(), [{ tabId: 7, message: { type: 'loader:entering' }, options: { frameId: 0 } }]);
+  assert.equal(fake.updates.length, 1, 'then the app entry');
+  // Not in breakout mode, or held by the loop guard: no navigation, no message.
+  await fake.dispatch({ type: 'login:done', url: `${ORIGIN}/bh/inloggen.asp` }, main);
+  await host(true);
+  await fake.dispatch({ type: 'login:done', url: `${ORIGIN}/bh/inloggen.asp` }, main);
+  await host(true);
+  await fake.dispatch({ type: 'login:done', url: `${ORIGIN}/bh/inloggen.asp` }, main);
+  assert.equal(fake.updates.length, 2);
+  assert.equal(entering().length, 2, 'one per app entry');
+});
+
 test('a fresh top load ends breakout mode but keeps counting app entries for a while', async () => {
   await host(true);
   await landing(`${ORIGIN}/bh/welkom.asp`);

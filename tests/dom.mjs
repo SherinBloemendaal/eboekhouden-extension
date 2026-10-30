@@ -28,6 +28,7 @@ function shimLayout(window) {
 
 function fakeChrome(window, { store, answer, answerDelay, sent }) {
   const listeners = [];
+  const messageListeners = [];
   window.matchMedia ??= () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.CSS ??= {};
   window.CSS.escape ??= (value) => String(value).replace(/["\\]/g, '\\$&');
@@ -65,12 +66,23 @@ function fakeChrome(window, { store, answer, answerDelay, sent }) {
         sent.push(message);
         return new Promise((resolve) => setTimeout(() => resolve(answer(message)), answerDelay));
       },
-      onMessage: { addListener() {} },
+      onMessage: {
+        addListener: (listener) => messageListeners.push(listener),
+        removeListener: (listener) => {
+          const at = messageListeners.indexOf(listener);
+          if (at >= 0) messageListeners.splice(at, 1);
+        },
+      },
     },
   };
+  return messageListeners;
 }
 
-function helpers(window, store, sent) {
+function helpers(window, store, sent, messageListeners = []) {
+  // A message from the service worker (chrome.tabs.sendMessage) to this frame.
+  const deliver = (message, sender = { id: 'ebs-test' }) => {
+    for (const listener of [...messageListeners]) listener(message, sender, () => {});
+  };
   const load = (...files) => {
     for (const file of files) window.eval(readFileSync(join(root, 'src', file), 'utf8'));
   };
@@ -79,7 +91,7 @@ function helpers(window, store, sent) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     for (let i = 0; i < frames; i += 1) await frame();
   };
-  return { window, document: window.document, store, sent, load, settle, close: () => window.close() };
+  return { window, document: window.document, store, sent, load, settle, deliver, close: () => window.close() };
 }
 
 // `serve` maps URLs to the HTML a frame of the page gets for them (no network).
@@ -95,8 +107,8 @@ export function page(html, { url, store = {}, answer = () => ({}), answerDelay =
   const { window } = dom;
   open.add(window);
   const sent = [];
-  fakeChrome(window, { store, answer, answerDelay, sent });
-  return helpers(window, store, sent);
+  const messageListeners = fakeChrome(window, { store, answer, answerDelay, sent });
+  return helpers(window, store, sent, messageListeners);
 }
 
 // A page inside a frame of a parent page, as e-Boekhouden's login form is.
@@ -112,6 +124,6 @@ export async function framedPage(html, { url, parentHtml, parentUrl, frameName =
   await new Promise((resolve) => iframe.addEventListener('load', resolve, { once: true }));
   const window = iframe.contentWindow;
   const sent = [];
-  fakeChrome(window, { store, answer, answerDelay, sent });
-  return helpers(window, store, sent);
+  const messageListeners = fakeChrome(window, { store, answer, answerDelay, sent });
+  return helpers(window, store, sent, messageListeners);
 }
