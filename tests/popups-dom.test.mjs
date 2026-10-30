@@ -567,8 +567,10 @@ test('the open post selection that hangs in e-Boekhouden\'s own loader says so, 
   assert.equal(retry.hidden, false);
   assert.equal(text(retry), 'Opnieuw');
   assert.equal(problem.querySelector('.ebs-popup-secondary').textContent, 'Openen in een nieuw venster', 'the real window stays on offer');
+  retry.focus();
   retry.click();
   assert.ok(p.stage().classList.contains('loading'), 'loading again');
+  assert.equal(p.document.activeElement, p.dialog().querySelector('.ebs-dialog-close'), 'the focus stays in the dialog');
   assert.equal(p.iframe.src, SELECT, 'the same page, loaded anew');
   p.close();
 });
@@ -579,4 +581,47 @@ test('the open post selection that drew in time stays as it is', { timeout: T },
   await new Promise((resolve) => setTimeout(resolve, 600));
   assert.ok(p.stage().classList.contains('ready'));
   p.close();
+});
+
+// The page as e-Boekhouden draws it (app-open-post-select's template): the
+// form first, with Zoeken disabled until the first list came; the grid only
+// after that, with the header's own spinner while a search runs.
+const selectPage = (inner) => '<!doctype html><html><head><title>e-Boekhouden</title></head><body><app-root><app-open-post-select><div>'
+  + `<app-form><form class="form"><div class="form-body"></div><div class="form-footer"><button type="submit" class="button form-submit"${inner.disabled ? ' disabled' : ''}>Zoeken</button></div></form></app-form>`
+  + `${inner.grid ?? ''}</div></app-open-post-select></app-root></body></html>`;
+const SELECT_WAITING = selectPage({ disabled: true });
+const SELECT_SEARCHING = selectPage({
+  disabled: true,
+  grid: '<div class="grid-container"><app-grid><app-grid-header><div class="grid-header"><div><div class="grid-header-title"> Open posten <i class="eb-icon-spin6 animate-spin"></i></div></div></div></app-grid-header>'
+    + '<app-grid-body><table class="grid"><tbody></tbody></table></app-grid-body></app-grid></div>',
+});
+const SELECT_OWN = selectPage({ disabled: false });
+
+for (const [name, html] of [['the form waits for its first list', SELECT_WAITING], ['a search spins in the grid header', SELECT_SEARCHING]]) {
+  test(`the open post selection is stuck when ${name} for 15 s`, { timeout: T }, async () => {
+    const p = await selectDialog(html);
+    try {
+      assert.ok(p.stage().classList.contains('ready'), 'the page is shown');
+      p.clock.shift = 14_000;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.ok(p.stage().classList.contains('ready'), 'still within the time');
+      p.clock.shift = 16_000;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.ok(p.stage().classList.contains('problem'), 'no endless loader');
+      assert.equal(text(p.dialog().querySelector('.ebs-popup-problem-title')), 'Kon de open posten niet laden');
+    } finally {
+      p.close();
+    }
+  });
+}
+
+test('an own administration that waits for the user\'s Zoeken is not stuck', { timeout: T }, async () => {
+  const p = await selectDialog(SELECT_OWN);
+  try {
+    p.clock.shift = 60_000;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(p.stage().classList.contains('ready'));
+  } finally {
+    p.close();
+  }
 });

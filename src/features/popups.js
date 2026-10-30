@@ -82,7 +82,9 @@
   const SELECT_PAGE = /^\/boekhouden\/openposten\/select\/?$/i;
   const SELECT_TIMEOUT_MS = 15_000;
   const SELECT_WATCH_MS = 500;
-  const SELECT_LOADER = 'app-grid-header :is(.loader, .grid-loader, app-loader, .spinner, .eb-icon-spinner), app-grid :is(app-loader, .eb-icon-spinner)';
+  // Its grid header's own spinner while a Zoeken runs (app-grid-header with
+  // displayLoader: <i class="eb-icon-spin6 animate-spin">).
+  const SELECT_LOADER = 'app-grid-header :is(.animate-spin, .eb-icon-spin6)';
 
   const isTop = window === window.top;
   const inPopupFrame = !isTop && POPUP_FRAME.test(window.name);
@@ -396,7 +398,10 @@
     newWindow.addEventListener('click', openForReal);
     reopen.addEventListener('click', openForReal);
     retry.addEventListener('click', () => {
-      if (session.open && session.url) session.navigate(session.url);
+      if (!session.open || !session.url) return;
+      session.navigate(session.url);
+      // The problem fades out under the focus: the dialog keeps it.
+      session.handle.panel.querySelector('.ebs-dialog-close')?.focus({ preventScroll: true });
     });
 
     // The empty document a frame starts with (same origin, so readable).
@@ -661,20 +666,17 @@
   }
 
   // "Selecteer een open post": e-Boekhouden's page is busy until its
-  // component (app-open-post-select) is drawn and its grid's own loader is
-  // gone. Busy for SELECT_TIMEOUT_MS on end: 'stuck' (the dialog says "Kon
-  // de open posten niet laden" with Opnieuw); drawn again: 'drawn'. It reads
-  // the page only, and keeps watching (a Zoeken can hang as well).
+  // component (app-open-post-select) is drawn with its form, and while it
+  // waits for a list. Busy for SELECT_TIMEOUT_MS on end: 'stuck' (the dialog
+  // says "Kon de open posten niet laden" with Opnieuw); drawn again: 'drawn'.
+  // It reads the page only, and keeps watching (a Zoeken can hang as well).
   function watchSelectPage() {
     let busySince = Date.now();
     let told = false;
-    const busy = () => {
-      const root = document.querySelector('app-open-post-select');
-      return !root || !root.querySelector('app-form, form') || Boolean(root.querySelector(SELECT_LOADER));
-    };
     const timer = setInterval(() => {
       const now = Date.now();
-      if (!busy()) {
+      const wait = selectPageWait(document);
+      if (!wait) {
         if (told) tellOpener('drawn');
         busySince = null;
         told = false;
@@ -683,10 +685,31 @@
       busySince ??= now;
       if (!told && now - busySince >= SELECT_TIMEOUT_MS) {
         told = true;
-        tellOpener('stuck', { seconds: Math.round((now - busySince) / 1000) });
+        const seconds = Math.round((now - busySince) / 1000);
+        // In this frame's console: what e-Boekhouden's page still waits for.
+        console.warn('EB Sessions: Selecteer een open post still waits', { for: wait, seconds });
+        tellOpener('stuck', { seconds });
       }
     }, SELECT_WATCH_MS);
     window.addEventListener('pagehide', () => clearInterval(timer), { once: true });
+  }
+
+  // What the page waits for, from its template (chunk-CFo1mbjh.js): 'page'
+  // (not drawn yet), 'form' (drawn without its form: no session or no right
+  // to see it), 'list' or 'search'. The form shows first; the grid
+  // (app-grid) only once the first list came. Until then, and during every
+  // search, e-Boekhouden keeps the form's Zoeken disabled (submitDisabled);
+  // an own administration waits for the user's Zoeken with it enabled, and a
+  // failed load enables it again. Once there is a grid, its header spins
+  // while a search runs. null: nothing to wait for.
+  function selectPageWait(doc) {
+    const root = doc.querySelector('app-open-post-select');
+    if (!root) return 'page';
+    const form = root.querySelector('app-form');
+    if (!form) return 'form';
+    if (root.querySelector(SELECT_LOADER)) return 'search';
+    const submit = form.querySelector('button.form-submit[type="submit"]');
+    return !root.querySelector('app-grid') && submit?.disabled ? 'list' : null;
   }
 
   // -------------------------------------------------------------------------
