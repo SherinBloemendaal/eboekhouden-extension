@@ -28,9 +28,11 @@
 //     429 or 503 pauses every frame. Nothing is retried on its own, and there
 //     is no polling helper.
 //   - abort(key), abortAll() and leaving the page cancel what is running.
-//   - Every wait ends: a request that has no answer after 30 s fails with
+//   - Every wait ends: a request that is not done after 30 s fails with
 //     code 'timeout' (and frees its place, also for the callers that shared
-//     it), and the service worker gets 10 s to hand out a place.
+//     it), and the service worker gets 10 s to hand out a place. A file
+//     ('blob': an export, a preview) gets 5 minutes: e-Boekhouden may take
+//     long to make a large one, and the download itself counts too.
 //
 // options: as ('json', the default, 'text', or 'blob' for a file such as a
 // preview; 'blob' only in isolated mode), mode ('isolated', the
@@ -57,6 +59,7 @@
   const BACKOFF_MAX_MS = 5 * 60_000;
   const CLICK_WINDOW_MS = 10_000;
   const REQUEST_TIMEOUT_MS = 30_000;
+  const FILE_TIMEOUT_MS = 5 * 60_000;
   const SLOT_TIMEOUT_MS = 10_000;
   const APP_HOST = /^secure\d*\.e-boekhouden\.nl$/;
 
@@ -253,9 +256,14 @@
 
   async function globalSlot() {
     let answer;
+    const asking = Promise.resolve().then(() => root.chrome.runtime.sendMessage({ type: 'requests:slot' }));
     try {
-      answer = await within(Promise.resolve().then(() => root.chrome.runtime.sendMessage({ type: 'requests:slot' })), SLOT_TIMEOUT_MS, new Error('slot timeout'));
+      answer = await within(asking, SLOT_TIMEOUT_MS, new Error('slot timeout'));
     } catch {
+      // A place handed out after the wait ended goes back at once.
+      asking.then((late) => {
+        if (late?.ok === true && typeof late.lease === 'string') release(late.lease, null, null);
+      }, () => {});
       throw new RequestError('unavailable', 'EBS.request: the extension did not answer; reload the page');
     }
     if (answer?.ok === true && typeof answer.lease === 'string') return { ok: true, lease: answer.lease };
@@ -346,15 +354,16 @@
     // No answer in time: stop it, so its place (and every caller that
     // shares it) is free again instead of waiting for the page's lifetime.
     let timedOut = false;
+    const limit = job.as === 'blob' ? FILE_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
     const deadline = root.setTimeout(() => {
       timedOut = true;
       job.controller.abort();
       if (job.mode === 'main') mainRequest?.abort(job.id);
-    }, REQUEST_TIMEOUT_MS);
+    }, limit);
     try {
       const fetching = job.mode === 'main' ? fetchMain(job) : fetchIsolated(job);
       // The page's world may not stop on an abort: the deadline holds anyway.
-      const response = await within(fetching, REQUEST_TIMEOUT_MS + 1_000, new DOMException('Aborted', 'AbortError'));
+      const response = await within(fetching, limit + 1_000, new DOMException('Aborted', 'AbortError'));
       status = response.status;
       retryAfter = retryAfterMs(response.retryAfter);
       if (response.redirected) {
@@ -529,6 +538,6 @@
       };
     },
     RequestError,
-    limits: Object.freeze({ ttlMs: TTL_MS, concurrent: MAX_CONCURRENT, perMinute: RATE_LIMIT, queue: MAX_QUEUE, timeoutMs: REQUEST_TIMEOUT_MS }),
+    limits: Object.freeze({ ttlMs: TTL_MS, concurrent: MAX_CONCURRENT, perMinute: RATE_LIMIT, queue: MAX_QUEUE, timeoutMs: REQUEST_TIMEOUT_MS, fileTimeoutMs: FILE_TIMEOUT_MS }),
   }));
 })();
