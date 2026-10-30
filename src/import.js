@@ -1300,6 +1300,11 @@
   //                        "Het mutatiescherm van e-Boekhouden opende niet
   //                        op tijd." with "Opnieuw",
   //                        which loads the line in a new frame
+  //   the list page drawn without its grid, when the dialog gives up
+  //                        (e-Boekhouden in a frame does not log in again on
+  //                        its own; only a load of the whole page renews its
+  //                        session): says so, with "Pagina verversen" next to
+  //                        "Opnieuw" (only on the user's own click)
   //   back on the list in a document without our script (after a save in a
   //                        page that came by a full load): as 'edit-done'
   // Progress is the phase runEditFrame writes on the frame's <html>
@@ -1309,6 +1314,22 @@
   const SESSION_PAGE = /^\/(v1login|login|login\/verlopen|sessie-verlopen)\/?$/i;
   const TEXT_STUCK = 'Het mutatiescherm van e-Boekhouden opende niet op tijd.';
   const TEXT_SESSION = 'Je sessie bij e-Boekhouden is verlopen. Ververs de pagina om opnieuw in te loggen.';
+  const TEXT_UNDRAWN = 'e-Boekhouden toont de lijst in dit venster niet. Mogelijk moet de sessie van e-Boekhouden in dit venster worden ververst; Pagina verversen laadt de hele pagina opnieuw.';
+
+  // The whole page again (e-Boekhouden's own way back into its session), on
+  // the user's own click only. A top of another origin (the classic /bh/
+  // frameset) cannot be reloaded from here: then this page.
+  const refreshPage = {
+    label: 'Pagina verversen',
+    run: (event) => {
+      if (!event?.isTrusted) return;
+      try {
+        window.top.location.reload();
+      } catch {
+        location.reload();
+      }
+    },
+  };
 
   // What the frame shows: null (not there), { blank }, { foreign } or
   // { path, complete, phase }.
@@ -1318,7 +1339,12 @@
       if (!win) return null;
       if (win.location.href === 'about:blank') return { blank: true };
       const doc = win.document;
-      return { path: win.location.pathname, complete: doc.readyState === 'complete', phase: doc.documentElement?.getAttribute('data-ebs-edit') ?? null };
+      return {
+        path: win.location.pathname,
+        complete: doc.readyState === 'complete',
+        phase: doc.documentElement?.getAttribute('data-ebs-edit') ?? null,
+        grid: Boolean(doc.querySelector('app-grid')),
+      };
     } catch {
       return { foreign: true };
     }
@@ -1358,8 +1384,19 @@
         status = 'ready';
         handle.setReady();
       };
+      // The list page there, loaded, without its grid: e-Boekhouden drew
+      // nothing (its session in this frame, most likely).
+      const undrawn = () => {
+        const view = frameView(handle.frame);
+        return Boolean(view?.path && PAGE.test(view.path) && view.complete && !view.grid);
+      };
       const fail = (text, why, again = retry) => {
         status = 'error';
+        if (again === retry && undrawn()) {
+          handle.setError(TEXT_UNDRAWN, { retry: [retry, refreshPage] });
+          console.warn('EB Sessions: mutation dialog shows the list without its grid', { why: why ?? text, phase });
+          return;
+        }
         handle.setError(text, { retry: again });
         if (why) console.warn(`EB Sessions: mutation dialog ${why}`, { phase, seconds: Math.round((Date.now() - since) / 1000), at: frameView(handle.frame)?.path ?? null });
       };
@@ -1379,7 +1416,7 @@
         }
         const onList = known && PAGE.test(view.path);
         if (status === 'opening') {
-          if (known && SESSION_PAGE.test(view.path)) fail(TEXT_SESSION, 'reached a session page', { label: 'Pagina verversen', run: () => location.reload() });
+          if (known && SESSION_PAGE.test(view.path)) fail(TEXT_SESSION, 'reached a session page', refreshPage);
           else if (known && !onList && (view.complete || phase)) ready();
           else if (onList && view.complete && !phase) fail(TEXT_STUCK, 'shows the list without its script');
           else if (Date.now() - since > OPEN_TIMEOUT_MS) fail(TEXT_STUCK, 'timed out');

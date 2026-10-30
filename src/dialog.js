@@ -37,8 +37,9 @@
 //   className, onClose(reason)
 //
 // setError(text, { fallbackUrl, retry }): retry is a function (or { label,
-// run }) behind an "Opnieuw" button on the error, so a stuck load never
-// needs a reload of the page. reload(url) puts a new iframe in place of the
+// run }, or a list of those) behind an "Opnieuw" button on the error, so a
+// stuck load never needs a reload of the page; run gets the click event.
+// reload(url) puts a new iframe in place of the
 // old one (a new window: nothing of the old page stays) and shows the
 // loading cover again; handle.frame is then the new one.
 //
@@ -240,7 +241,7 @@
         cover.classList.remove('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
-        cover.querySelector('.ebs-dialog-retry')?.remove();
+        cover.querySelector('.ebs-dialog-retries')?.remove();
         // A cover that comes back gets a new mark: its entry plays again.
         mark?.start();
         cover.hidden = false;
@@ -255,15 +256,19 @@
         cover.classList.add('error');
         coverText.textContent = text;
         cover.querySelector('.ebs-dialog-fallback')?.remove();
-        cover.querySelector('.ebs-dialog-retry')?.remove();
-        const again = typeof retry === 'function' ? { run: retry } : retry;
-        if (typeof again?.run === 'function') {
-          const button = el('button', 'ebs-dialog-button ebs-dialog-retry', again.label ?? 'Opnieuw');
-          button.type = 'button';
-          button.addEventListener('click', () => {
-            if (state === 'open') again.run();
-          });
-          cover.append(button);
+        cover.querySelector('.ebs-dialog-retries')?.remove();
+        const choices = [].concat(retry ?? []).map((one) => (typeof one === 'function' ? { run: one } : one)).filter((one) => typeof one?.run === 'function');
+        if (choices.length) {
+          const row = el('span', 'ebs-dialog-retries');
+          for (const again of choices) {
+            const button = el('button', 'ebs-dialog-button ebs-dialog-retry', again.label ?? 'Opnieuw');
+            button.type = 'button';
+            button.addEventListener('click', (event) => {
+              if (state === 'open') again.run(event);
+            });
+            row.append(button);
+          }
+          cover.append(row);
         }
         const url = fallbackUrl === undefined ? fallbackDefault : appUrl(fallbackUrl);
         if (url) {
@@ -449,6 +454,7 @@
     .ebs-dialog-cover.error > * { animation: ebsDialogCoverIn 150ms ease-out both; }
     @keyframes ebsDialogCoverIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     .ebs-dialog-fallback { font-size: 13px; color: #232c4f; }
+    .ebs-dialog-retries { display: flex; gap: 10px; justify-content: center; }
     .ebs-dialog-retry { transition: background-color 150ms ease, border-color 150ms ease; }
     .ebs-dialog-retry:hover { background: #f3f5fa; border-color: #b9c0d3; }
     .ebs-dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 20px; border-top: 1px solid #e6e9f1; font-size: 12px; color: #5d6584; }

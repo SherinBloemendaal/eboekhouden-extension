@@ -74,7 +74,11 @@
     external: 'Betalen en koppelen met een bank of webshop openen als echt venster: daar log je in bij een andere partij.',
     stuckTitle: 'Kon de open posten niet laden',
     stuck: 'e-Boekhouden gaf de lijst niet op tijd. Probeer het opnieuw; er is niets verloren.',
+    // Drawn without its form: e-Boekhouden in a frame does not log in again
+    // on its own; only a load of the whole page renews its session.
+    stuckSession: 'e-Boekhouden toont de lijst niet. Mogelijk moet de sessie van e-Boekhouden in dit venster worden ververst. Pagina verversen laadt de hele pagina opnieuw; wat je in het mutatiescherm invulde, gaat dan verloren.',
     retry: 'Opnieuw',
+    refresh: 'Pagina verversen',
   };
   // e-Boekhouden's "Selecteer een open post" (/boekhouden/openposten/select):
   // its page in the frame says 'stuck' when its own loader runs this long
@@ -266,8 +270,12 @@
     const retry = el('button', 'ebs-popup-retry', TEXT.retry);
     retry.type = 'button';
     retry.hidden = true;
+    // The whole page again, for a session that only a full load renews.
+    const refresh = el('button', 'ebs-popup-refresh', TEXT.refresh);
+    refresh.type = 'button';
+    refresh.hidden = true;
     const problemButtons = el('span', 'ebs-popup-problem-buttons');
-    problemButtons.append(retry, reopen);
+    problemButtons.append(retry, refresh, reopen);
     problem.append(problemTitle, problemText, problemButtons);
     stage.append(iframe, loading, problem);
 
@@ -315,11 +323,12 @@
         stage.classList.add('ready');
         mark?.stop();
       },
-      showProblem(kindOfProblem) {
+      showProblem(kindOfProblem, { unsigned = false } = {}) {
         const form = kindOfProblem === 'refused' && session.kind !== 'page';
         const stuck = kindOfProblem === 'stuck';
         problemTitle.textContent = kindOfProblem === 'session' ? TEXT.sessionTitle : stuck ? TEXT.stuckTitle : TEXT.refusedTitle;
-        problemText.textContent = kindOfProblem === 'session' ? TEXT.session : stuck ? TEXT.stuck : form ? TEXT.refusedForm : TEXT.refused;
+        problemText.textContent = kindOfProblem === 'session' ? TEXT.session : stuck ? (unsigned ? TEXT.stuckSession : TEXT.stuck) : form ? TEXT.refusedForm : TEXT.refused;
+        refresh.hidden = !(stuck && unsigned);
         reopen.hidden = kindOfProblem === 'session' || form;
         retry.hidden = !stuck || session.kind !== 'page' || !session.url;
         reopen.className = retry.hidden ? 'ebs-popup-primary' : 'ebs-popup-secondary';
@@ -329,11 +338,12 @@
       },
       // The page is shown but hangs in its own loader (see SELECT_PAGE):
       // only then, so a retry already on its way decides anew.
-      showStuck(seconds) {
+      // waiting: what the page waits for ('form': drawn without its form).
+      showStuck(seconds, waiting) {
         if (!stage.classList.contains('ready')) return;
-        console.warn('EB Sessions: pop-up page stuck in its own loader', { page: session.url?.pathname ?? null, seconds });
+        console.warn('EB Sessions: pop-up page stuck in its own loader', { page: session.url?.pathname ?? null, seconds, waiting });
         session.stuck = true;
-        session.showProblem('stuck');
+        session.showProblem('stuck', { unsigned: waiting === 'form' });
       },
       // It drew after all.
       clearStuck() {
@@ -397,6 +407,16 @@
     };
     newWindow.addEventListener('click', openForReal);
     reopen.addEventListener('click', openForReal);
+    // Only on the user's own click; a top of another origin (the classic /bh/
+    // frameset) cannot be reloaded from here: then the page around this dialog.
+    refresh.addEventListener('click', (event) => {
+      if (!event.isTrusted || !session.open) return;
+      try {
+        window.top.location.reload();
+      } catch {
+        location.reload();
+      }
+    });
     retry.addEventListener('click', () => {
       if (!session.open || !session.url) return;
       session.navigate(session.url);
@@ -522,7 +542,7 @@
         }
         break;
       case 'stuck':
-        session.showStuck(Number.isFinite(data.seconds) ? data.seconds : null);
+        session.showStuck(Number.isFinite(data.seconds) ? data.seconds : null, typeof data.waiting === 'string' ? data.waiting : null);
         break;
       case 'drawn':
         session.clearStuck();
@@ -688,7 +708,7 @@
         const seconds = Math.round((now - busySince) / 1000);
         // In this frame's console: what e-Boekhouden's page still waits for.
         console.warn('EB Sessions: Selecteer een open post still waits', { for: wait, seconds });
-        tellOpener('stuck', { seconds });
+        tellOpener('stuck', { seconds, waiting: wait });
       }
     }, SELECT_WATCH_MS);
     window.addEventListener('pagehide', () => clearInterval(timer), { once: true });
@@ -771,11 +791,11 @@
     .ebs-dialog.ebs-popup .ebs-dialog-close { width: 34px; height: 34px; transition: background-color 150ms ease, color 150ms ease; }
     .ebs-dialog.ebs-popup .ebs-dialog-close:hover { background: #e6e9f1; }
     .ebs-dialog.ebs-popup .ebs-dialog-body.ebs-popup-body { display: flex; padding: 0; overflow: hidden; background: #fff; }
-    .ebs-popup-print, .ebs-popup-secondary, .ebs-popup-primary, .ebs-popup-retry { flex: none; display: flex; align-items: center; gap: 6px; font-family: Ubuntu, system-ui, sans-serif; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+    .ebs-popup-print, .ebs-popup-secondary, .ebs-popup-primary, .ebs-popup-retry, .ebs-popup-refresh { flex: none; display: flex; align-items: center; gap: 6px; font-family: Ubuntu, system-ui, sans-serif; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
     .ebs-popup-print { height: 34px; padding: 0 12px; border: 0; border-radius: 8px; background: #232c4f; color: #fff; font-size: 13px; font-weight: 700; }
     .ebs-popup-print:hover { background: #30395f; }
-    .ebs-popup-secondary { height: 34px; padding: 0 10px; border: 1px solid #cfd4e2; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; }
-    .ebs-popup-secondary:hover { background: #f3f5fa; border-color: #b9c0d3; }
+    .ebs-popup-secondary, .ebs-popup-refresh { height: 34px; padding: 0 10px; border: 1px solid #cfd4e2; border-radius: 8px; background: #fff; color: #232c4f; font-size: 13px; }
+    .ebs-popup-secondary:hover, .ebs-popup-refresh:hover { background: #f3f5fa; border-color: #b9c0d3; }
     .ebs-popup-print svg, .ebs-popup-secondary svg { flex: none; }
     .ebs-popup-stage { position: relative; flex: 1; display: flex; min-width: 0; min-height: 0; }
     .ebs-popup-frame { flex: 1; width: 100%; height: 100%; border: 0; background: #fff; }
@@ -792,10 +812,10 @@
     .ebs-popup-problem-text { font-size: 13px; color: #5d6584; }
     .ebs-popup-primary, .ebs-popup-retry { height: 38px; padding: 0 16px; border: 0; border-radius: 9px; background: #232c4f; color: #fff; font-size: 14px; font-weight: 700; }
     .ebs-popup-primary:hover, .ebs-popup-retry:hover { background: #30395f; }
-    .ebs-popup-primary[hidden], .ebs-popup-secondary[hidden], .ebs-popup-retry[hidden] { display: none; }
-    .ebs-popup-problem-buttons { display: flex; gap: 10px; justify-content: center; }
-    .ebs-popup-problem-buttons .ebs-popup-secondary { height: 38px; padding: 0 16px; font-size: 14px; }
-    .ebs-popup-print:focus-visible, .ebs-popup-secondary:focus-visible, .ebs-popup-primary:focus-visible, .ebs-popup-retry:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
+    .ebs-popup-primary[hidden], .ebs-popup-secondary[hidden], .ebs-popup-retry[hidden], .ebs-popup-refresh[hidden] { display: none; }
+    .ebs-popup-problem-buttons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+    .ebs-popup-problem-buttons :is(.ebs-popup-secondary, .ebs-popup-refresh) { height: 38px; padding: 0 16px; font-size: 14px; }
+    .ebs-popup-print:focus-visible, .ebs-popup-secondary:focus-visible, .ebs-popup-primary:focus-visible, .ebs-popup-retry:focus-visible, .ebs-popup-refresh:focus-visible { outline: 2px solid #232c4f; outline-offset: 2px; }
 
     .ebs-popup-toast { position: fixed; bottom: 28px; z-index: 2147483200; display: flex; align-items: center; gap: 10px; box-sizing: border-box; padding: 12px 16px; border-radius: 12px; background: #232c4f; color: #fff; font: 13px/1.4 Ubuntu, system-ui, sans-serif; box-shadow: 0 12px 32px rgba(20, 26, 48, .3); opacity: 0; transform: translateY(8px); transition: opacity 150ms ease-out, transform 150ms ease-out; pointer-events: none; }
     .ebs-popup-toast.ebs-motion { transform: translateY(12px); transition-duration: 200ms; transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1); }

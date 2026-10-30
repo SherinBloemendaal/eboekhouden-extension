@@ -122,3 +122,36 @@ test('no progress of the frame for 20 s ends the wait; progress keeps it going',
   assert.equal(cover(document).hidden, true);
   p.close();
 });
+
+const bare = '<!doctype html><html data-ebs-edit="find"><head></head><body><div id="content"></div></body></html>';
+const buttonsOf = (document) => [...document.querySelectorAll('.ebs-dialog-cover .ebs-dialog-retry')].map((button) => button.textContent);
+
+test('a list page drawn without its grid says the session may need a refresh, with Pagina verversen next to Opnieuw', { timeout: 15_000 }, async () => {
+  // e-Boekhouden drew the page but not its list; our script finds nothing.
+  const p = await openDialog({ frameHtml: bare });
+  const { document, window, frame } = p;
+  window.dispatchEvent(new window.MessageEvent('message', { data: { ebs: 'edit-missing' }, origin: ORIGIN, source: frame.contentWindow }));
+  assert.match(coverText(document), /sessie van e-Boekhouden in dit venster/);
+  assert.deepEqual(buttonsOf(document), ['Opnieuw', 'Pagina verversen']);
+  // A click a script made reloads nothing.
+  document.querySelectorAll('.ebs-dialog-cover .ebs-dialog-retry')[1].click();
+  assert.ok(cover(document).classList.contains('error'));
+  assert.ok(frame.isConnected, 'the same frame: nothing was loaded');
+  p.close();
+});
+
+test('the same page timing out says so too; a list that is there gets Opnieuw only', { timeout: 15_000 }, async () => {
+  const p = await openDialog({ frameHtml: bare });
+  const { document, window } = p;
+  const realNow = window.Date.now.bind(window.Date);
+  window.Date.now = () => realNow() + 25_000;
+  await wait(600);
+  assert.match(coverText(document), /sessie van e-Boekhouden in dit venster/);
+  assert.deepEqual(buttonsOf(document), ['Opnieuw', 'Pagina verversen']);
+  p.close();
+  const q = await openDialog({ frameHtml: html(' data-ebs-edit="find"') });
+  q.window.dispatchEvent(new q.window.MessageEvent('message', { data: { ebs: 'edit-missing' }, origin: ORIGIN, source: q.frame.contentWindow }));
+  assert.equal(coverText(q.document), 'Deze regel staat niet meer in de lijst.');
+  assert.deepEqual(buttonsOf(q.document), ['Opnieuw']);
+  q.close();
+});

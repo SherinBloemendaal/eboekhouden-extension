@@ -524,6 +524,14 @@ const SELECT_BUSY = '<!doctype html><html><head><title>e-Boekhouden</title></hea
 const SELECT_DRAWN = '<!doctype html><html><head><title>e-Boekhouden</title></head><body><app-root><app-open-post-select><app-form><form></form></app-form>'
   + '<app-grid><app-grid-header></app-grid-header><app-grid-body><table class="grid"><tbody></tbody></table></app-grid-body></app-grid></app-open-post-select></app-root></body></html>';
 
+// Every select dialog's frame timers, stopped after the file even when a
+// test failed before its own close (else they keep the process alive).
+const selectStops = new Set();
+after(() => {
+  for (const stop of selectStops) stop();
+  selectStops.clear();
+});
+
 async function selectDialog(html) {
   const p = await popupPage({ serve: { [SELECT]: html } });
   p.gesture.active = true;
@@ -541,8 +549,13 @@ async function selectDialog(html) {
   const win = loadInFrame(p, iframe, p.gesture);
   await p.settle();
   const close = p.close;
-  p.close = () => {
+  const stop = () => {
     for (const id of timers) win.clearInterval(id);
+  };
+  selectStops.add(stop);
+  p.close = () => {
+    stop();
+    selectStops.delete(stop);
     close();
   };
   // The frame's clock, moved on by the test.
@@ -621,6 +634,44 @@ test('an own administration that waits for the user\'s Zoeken is not stuck', { t
     p.clock.shift = 60_000;
     await new Promise((resolve) => setTimeout(resolve, 600));
     assert.ok(p.stage().classList.contains('ready'));
+  } finally {
+    p.close();
+  }
+});
+
+// Drawn without its form: e-Boekhouden in this frame lost its session; only
+// a load of the whole page renews it.
+const SELECT_UNSIGNED = '<!doctype html><html><head><title>e-Boekhouden</title></head><body><app-root><app-open-post-select></app-open-post-select></app-root></body></html>';
+
+test('an open post selection drawn without its form offers Pagina verversen next to Opnieuw, and says why', { timeout: T }, async () => {
+  const p = await selectDialog(SELECT_UNSIGNED);
+  try {
+    p.clock.shift = 16_000;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.ok(p.stage().classList.contains('problem'));
+    const problem = p.dialog().querySelector('.ebs-popup-problem');
+    assert.match(text(problem.querySelector('.ebs-popup-problem-text')), /sessie van e-Boekhouden in dit venster/);
+    const refresh = problem.querySelector('.ebs-popup-refresh');
+    assert.equal(refresh.hidden, false);
+    assert.equal(text(refresh), 'Pagina verversen');
+    assert.equal(problem.querySelector('.ebs-popup-retry').hidden, false, 'Opnieuw stays');
+    // A click a script made reloads nothing.
+    refresh.click();
+    assert.ok(p.stage().classList.contains('problem'));
+    assert.ok(p.dialog().isConnected);
+  } finally {
+    p.close();
+  }
+});
+
+test('an open post selection that waits for its list offers no Pagina verversen', { timeout: T }, async () => {
+  const p = await selectDialog(SELECT_WAITING);
+  try {
+    p.clock.shift = 16_000;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const problem = p.dialog().querySelector('.ebs-popup-problem');
+    assert.equal(problem.querySelector('.ebs-popup-refresh').hidden, true);
+    assert.doesNotMatch(text(problem.querySelector('.ebs-popup-problem-text')), /sessie/);
   } finally {
     p.close();
   }
